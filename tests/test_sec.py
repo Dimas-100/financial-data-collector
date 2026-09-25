@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,6 +35,7 @@ def test_load_cik_map_caches(fixtures: Path, tmp_path: Path):
     assert m["AAPL"] == ("0000000001", "Sample Corp") and m["BRK-B"] == ("0000000003", "Sample Holding B")
     assert fetch.calls[0][1]["User-Agent"] == "Sample Person s@example.com"
     assert cache.exists()
+    os.utime(cache, (NOW.timestamp(), NOW.timestamp()))   # file clock = test clock
     sec_cik.load_cik_map(cache, fetch, "ua", NOW + timedelta(days=6))
     assert len(fetch.calls) == 1                                  # fresh cache, no refetch
     sec_cik.load_cik_map(cache, fetch, "ua", NOW + timedelta(days=8))
