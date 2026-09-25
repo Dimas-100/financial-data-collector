@@ -11,6 +11,7 @@ from ..config import Config, ConfigError
 from ..http import Fetch, HttpError
 from ..models import ConceptRule, Fact, LineItem
 from ..store import Store
+from ..symbols import is_money_market
 from .sec_cik import load_cik_map, lookup
 
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
