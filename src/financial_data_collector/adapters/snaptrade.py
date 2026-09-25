@@ -17,7 +17,7 @@ from .base import infer_account_type
 
 SOURCE = "snaptrade"
 _ACTIVITY_TYPES = {"BUY": "buy", "SELL": "sell", "DIVIDEND": "dividend", "CONTRIBUTION": "contribution",
-                   "REI": "reinvest", "WITHDRAWAL": "withdrawal", "INTEREST": "interest"}
+                   "REI": "reinvest", "WITHDRAWAL": "withdrawal", "INTEREST": "interest", "FEE": "fee"}
 
 
 def _account(label: str, slug: str | None = None) -> AccountRef:

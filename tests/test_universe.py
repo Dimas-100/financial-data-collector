@@ -22,3 +22,13 @@ def test_build_universe(tmp_path: Path):
     assert U.build_universe(s, wl) == ["AAPL", "VTI"]
     assert s.query("SELECT COUNT(*) FROM securities WHERE symbol='VTI'")[0][0] == 1
     s.close()
+
+
+def test_classify_overrides_are_applied(tmp_path: Path):
+    s = Store.open(tmp_path / "w.db")
+    s.upsert_security("VTI", first_seen="2026-01-01")
+    s.upsert_security("BTC", first_seen="2026-01-01")
+    out = U.build_universe(s, tmp_path / "none.txt", classify={"VTI": "etf", "BTC": "crypto"})
+    assert out == ["VTI"]
+    assert s.query("SELECT asset_type FROM securities WHERE symbol='VTI'")[0][0] == "etf"
+    s.close()

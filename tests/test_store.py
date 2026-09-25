@@ -41,7 +41,7 @@ def test_migrate_creates_schema_and_seeds(store: Store):
     assert {"cik", "symbol", "company", "fiscal_year", "revenue", "total_assets", "ocf",
             "capex", "fcf", "gross_margin", "net_margin"} <= cols
     qcols = {r[1] for r in store.query("PRAGMA table_info(financials_quarterly)")}
-    assert "is_derived_q4" in qcols
+    assert "has_derived_items" in qcols and "is_derived_q4" not in qcols
 
 
 def test_migrate_is_idempotent(store: Store):
@@ -155,3 +155,34 @@ def test_security_sec_fields(store: Store):
     store.set_asset_type("AAPL", "stock")
     row = store.query("SELECT cik, sec_name, last_sec_fetch, asset_type FROM securities WHERE symbol='AAPL'")[0]
     assert tuple(row) == ("0000320193", "Apple Inc.", "2026-01-02T00:00:00Z", "stock")
+
+
+def test_newer_same_day_snapshot_drops_sold_positions_of_same_source(store: Store):
+    two = Snapshot("2026-01-02", "snaptrade",
+                   [PositionRow(ACCT, "AAPL", None, 10, 100.0, 1000.0), PositionRow(ACCT, "KO", None, 5, 50.0, 250.0)],
+                   [CashRow(ACCT, 5.0)], fetched_at="2026-01-02T12:00:00.000Z")
+    csv_row = Snapshot("2026-01-02", "fidelity_csv", [PositionRow(ROTH, "VTI", None, 1, 200.0, 200.0)], [])
+    store.write_snapshot(two)
+    store.write_snapshot(csv_row)
+    later = Snapshot("2026-01-02", "snaptrade", [PositionRow(ACCT, "AAPL", None, 10, 101.0, 1010.0)],
+                     [CashRow(ACCT, 255.0)], fetched_at="2026-01-02T20:00:00.000Z")
+    store.write_snapshot(later)
+    syms = [r[0] for r in store.query("SELECT symbol FROM position_snapshots ORDER BY symbol")]
+    assert syms == ["AAPL", "VTI"]                       # KO gone, the CSV-sourced VTI row untouched
+    assert store.query("SELECT amount FROM cash_balances")[0][0] == 255.0
+
+
+def test_crypto_account_holdings_are_classified_crypto(store: Store):
+    crypto = AccountRef("Webull Crypto", "other", "webull", "crypto")
+    store.write_snapshot(Snapshot("2026-01-02", "snaptrade", [PositionRow(crypto, "BTC", "BITCOIN", 0.01, 60000.0, 600.0)], []))
+    assert store.query("SELECT asset_type FROM securities WHERE symbol='BTC'")[0][0] == "crypto"
+
+
+def test_same_trade_from_two_sources_is_stored_once(store: Store):
+    csv_row = TransactionRow(ACCT, "2026-01-02", "buy", "AAPL", 10.0, 100.0, -1000.01, 0.01, "YOU BOUGHT", "fidelity_csv")
+    feed_row = TransactionRow(ACCT, "2026-01-02", "buy", "AAPL", 10.0, 100.0, -1000.0, 0.0, "BUY", "snaptrade")
+    other = TransactionRow(ACCT, "2026-01-02", "buy", "AAPL", 2.0, 100.0, -200.0, 0.0, "BUY", "snaptrade")
+    assert store.write_transactions([csv_row]) == 1
+    assert store.write_transactions([feed_row]) == 0          # same trade, fee rounding differs by a cent
+    assert store.write_transactions([other]) == 1             # a different trade the same day still lands
+    assert store.query("SELECT COUNT(*) FROM transactions")[0][0] == 2

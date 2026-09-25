@@ -76,10 +76,13 @@ def init_project(root: Path) -> list[str]:
     return created
 
 
+_PLACEHOLDERS = {"Your Name you@example.com"}  # the untouched .env example counts as unset
+
+
 def _secret(name: str, dotenv: dict[str, str | None]) -> str | None:
     v = os.environ.get(name) or dotenv.get(name) or ""
     v = v.strip()
-    return v or None
+    return None if (not v or v in _PLACEHOLDERS) else v
 
 
 def load_config(root: Path) -> Config:

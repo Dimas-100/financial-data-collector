@@ -22,9 +22,11 @@ def read_watchlist(path: Path) -> list[str]:
     return out
 
 
-def build_universe(store: Store, watchlist_path: Path) -> list[str]:
+def build_universe(store: Store, watchlist_path: Path, classify: dict[str, str] | None = None) -> list[str]:
     for sym in read_watchlist(watchlist_path):
         store.upsert_security(sym, first_seen=today())
+    for sym, asset_type in (classify or {}).items():  # manual [classify] overrides from config.toml
+        store.set_asset_type(canonical(sym), asset_type)
     out: list[str] = []
     for row in store.securities():
         sym = row["symbol"]

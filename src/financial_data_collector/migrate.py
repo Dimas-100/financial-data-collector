@@ -107,7 +107,7 @@ WITH base AS (
   SELECT cik, period_end,
     MAX(fiscal_year) AS fiscal_year,
     MAX(fiscal_quarter) AS fiscal_quarter,
-    MAX(is_derived) AS is_derived_q4,
+    MAX(is_derived) AS has_derived_items,
     MAX(filed) AS last_filed,
 {pivot}
   FROM financial_line_items

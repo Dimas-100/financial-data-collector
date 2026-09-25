@@ -31,6 +31,7 @@ def test_detect(fixtures: Path):
         ("FEE CHARGED", "fee"),
         ("TRANSFERRED FROM VS X12", "transfer"),
         ("JOURNALED SHARES (Cash)", "other"),
+        ("EXCHANGE FIDELITY 500 INDEX FUND (FXAIX) (Cash)", "other"),
         ("", "other"),
     ],
 )
@@ -92,3 +93,27 @@ def test_account_column_wins(fixtures: Path, tmp_path: Path):
     rows = fh.parse(dst)
     assert {r.account.label for r in rows} == {"Sample Roth"}
     assert rows[0].account.account_type == "roth_ira"
+
+
+def test_exchange_rows_follow_the_sign_of_quantity():
+    assert fh.classify_action("EXCHANGE FIDELITY 500 INDEX FUND (FXAIX) (Cash)", units=3.5) == "buy"
+    assert fh.classify_action("EXCHANGE FIDELITY 500 INDEX FUND (FXAIX) (Cash)", units=-3.5) == "sell"
+
+
+def test_account_numbers_scrubbed_from_description(fixtures: Path, tmp_path: Path):
+    lines = read_text_lines(fixtures / FIX)
+    lines.insert(4, " 01/21/2026, TRANSFERRED FROM VS Z12345678, , , Cash, , , , , , 50.00, 1349.99, ")
+    dst = tmp_path / "History_SampleBrokerage_2026.csv"
+    dst.write_text("\n".join(lines), encoding="utf-8")
+    rows = fh.parse(dst)
+    moved = [r for r in rows if r.type == "transfer"][0]
+    assert "Z12345678" not in moved.description and "<acct>" in moved.description
+
+
+def test_zero_quantity_is_stored_as_null(fixtures: Path, tmp_path: Path):
+    lines = read_text_lines(fixtures / FIX)
+    lines.insert(4, " 01/22/2026, DIVIDEND RECEIVED APPLE INC (AAPL) (Cash), AAPL, APPLE INC, Cash, , 0, , , , 2.50, 1352.49, ")
+    dst = tmp_path / "History_SampleBrokerage_2026.csv"
+    dst.write_text("\n".join(lines), encoding="utf-8")
+    row = [r for r in fh.parse(dst) if r.trade_date == "2026-01-22"][0]
+    assert row.units is None and row.amount == 2.5     # matches the SnapTrade adapter, so cross-source dedupe keys agree

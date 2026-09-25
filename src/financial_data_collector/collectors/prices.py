@@ -16,6 +16,9 @@ from ..symbols import to_tiingo, to_yfinance
 
 TIINGO_URL = "https://api.tiingo.com/tiingo/daily/{sym}/prices?startDate={start}&columns=date,close,adjClose,divCash,splitFactor"
 TIINGO_PAUSE_SECONDS = 0.5
+# Re-fetch this many trailing days every run so a partial intraday bar stored by a
+# daytime run is overwritten by the real close later (write_prices upserts).
+REFRESH_DAYS = 5
 
 
 @dataclass
@@ -24,11 +27,12 @@ class PriceResult:
     source: str | None
     rows: int
     message: str = ""
+    failed: bool = False  # a provider raised (not a 404 / empty answer)
 
 
 def next_start(last_date: str | None, today: date, lookback_years: int) -> str:
     if last_date:
-        return (date.fromisoformat(last_date) + timedelta(days=1)).isoformat()
+        return (date.fromisoformat(last_date) - timedelta(days=REFRESH_DAYS)).isoformat()
     try:
         return today.replace(year=today.year - lookback_years).isoformat()
     except ValueError:  # Feb 29
@@ -95,12 +99,17 @@ def collect_prices(
         bars: list[PriceBar] = []
         source: str | None = None
         notes: list[str] = []
+        failed = False
         if cfg.tiingo_token:
             try:
                 bars = tiingo_bars(symbol, start, cfg.tiingo_token, fetch)
                 source = "tiingo" if bars else None
-            except (HttpError, ValueError, json.JSONDecodeError) as e:
+            except HttpError as e:
                 notes.append(f"tiingo: {e}")
+                failed = failed or e.status != 404  # a 404 is "unknown symbol", not an outage
+            except (ValueError, json.JSONDecodeError) as e:
+                notes.append(f"tiingo: {e}")
+                failed = True
             sleep(TIINGO_PAUSE_SECONDS)
         if not bars:
             try:
@@ -108,9 +117,12 @@ def collect_prices(
                 source = "yfinance" if bars else None
             except Exception as e:  # yfinance raises many types; a symbol miss must not stop the run
                 notes.append(f"yfinance: {type(e).__name__}: {e}")
+                failed = True
         if bars and source:
             n = store.write_prices(symbol, bars, source)
             results.append(PriceResult(symbol, source, n, "; ".join(notes)))
+        elif failed:
+            results.append(PriceResult(symbol, None, 0, "; ".join(notes), failed=True))
         elif store.last_price_date(symbol):
             # history exists and nothing newer is published yet (e.g. a mutual fund before its NAV posts)
             results.append(PriceResult(symbol, None, 0, "no new bars"))

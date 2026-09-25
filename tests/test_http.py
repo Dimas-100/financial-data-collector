@@ -44,3 +44,25 @@ def test_gives_up_after_retries(monkeypatch):
     with pytest.raises(http.HttpError) as e:
         http.fetch("https://x/y", sleep=lambda s: None)
     assert e.value.status == 500 and len(fake.calls) == 3
+
+
+def test_connection_errors_retry_then_raise_http_error(monkeypatch):
+    import requests as rq
+    calls = []
+
+    def flaky(url, headers=None, timeout=None):
+        calls.append(url)
+        if len(calls) < 3:
+            raise rq.ConnectionError("boom")
+        return _Resp(200)
+
+    monkeypatch.setattr(http.requests, "get", flaky)
+    assert http.fetch("https://x/y", sleep=lambda s: None) == b"ok" and len(calls) == 3
+
+    def dead(url, headers=None, timeout=None):
+        raise rq.ReadTimeout("slow")
+
+    monkeypatch.setattr(http.requests, "get", dead)
+    with pytest.raises(http.HttpError) as e:
+        http.fetch("https://x/y", sleep=lambda s: None)
+    assert e.value.status == 0 and "ReadTimeout" in str(e.value)

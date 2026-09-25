@@ -5,7 +5,8 @@ each day, what it is worth, every transaction, daily prices, and the full as-rep
 statements of every company you own, so you can analyze it with SQL, pandas, or Claude.
 
 - **Free.** SQLite (in Python), SEC EDGAR (no key), yfinance (no key) or Tiingo (free key).
-- **Local.** One file, `data/warehouse.db`. Nothing leaves your machine.
+- **Local.** One file, `data/warehouse.db`. Your positions never leave your machine; the only
+  outbound calls are price and filing lookups for your symbols (and SEC sees the contact line you set).
 - **Yours.** Drop a Fidelity "Portfolio Positions" export in `inbox/` and run `fdc sync`.
 - **History that accumulates.** Positions are stored per day; SEC facts keep every filing's value, so
   you can see what a company reported at the time and how it was restated.
@@ -52,7 +53,8 @@ fdc query --csv "select * from financials_annual where symbol='AAPL'" > aapl.csv
 | `sync_runs`, `sync_status` | what ran, when, and whether it worked |
 
 Quarterly cash-flow items are computed from year-to-date filings where companies only report
-year-to-date; fourth quarters are derived from the full year. Such rows are flagged `is_derived_q4`.
+year-to-date; fourth quarters are derived from the full year. A quarterly row whose line items include
+any computed value carries `has_derived_items = 1`; `financial_line_items.is_derived` says which ones.
 Funds (ETFs, mutual funds) get positions and prices only; they file no statements.
 
 See `docs/QUERIES.md` for a cookbook.

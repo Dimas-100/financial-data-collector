@@ -31,7 +31,7 @@ def test_local_time_never_used(fixtures: Path, tmp_path: Path):
 
 def test_parse_activity(fixtures: Path):
     rows = st.parse_activity(fixtures / "snaptrade" / "live-activity.json")
-    assert [r.type for r in rows] == ["buy", "dividend", "reinvest", "contribution", "sell", "other"]
+    assert [r.type for r in rows] == ["buy", "dividend", "reinvest", "contribution", "sell", "fee"]
     buy = rows[0]
     assert (buy.trade_date, buy.settlement_date, buy.symbol) == ("2026-01-05", "2026-01-07", "AAPL")
     assert (buy.units, buy.price, buy.amount, buy.fee) == (10.0, 100.0, -1000.0, 0.0)

@@ -68,6 +68,6 @@ def test_wide_financial_views(store: Store, fixtures: Path):
     assert abs(a["fcf_margin"] - 210 / 1100) < 1e-9 and a["total_assets"] == 5500.0 and a["eps_diluted"] == 2.0
     q = {r["period_end"]: r for r in store.query("SELECT * FROM financials_quarterly WHERE fiscal_year = 2025")}
     assert [q[e]["revenue"] for e in sorted(q)] == [260.0, 270.0, 280.0, 290.0]
-    assert q["2025-06-30"]["ocf"] == 60.0 and q["2025-06-30"]["is_derived_q4"] == 1
-    assert q["2025-03-31"]["is_derived_q4"] == 0 and q["2025-03-31"]["fiscal_quarter"] == 1
+    assert q["2025-06-30"]["ocf"] == 60.0 and q["2025-06-30"]["has_derived_items"] == 1
+    assert q["2025-03-31"]["has_derived_items"] == 0 and q["2025-03-31"]["fiscal_quarter"] == 1
     assert q["2025-12-31"]["total_assets"] == 5500.0 and q["2025-12-31"]["gross_margin"] is None

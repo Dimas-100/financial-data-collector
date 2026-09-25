@@ -34,6 +34,8 @@ _ACTION_TYPES: tuple[tuple[str, str], ...] = (
 )
 _FILENAME_ACCOUNT = re.compile(r"^History_([^_]+)_")
 _DATE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
+# Fidelity account numbers look like one letter + 8-9 digits and can appear in transfer actions.
+_ACCOUNT_NUMBER = re.compile(r"\b[A-Z]\d{8,9}\b")
 
 
 class AccountUnknown(ValueError):
@@ -49,12 +51,20 @@ def detect(lines: list[str]) -> bool:
     return any(_is_header(l) for l in lines[:10])
 
 
-def classify_action(action: str) -> str:
+def classify_action(action: str, units: float | None = None) -> str:
     u = (action or "").strip().upper()
+    if u.startswith("EXCHANGE"):  # fund exchange: shares in (buy) or out (sell) of this fund
+        if units:
+            return "buy" if units > 0 else "sell"
+        return "other"
     for prefix, kind in _ACTION_TYPES:
         if u.startswith(prefix):
             return kind
     return "other"
+
+
+def scrub_account_numbers(text: str) -> str:
+    return _ACCOUNT_NUMBER.sub("<acct>", text or "")
 
 
 def account_from_filename(path: Path) -> str | None:
@@ -108,16 +118,17 @@ def parse(path: Path, account: str | None = None) -> list[TransactionRow]:
         commission = clean_number(row.get("Commission ($)"))
         fees = clean_number(row.get("Fees ($)"))
         fee = None if commission is None and fees is None else (commission or 0.0) + (fees or 0.0)
+        units = clean_number(row.get("Quantity")) or None  # Fidelity writes 0 on cash-only rows; store NULL like SnapTrade
         rows.append(TransactionRow(
             account=_account(label),
             trade_date=date,
-            type=classify_action(action),
+            type=classify_action(action, units),
             symbol=canonical(symbol_raw) or None,
-            units=clean_number(row.get("Quantity")),
+            units=units,
             price=clean_number(row.get("Price ($)")),
             amount=clean_number(row.get("Amount ($)")),
             fee=fee,
-            description=action,
+            description=scrub_account_numbers(action),
             source=SOURCE,
             settlement_date=_iso(row.get("Settlement Date")),
         ))

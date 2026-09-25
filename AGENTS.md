@@ -44,7 +44,7 @@ src/financial_data_collector/
 - `positions_latest`, `holdings_history`, `account_values_daily`, `portfolio_daily` (household total plus `fidelity_total`)
 - `prices` (symbol, date, close, adj_close, dividend, split_factor)
 - `transactions` (typed: buy, sell, dividend, reinvest, contribution, withdrawal, interest, fee, transfer, other)
-- `financials_annual`, `financials_quarterly` (one wide row per company per period; `is_derived_q4` marks computed quarters)
+- `financials_annual`, `financials_quarterly` (one wide row per company per period; `has_derived_items` marks rows with computed values, `financial_line_items.is_derived` says which)
 - `sec_facts` (raw XBRL, every filing's value for every period), `financial_line_items` (shaped), `concept_map`
 - `sync_status` / `sync_runs`, `ingested_files`, `securities`, `accounts`
 

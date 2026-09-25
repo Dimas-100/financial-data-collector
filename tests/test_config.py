@@ -53,3 +53,8 @@ def test_process_env_overrides_dotenv(tmp_path: Path, monkeypatch):
     (tmp_path / ".env").write_text("TIINGO_API_TOKEN=fromfile\n")
     monkeypatch.setenv("TIINGO_API_TOKEN", "fromenv")
     assert C.load_config(tmp_path).tiingo_token == "fromenv"
+
+
+def test_placeholder_user_agent_counts_as_unset(tmp_path: Path):
+    C.init_project(tmp_path)                       # .env holds the example placeholder
+    assert C.load_config(tmp_path).sec_user_agent is None

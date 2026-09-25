@@ -11,8 +11,10 @@ _RETRY_STATUSES = {403, 429}
 
 
 class HttpError(Exception):
-    def __init__(self, status: int, url: str):
-        super().__init__(f"HTTP {status} for {url}")
+    """A non-200 answer, or (status 0) a transport failure after retries."""
+
+    def __init__(self, status: int, url: str, detail: str | None = None):
+        super().__init__(f"{detail or f'HTTP {status}'} for {url}")
         self.status = status
         self.url = url
 
@@ -28,7 +30,13 @@ def fetch(
     """GET url. Retries 403/429/5xx with 1s/2s/4s backoff; 404 and other 4xx are final."""
     last: HttpError | None = None
     for attempt in range(retries):
-        resp = requests.get(url, headers=headers, timeout=timeout)
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+        except requests.RequestException as e:  # DNS, connection reset, read timeout: retry like a 5xx
+            last = HttpError(0, url, f"{type(e).__name__}: {e}")
+            if attempt < retries - 1:
+                sleep(2 ** attempt)
+            continue
         status = resp.status_code
         if status == 200:
             return resp.content

@@ -116,12 +116,42 @@ class Store:
             self.conn.execute("UPDATE securities SET asset_type = ? WHERE symbol = ?", (asset_type, symbol))
 
     # ---- positions / cash / transactions --------------------------------
+    def _stale_accounts(self, snap: Snapshot) -> set[int]:
+        """Account ids in this snapshot that already hold a NEWER same-day, same-source snapshot.
+
+        A snapshot is a full statement of an account on that day, so for every
+        other account the older same-source rows are deleted first (a position sold
+        between two same-day exports must not linger), and rows of a newer export
+        are never overwritten by an older one arriving late.
+        """
+        refs = {p.account for p in snap.positions} | {c.account for c in snap.cash}
+        stale: set[int] = set()
+        for ref in refs:
+            aid = self._account_id(ref, snap.as_of_date)
+            newest = self.conn.execute(
+                "SELECT MAX(source_fetched_at) FROM position_snapshots "
+                "WHERE as_of_date = ? AND account_id = ? AND source = ?",
+                (snap.as_of_date, aid, snap.source),
+            ).fetchone()[0]
+            if newest and snap.fetched_at and snap.fetched_at < newest:
+                stale.add(aid)
+                continue
+            self.conn.execute(
+                "DELETE FROM position_snapshots WHERE as_of_date = ? AND account_id = ? AND source = ?",
+                (snap.as_of_date, aid, snap.source),
+            )
+        return stale
+
     def write_snapshot(self, snap: Snapshot) -> int:
         n = 0
         with self.conn:
+            stale = self._stale_accounts(snap)
             for p in snap.positions:
                 aid = self._account_id(p.account, snap.as_of_date)
-                self._ensure_security(p.symbol, p.description, None, snap.as_of_date)
+                if aid in stale:
+                    continue
+                asset_type = "crypto" if p.account.account_type == "crypto" else None
+                self._ensure_security(p.symbol, p.description, asset_type, snap.as_of_date)
                 self.conn.execute(
                     """INSERT INTO position_snapshots
                        (as_of_date, account_id, symbol, quantity, price, market_value, cost_basis_total,
@@ -138,6 +168,8 @@ class Store:
                 n += 1
             for c in snap.cash:
                 aid = self._account_id(c.account, snap.as_of_date)
+                if aid in stale:
+                    continue
                 self.conn.execute(
                     """INSERT INTO cash_balances (as_of_date, account_id, currency, amount, source)
                        VALUES (?,?,?,?,?)
@@ -152,6 +184,18 @@ class Store:
         row = self.conn.execute("SELECT MAX(as_of_date) FROM position_snapshots").fetchone()
         return row[0] if row else None
 
+    def _seen_from_other_source(self, aid: int, r: TransactionRow) -> bool:
+        """The same trade already stored from a different source (fee rounding may shift the amount a cent)."""
+        row = self.conn.execute(
+            """SELECT 1 FROM transactions
+               WHERE account_id = ? AND trade_date = ? AND type = ? AND source != ?
+                 AND COALESCE(symbol, '') = ? AND COALESCE(units, 0) = ?
+                 AND ABS(COALESCE(amount, 0) - ?) <= 0.02
+               LIMIT 1""",
+            (aid, r.trade_date, r.type, r.source, r.symbol or "", r.units or 0, r.amount or 0),
+        ).fetchone()
+        return row is not None
+
     def write_transactions(self, rows: Iterable[TransactionRow]) -> int:
         n = 0
         with self.conn:
@@ -159,6 +203,8 @@ class Store:
                 aid = self._account_id(r.account, r.trade_date)
                 if r.symbol:
                     self._ensure_security(r.symbol, None, None, r.trade_date)
+                if self._seen_from_other_source(aid, r):
+                    continue
                 key = dedupe_key(r.account.label, r.trade_date, r.type, r.symbol, r.units, r.amount)
                 cur = self.conn.execute(
                     """INSERT OR IGNORE INTO transactions

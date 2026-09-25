@@ -19,7 +19,7 @@ TIINGO_AAPL = [
 
 def test_next_start():
     assert P.next_start(None, date(2026, 1, 15), 5) == "2021-01-15"
-    assert P.next_start("2026-01-10", date(2026, 1, 15), 5) == "2026-01-11"
+    assert P.next_start("2026-01-10", date(2026, 1, 15), 5) == "2026-01-05"     # re-fetch the trailing window so partial bars get corrected
 
 
 def test_tiingo_bars_parses_and_sends_token():
@@ -51,7 +51,7 @@ def test_collect_prices_fallback_and_no_data(cfg, tmp_path: Path):
 
     def fetch(url, headers):
         if "/AAPL/" in url:
-            assert "startDate=2026-01-02" in url          # incremental from last stored + 1
+            assert "startDate=2025-12-27" in url          # last stored 2026-01-01 minus the 5-day refresh window
             return json.dumps(TIINGO_AAPL).encode()
         raise HttpError(404, url)
 
@@ -70,13 +70,14 @@ def test_collect_prices_fallback_and_no_data(cfg, tmp_path: Path):
     store.close()
 
 
-def test_collect_prices_skips_up_to_date(cfg):
+def test_collect_prices_refetches_trailing_window(cfg):
     store = Store.open(cfg.db_path)
     store.upsert_security("AAPL", first_seen="2026-01-01")
     store.write_prices("AAPL", [PriceBar("2026-01-15", 99.0, 99.0)], "tiingo")
     calls = []
-    results = P.collect_prices(store, ["AAPL"], cfg, fetch=lambda u, h: calls.append(u), today=date(2026, 1, 15), yf=lambda s, d: [], sleep=lambda s: None)
-    assert calls == [] and results[0].message == "up to date"
+    results = P.collect_prices(store, ["AAPL"], cfg, fetch=lambda u, h: calls.append(u) or b"[]", today=date(2026, 1, 15), yf=lambda s, d: [], sleep=lambda s: None)
+    assert len(calls) == 1 and "startDate=2026-01-10" in calls[0]
+    assert results[0].message == "no new bars" and results[0].failed is False
     store.close()
 
 
@@ -96,4 +97,21 @@ def test_collect_prices_reports_no_new_bars_when_history_exists(cfg):
     store.write_prices("AAPL", [PriceBar("2026-01-13", 99.0, 99.0)], "tiingo")
     results = P.collect_prices(store, ["AAPL"], cfg, fetch=lambda u, h: b"[]", today=date(2026, 1, 15), yf=lambda s, d: [], sleep=lambda s: None)
     assert results[0].rows == 0 and results[0].message == "no new bars"
+    store.close()
+
+
+def test_provider_errors_mark_result_failed(cfg):
+    store = Store.open(cfg.db_path)
+    store.upsert_security("AAPL", first_seen="2026-01-01")
+
+    def boom(url, headers):
+        raise HttpError(503, url)
+
+    def yf_boom(symbol, start):
+        raise RuntimeError("rate limited")
+
+    r = P.collect_prices(store, ["AAPL"], cfg, fetch=boom, today=date(2026, 1, 15), yf=yf_boom, sleep=lambda s: None)[0]
+    assert r.rows == 0 and r.failed is True and "503" in r.message and "rate limited" in r.message
+    r2 = P.collect_prices(store, ["AAPL"], cfg, fetch=lambda u, h: b"[]", today=date(2026, 1, 15), yf=lambda s, d: [], sleep=lambda s: None)[0]
+    assert r2.failed is False and "no bars" in r2.message
     store.close()

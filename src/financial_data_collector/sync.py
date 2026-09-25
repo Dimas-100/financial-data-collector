@@ -61,17 +61,22 @@ def _step_ingest(store: Store, cfg: Config, **_) -> tuple[int, str, str]:
 
 
 def _step_prices(store: Store, cfg: Config, *, fetch, now, yf, sleep) -> tuple[int, str, str]:
-    universe = build_universe(store, cfg.watchlist)
+    universe = build_universe(store, cfg.watchlist, classify=cfg.classify)
     kwargs = {"fetch": fetch, "today": now.date(), "sleep": sleep}
     if yf is not None:
         kwargs["yf"] = yf
     results = prices_mod.collect_prices(store, universe, cfg, **kwargs)
     updated = [r for r in results if r.rows > 0]
-    nodata = [r for r in results if r.rows == 0 and r.message not in ("up to date", "no new bars")]
+    failed = [r for r in results if r.failed]
+    nodata = [r for r in results if r.rows == 0 and not r.failed and r.message not in ("up to date", "no new bars")]
     msg = f"{len(updated)} symbols updated"
     if nodata:
         msg += f", {len(nodata)} without data: " + ", ".join(f"{r.symbol} ({r.message})" for r in nodata)
-    status = "error" if results and not updated and nodata else "ok"
+    if failed:
+        msg += f", {len(failed)} failed: " + ", ".join(f"{r.symbol} ({r.message})" for r in failed)
+    # Only an outage is an error: every symbol hit a provider failure. Quiet mornings
+    # ("no new bars") and unknown tickers ("no bars from any provider") are informational.
+    status = "error" if results and all(r.failed for r in results) else "ok"
     return sum(r.rows for r in results), msg, status
 
 

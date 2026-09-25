@@ -99,3 +99,22 @@ def test_network_down_exit_code(project):
     assert by["ingest"].status == "ok"
     assert by["prices"].status == "error" and by["sec"].status == "error"
     assert rep.exit_code == 1
+
+
+def test_quiet_morning_with_dead_symbol_is_ok(project, fixtures: Path):
+    sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    s = Store.open(project.db_path, migrate=False)
+    s.upsert_security("DEAD", first_seen="2026-01-01")
+    s.close()
+
+    def quiet(url, headers):
+        if url == sec_cik.CIK_URL:
+            return (fixtures / "sec" / "company_tickers.json").read_bytes()
+        if "tiingo" in url:
+            return b"[]"
+        raise HttpError(404, url)
+
+    rep = sync.run_sync(project, only=["prices"], fetch=quiet, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    step = rep.steps[0]
+    assert step.status == "ok", step
+    assert "no new bars" not in step.message and "DEAD" in step.message
