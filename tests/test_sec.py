@@ -45,7 +45,7 @@ def test_load_cik_map_caches(fixtures: Path, tmp_path: Path):
 def test_parse_company_facts(fixtures: Path):
     data = json.loads((fixtures / "sec" / "companyfacts_SAMPLE.json").read_text())
     facts = sec_facts.parse_company_facts(data)
-    assert len(facts) == 34
+    assert len(facts) == 35
     assets = [f for f in facts if f.concept == "Assets"]
     assert all(f.period_start == "" and f.taxonomy == "us-gaap" and f.unit == "USD" for f in assets)
     rev = [f for f in facts if f.concept == "Revenues" and f.frame == "CY2025"][0]
@@ -79,11 +79,11 @@ def test_collect_sec_end_to_end_with_stub_rebuild(project, fixtures: Path):
 
     results = sec_facts.collect_sec(store, cfg, fetch=fetch, now=NOW, rebuild=rebuild, sleep=lambda s: None)
     by = {r.symbol: r for r in results}
-    assert by["AAPL"].cik == "0000000001" and by["AAPL"].facts == 34
-    assert rebuilt == [34]
+    assert by["AAPL"].cik == "0000000001" and by["AAPL"].facts == 35
+    assert rebuilt == [35]
     row = store.query("SELECT cik, sec_name, asset_type, last_sec_fetch FROM securities WHERE symbol='AAPL'")[0]
     assert tuple(row)[:3] == ("0000000001", "Sample Corp", "stock") and row[3].startswith("2026-03-01")
-    assert store.query("SELECT COUNT(*) FROM sec_facts")[0][0] == 34
+    assert store.query("SELECT COUNT(*) FROM sec_facts")[0][0] == 35
     assert store.query("SELECT cik FROM securities WHERE symbol='ZZZZ'")[0][0] is None
     assert "no CIK" in by["ZZZZ"].message
     assert "VTI" not in by and "SPAXX" not in by                  # funds never hit EDGAR
