@@ -50,12 +50,20 @@ fdc query --csv "select * from financials_annual where symbol='AAPL'" > aapl.csv
 | `financial_line_items` | those facts shaped into income statement, balance sheet and cash-flow line items, annual and quarterly |
 | `financials_annual`, `financials_quarterly` | one wide row per company per period, with margins and free cash flow |
 | `positions_latest`, `holdings_history`, `account_values_daily`, `portfolio_daily` | the shapes most questions start from |
+| `financials_ttm`, `valuation_daily`, `valuation_latest` | trailing-twelve-month statements and daily P/E, P/S, P/FCF, market cap and yield, using only filings available on each date |
+| `holdings_daily`, `cash_daily`, `portfolio_daily_full` | the portfolio replayed from your first transaction, re-anchored on every real snapshot (`basis` tells you which) |
+| `lots`, `realized_gains`, `reconciliation` | FIFO cost-basis lots, gains per sale, and dates where the replay disagrees with a snapshot (splits, missing rows) |
 | `sync_runs`, `sync_status` | what ran, when, and whether it worked |
 
 Quarterly cash-flow items are computed from year-to-date filings where companies only report
 year-to-date; fourth quarters are derived from the full year. A quarterly row whose line items include
 any computed value carries `has_derived_items = 1`; `financial_line_items.is_derived` says which ones.
 Funds (ETFs, mutual funds) get positions and prices only; they file no statements.
+
+Replayed history before your first snapshot assumes the transaction history starts at account opening; for an
+account with a partial history (a broker feed that only goes back a year) treat `reconstructed` cash as approximate.
+Stock splits are not applied during replay; `reconciliation` shows where units drift, and every real snapshot
+re-anchors the series.
 
 See `docs/QUERIES.md` for a cookbook.
 
@@ -81,6 +89,11 @@ Claude Code needs no setup: the database is a file, and `fdc query` works from t
 
 Logs go to `%LOCALAPPDATA%\financial-data-collector\sync.log`. On macOS/Linux use cron or launchd
 to run `fdc --root /path/to/repo sync`.
+
+## Feeding another app
+
+`fdc export --dir <folder>` writes `prices.json`, `dividends.json` and `fundamentals.json` (the shapes the
+investing cockpit in this warehouse reads). Set `[export.cockpit]` in `config.toml` to do it on every sync.
 
 ## Other brokers and sources
 

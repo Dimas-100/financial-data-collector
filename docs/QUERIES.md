@@ -69,6 +69,33 @@ JOIN holdings_history h ON h.symbol = q.symbol
 WHERE q.symbol = 'AAPL' ORDER BY q.period_end;
 ```
 
+## Valuation and history
+
+```sql
+-- what each holding trades at right now
+SELECT symbol, date, close, pe, ps, p_fcf, dividend_yield, market_cap FROM valuation_latest ORDER BY pe;
+
+-- P/E over time for one name (only filings available on each date are used)
+SELECT date, close, eps_ttm, pe, ttm_period_end FROM valuation_daily WHERE symbol = 'AAPL' ORDER BY date;
+
+-- the full curve, including days before snapshots existed (basis tells you which)
+SELECT as_of_date, total, fidelity_total, basis FROM portfolio_daily_full ORDER BY as_of_date;
+
+-- realized gains by year
+SELECT substr(sell_date, 1, 4) AS year, SUM(gain) AS gain, SUM(cost_known = 0) AS sales_with_unknown_cost
+FROM realized_gains GROUP BY 1 ORDER BY 1;
+
+-- open lots and their unrealized gain at the latest close
+SELECT l.symbol, l.open_date, l.units_left, l.cost_per_unit, v.close, (v.close - l.cost_per_unit) * l.units_left AS unrealized
+FROM lots l JOIN valuation_latest v ON v.symbol = l.symbol WHERE l.units_left > 0 ORDER BY l.symbol, l.open_date;
+
+-- where the replay disagrees with a real snapshot (splits, missing transactions)
+SELECT * FROM reconciliation ORDER BY as_of_date;
+```
+
+Note: `adj_close` is adjusted as of each fetch and is not re-adjusted retroactively; recompute total return from
+`dividend` and `split_factor` when a split has happened since the first fetch.
+
 ## Health
 
 ```sql

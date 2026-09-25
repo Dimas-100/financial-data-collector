@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "financial-data-collector"
-version = "0.1.0"
+version = "0.2.0"
 description = "Free, local SQLite warehouse for your brokerage positions, prices and SEC financial statements"
 readme = "README.md"
 requires-python = ">=3.11"
