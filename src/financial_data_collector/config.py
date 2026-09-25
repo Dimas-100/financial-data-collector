@@ -26,6 +26,13 @@ max_age_hours = 24                 # refetch a company's facts at most this ofte
 enabled = true                     # owner-only: investing's SnapTrade export. Ignored if dir is missing.
 dir = "../investing/fidelity/dashboard-data"
 
+[sources.investing]
+content_dir = "../investing"       # owner-only: theses/ + watchlist/ frontmatter tickers and basket.txt join the universe. Ignored if missing.
+
+[export.cockpit]
+enabled = false                    # write prices.json / dividends.json / fundamentals.json for the investing cockpit
+dir = "../investing/data"          # must already exist; never created
+
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto"
 # VXUS = "etf"
 """
@@ -58,6 +65,9 @@ class Config:
     classify: dict[str, str] = field(default_factory=dict)
     tiingo_token: str | None = None
     sec_user_agent: str | None = None
+    investing_dir: Path | None = None
+    export_cockpit: bool = False
+    export_dir: Path | None = None
 
 
 def init_project(root: Path) -> list[str]:
@@ -97,11 +107,16 @@ def load_config(root: Path) -> Config:
     paths = raw.get("paths", {})
     prices = raw.get("prices", {})
     sec = raw.get("sec", {})
-    snap = raw.get("sources", {}).get("snaptrade", {})
+    sources = raw.get("sources", {})
+    snap = sources.get("snaptrade", {})
+    investing = sources.get("investing", {})
+    export = raw.get("export", {}).get("cockpit", {})
     db_path = (root / paths.get("db", "data/warehouse.db")).resolve()
     inbox = (root / paths.get("inbox", "inbox")).resolve()
     dotenv = dotenv_values(root / ".env") if (root / ".env").is_file() else {}
     snap_dir = snap.get("dir", "../investing/fidelity/dashboard-data")
+    investing_dir = investing.get("content_dir", "../investing")
+    export_dir = export.get("dir", "../investing/data")
     return Config(
         root=root,
         db_path=db_path,
@@ -117,4 +132,7 @@ def load_config(root: Path) -> Config:
         classify={str(k).upper(): str(v) for k, v in raw.get("classify", {}).items()},
         tiingo_token=_secret("TIINGO_API_TOKEN", dotenv),
         sec_user_agent=_secret("SEC_USER_AGENT", dotenv),
+        investing_dir=(root / investing_dir).resolve() if investing_dir else None,
+        export_cockpit=bool(export.get("enabled", False)),
+        export_dir=(root / export_dir).resolve() if export_dir else None,
     )

@@ -100,6 +100,10 @@ def rebuild_wide_views(conn: sqlite3.Connection) -> None:
     CASE WHEN revenue > 0 THEN operating_income * 1.0 / revenue END AS operating_margin,
     CASE WHEN revenue > 0 THEN net_income * 1.0 / revenue END AS net_margin,
     CASE WHEN revenue > 0 THEN (ocf - capex) * 1.0 / revenue END AS fcf_margin"""
+    head = """SELECT
+  (SELECT MIN(symbol) FROM securities s WHERE s.cik = base.cik) AS symbol,
+  (SELECT MIN(sec_name) FROM securities s WHERE s.cik = base.cik) AS company,
+  base.*,"""
     for view, kind in (("financials_annual", "annual"), ("financials_quarterly", "quarter")):
         sql = f"""
 CREATE VIEW {view} AS
@@ -114,12 +118,27 @@ WITH base AS (
   WHERE period_kind = '{kind}'
   GROUP BY cik, period_end
 )
-SELECT
-  (SELECT MIN(symbol) FROM securities s WHERE s.cik = base.cik) AS symbol,
-  (SELECT MIN(sec_name) FROM securities s WHERE s.cik = base.cik) AS company,
-  base.*,{derived}
+{head}{derived}
 FROM base
 ORDER BY cik, period_end"""
         with conn:
             conn.execute(f"DROP VIEW IF EXISTS {view}")
+            conn.execute(sql)
+    # Trailing twelve months, only once the TTM long view exists (migration 0003).
+    has_ttm = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'financial_line_items_ttm'").fetchone()
+    if has_ttm:
+        sql = f"""
+CREATE VIEW financials_ttm AS
+WITH base AS (
+  SELECT cik, period_end,
+    MAX(available_from) AS available_from,
+{pivot}
+  FROM financial_line_items_ttm
+  GROUP BY cik, period_end
+)
+{head}{derived}
+FROM base
+ORDER BY cik, period_end"""
+        with conn:
+            conn.execute("DROP VIEW IF EXISTS financials_ttm")
             conn.execute(sql)

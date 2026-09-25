@@ -16,5 +16,12 @@ max_age_hours = 24                 # refetch a company's facts at most this ofte
 enabled = true                     # owner-only: investing's SnapTrade export. Ignored if dir is missing.
 dir = "../investing/fidelity/dashboard-data"
 
+[sources.investing]
+content_dir = "../investing"       # owner-only: theses/ + watchlist/ frontmatter tickers and basket.txt join the universe. Ignored if missing.
+
+[export.cockpit]
+enabled = false                    # write prices.json / dividends.json / fundamentals.json for the investing cockpit
+dir = "../investing/data"          # must already exist; never created
+
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto"
 # VXUS = "etf"
