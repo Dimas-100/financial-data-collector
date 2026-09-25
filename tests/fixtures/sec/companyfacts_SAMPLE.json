@@ -1,0 +1,61 @@
+{
+  "cik": 1,
+  "entityName": "Sample Corp",
+  "facts": {
+    "dei": {
+      "EntityCommonStockSharesOutstanding": {"units": {"shares": [
+        {"end": "2026-01-20", "val": 1000, "accn": "k25", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01", "frame": "CY2025Q4I"}
+      ]}}
+    },
+    "us-gaap": {
+      "Revenues": {"units": {"USD": [
+        {"start": "2023-01-01", "end": "2023-12-31", "val": 900, "accn": "k24", "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-01"},
+        {"start": "2024-01-01", "end": "2024-12-31", "val": 1000, "accn": "k24", "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-01", "frame": "CY2024"},
+        {"start": "2024-10-01", "end": "2024-12-31", "val": 280, "accn": "k24", "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-01", "frame": "CY2024Q4"},
+        {"start": "2024-01-01", "end": "2024-03-31", "val": 230, "accn": "q125", "fy": 2025, "fp": "Q1", "form": "10-Q", "filed": "2025-05-01"},
+        {"start": "2025-01-01", "end": "2025-03-31", "val": 260, "accn": "q125", "fy": 2025, "fp": "Q1", "form": "10-Q", "filed": "2025-05-01", "frame": "CY2025Q1"},
+        {"start": "2024-04-01", "end": "2024-06-30", "val": 240, "accn": "q225", "fy": 2025, "fp": "Q2", "form": "10-Q", "filed": "2025-08-01"},
+        {"start": "2024-01-01", "end": "2024-06-30", "val": 470, "accn": "q225", "fy": 2025, "fp": "Q2", "form": "10-Q", "filed": "2025-08-01"},
+        {"start": "2025-04-01", "end": "2025-06-30", "val": 270, "accn": "q225", "fy": 2025, "fp": "Q2", "form": "10-Q", "filed": "2025-08-01", "frame": "CY2025Q2"},
+        {"start": "2025-01-01", "end": "2025-06-30", "val": 530, "accn": "q225", "fy": 2025, "fp": "Q2", "form": "10-Q", "filed": "2025-08-01"},
+        {"start": "2024-07-01", "end": "2024-09-30", "val": 250, "accn": "q325", "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-11-01"},
+        {"start": "2024-01-01", "end": "2024-09-30", "val": 720, "accn": "q325", "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-11-01"},
+        {"start": "2025-07-01", "end": "2025-09-30", "val": 280, "accn": "q325", "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-11-01", "frame": "CY2025Q3"},
+        {"start": "2025-01-01", "end": "2025-09-30", "val": 810, "accn": "q325", "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-11-01"},
+        {"start": "2024-01-01", "end": "2024-12-31", "val": 1010, "accn": "k25", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01"},
+        {"start": "2025-01-01", "end": "2025-12-31", "val": 1100, "accn": "k25", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01", "frame": "CY2025"},
+        {"start": "2025-10-01", "end": "2025-12-31", "val": 290, "accn": "k25", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01", "frame": "CY2025Q4"}
+      ]}},
+      "NetCashProvidedByUsedInOperatingActivities": {"units": {"USD": [
+        {"start": "2024-01-01", "end": "2024-12-31", "val": 200, "accn": "k24", "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-01"},
+        {"start": "2025-01-01", "end": "2025-03-31", "val": 50, "accn": "q125", "fy": 2025, "fp": "Q1", "form": "10-Q", "filed": "2025-05-01"},
+        {"start": "2025-01-01", "end": "2025-06-30", "val": 110, "accn": "q225", "fy": 2025, "fp": "Q2", "form": "10-Q", "filed": "2025-08-01"},
+        {"start": "2025-01-01", "end": "2025-09-30", "val": 180, "accn": "q325", "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-11-01"},
+        {"start": "2025-01-01", "end": "2025-12-31", "val": 250, "accn": "k25", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01"}
+      ]}},
+      "PaymentsToAcquirePropertyPlantAndEquipment": {"units": {"USD": [
+        {"start": "2025-01-01", "end": "2025-12-31", "val": 40, "accn": "k25", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01"}
+      ]}},
+      "Assets": {"units": {"USD": [
+        {"end": "2024-12-31", "val": 5000, "accn": "k24", "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-01"},
+        {"end": "2025-03-31", "val": 5100, "accn": "q125", "fy": 2025, "fp": "Q1", "form": "10-Q", "filed": "2025-05-01"},
+        {"end": "2025-06-30", "val": 5200, "accn": "q225", "fy": 2025, "fp": "Q2", "form": "10-Q", "filed": "2025-08-01"},
+        {"end": "2025-09-30", "val": 5300, "accn": "q325", "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-11-01"},
+        {"end": "2024-12-31", "val": 5050, "accn": "k25", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01"},
+        {"end": "2025-12-31", "val": 5500, "accn": "k25", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01"}
+      ]}},
+      "CommonStockSharesOutstanding": {"units": {"shares": [
+        {"end": "2025-12-31", "val": 990, "accn": "k25", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01"}
+      ]}},
+      "EarningsPerShareDiluted": {"units": {"USD/shares": [
+        {"start": "2025-01-01", "end": "2025-03-31", "val": 0.5, "accn": "q125", "fy": 2025, "fp": "Q1", "form": "10-Q", "filed": "2025-05-01"},
+        {"start": "2025-04-01", "end": "2025-06-30", "val": 0.5, "accn": "q225", "fy": 2025, "fp": "Q2", "form": "10-Q", "filed": "2025-08-01"},
+        {"start": "2025-07-01", "end": "2025-09-30", "val": 0.5, "accn": "q325", "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-11-01"},
+        {"start": "2025-01-01", "end": "2025-12-31", "val": 2.0, "accn": "k25", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01"}
+      ]}},
+      "OtherAssetsNoncurrent": {"units": {"USD": [
+        {"end": "2025-12-31", "val": 7, "accn": "k25", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01"}
+      ]}}
+    }
+  }
+}
