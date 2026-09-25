@@ -55,16 +55,21 @@ def _select_steps(only, skip) -> list[str]:
     return [s for s in STEPS if (not only or s in only) and s not in skip]
 
 
-def _step_ingest(store: Store, cfg: Config, **_) -> tuple[int, str, str]:
+Progress = Callable[[str], None]
+
+
+def _step_ingest(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple[int, str, str]:
+    progress("inbox")
     a = ingest_inbox(store, cfg)
+    progress("broker feed")
     b = ingest_snaptrade(store, cfg)
     msgs = a.messages + b.messages
     return a.rows + b.rows, "; ".join(msgs), "ok"
 
 
-def _step_prices(store: Store, cfg: Config, *, fetch, now, yf, sleep) -> tuple[int, str, str]:
+def _step_prices(store: Store, cfg: Config, *, fetch, now, yf, sleep, progress: Progress) -> tuple[int, str, str]:
     universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir)
-    kwargs = {"fetch": fetch, "today": now.date(), "sleep": sleep}
+    kwargs = {"fetch": fetch, "today": now.date(), "sleep": sleep, "progress": progress}
     if yf is not None:
         kwargs["yf"] = yf
     results = prices_mod.collect_prices(store, universe, cfg, **kwargs)
@@ -82,8 +87,8 @@ def _step_prices(store: Store, cfg: Config, *, fetch, now, yf, sleep) -> tuple[i
     return sum(r.rows for r in results), msg, status
 
 
-def _step_sec(store: Store, cfg: Config, *, fetch, now, sleep, **_) -> tuple[int, str, str]:
-    results = collect_sec(store, cfg, fetch=fetch, now=now, sleep=sleep)
+def _step_sec(store: Store, cfg: Config, *, fetch, now, sleep, progress: Progress, **_) -> tuple[int, str, str]:
+    results = collect_sec(store, cfg, fetch=fetch, now=now, sleep=sleep, progress=progress)
     fetched = [r for r in results if r.facts and not r.message]
     failed = [r for r in results if r.message.startswith("fetch failed")]
     fresh = [r for r in results if r.message == "fresh"]
@@ -97,12 +102,14 @@ def _step_sec(store: Store, cfg: Config, *, fetch, now, sleep, **_) -> tuple[int
     return sum(r.facts for r in results), msg, status
 
 
-def _step_derive(store: Store, cfg: Config, **_) -> tuple[int, str, str]:
+def _step_derive(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple[int, str, str]:
     # Statements are a function of the shaper and the concept map, not of the fetch:
     # reshape every company from its stored facts so a code or seed change applies everywhere.
     rules = store.concept_rules()
     reshaped, failed = 0, []
-    for cik in store.ciks_with_facts():
+    ciks = store.ciks_with_facts()
+    for i, cik in enumerate(ciks, start=1):
+        progress(f"statements {i}/{len(ciks)}")
         try:
             store.replace_line_items(cik, statements.rebuild(store.facts_for(cik), rules))
             reshaped += 1
@@ -111,14 +118,17 @@ def _step_derive(store: Store, cfg: Config, **_) -> tuple[int, str, str]:
     counts = {"statements reshaped": reshaped}
     if failed:
         counts[f"statements {len(failed)} failed: " + "; ".join(failed)[:300]] = len(failed)
+    progress("replaying history")
     counts.update(history.rebuild(store))
+    progress("valuation")
     counts["valuation_daily symbols"] = valuation.rebuild(store)
     return sum(counts.values()), ", ".join(f"{k} {v}" for k, v in counts.items()), "ok"
 
 
-def _step_export(store: Store, cfg: Config, *, now, **_) -> tuple[int, str, str]:
+def _step_export(store: Store, cfg: Config, *, now, progress: Progress, **_) -> tuple[int, str, str]:
     if not cfg.export_cockpit:
         return 0, "export.cockpit disabled in config.toml", "skipped"
+    progress("writing feed files")
     universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir)
     results = export_cockpit(store, cfg, universe, now)
     written = sum(1 for _, s in results if s == "written")
@@ -143,7 +153,9 @@ def run_sync(
     now: datetime | None = None,
     yf: Callable[[str, str], list[PriceBar]] | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    progress: Callable[[str, str], None] | None = None,
 ) -> SyncReport:
+    """Run the selected steps. `progress(step, detail)` is called as work advances (for a live display)."""
     now = now or datetime.now(timezone.utc)
     run_id = now.strftime("%Y%m%dT%H%M%SZ")
     steps = _select_steps(only, skip)
@@ -155,8 +167,15 @@ def run_sync(
     try:
         for step in steps:
             started = utcnow()
+
+            def report_progress(detail: str, _step: str = step) -> None:
+                if progress:
+                    progress(_step, detail)
+
+            report_progress("starting")
             try:
-                rows, message, status = _RUNNERS[step](store, cfg, fetch=fetch, now=now, yf=yf, sleep=sleep)
+                rows, message, status = _RUNNERS[step](store, cfg, fetch=fetch, now=now, yf=yf, sleep=sleep,
+                                                       progress=report_progress)
             except ConfigError as e:
                 rows, message, status = 0, str(e), "skipped"
             except Exception as e:  # isolate: log and continue with the next step

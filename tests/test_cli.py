@@ -85,4 +85,27 @@ def test_status_after_a_sync(tmp_path: Path, capsys):
     capsys.readouterr()
     assert cli.main(["--root", str(tmp_path), "status"]) == 0
     out = capsys.readouterr().out
-    assert "derive" in out and "export" in out and "holdings_daily=" in out
+    assert "derive" in out and "export" in out and "holdings_daily" in out
+
+
+def test_init_prints_next_steps_for_a_stranger(tmp_path: Path, capsys):
+    cli.main(["--root", str(tmp_path), "init"])
+    out = capsys.readouterr().out
+    assert "Next steps" in out and "SEC_USER_AGENT" in out and "inbox" in out and "fdc sync" in out
+    assert "SnapTrade" not in out and "investing" not in out          # owner-only sources are not mentioned on a fresh clone
+
+
+def test_status_renders_a_table_and_hints(tmp_path: Path, capsys):
+    cli.main(["--root", str(tmp_path), "init"])
+    capsys.readouterr()
+    cli.main(["--root", str(tmp_path), "status"])
+    out = capsys.readouterr().out
+    assert "step" in out and "status" in out and "never" in out
+    assert "hint" in out and "SEC_USER_AGENT" in out
+
+
+def test_config_error_is_one_line_with_a_hint(tmp_path: Path, capsys):
+    (tmp_path / "config.toml").write_text("[paths")   # broken TOML
+    assert cli.main(["--root", str(tmp_path), "status"]) == 2
+    err = capsys.readouterr().err
+    assert "error:" in err and "Traceback" not in err

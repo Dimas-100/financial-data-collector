@@ -110,6 +110,8 @@ the folder does not exist. Adding a broker means writing one adapter that return
 git ever tracks a database, a CSV outside the synthetic fixtures, or an env file. Account numbers in
 Fidelity exports are discarded on import and never stored.
 
+Output is colored and tabular in a terminal and plain text in logs and pipes; set `NO_COLOR=1` to force plain.
+
 ## Development
 
 ```bash

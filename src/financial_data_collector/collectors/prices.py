@@ -89,9 +89,12 @@ def collect_prices(
     today: date,
     yf: Callable[[str, str], list[PriceBar]] = yfinance_bars,
     sleep: Callable[[float], None] = time.sleep,
+    progress: Callable[[str], None] | None = None,
 ) -> list[PriceResult]:
     results: list[PriceResult] = []
-    for symbol in universe:
+    for i, symbol in enumerate(universe, start=1):
+        if progress:
+            progress(f"{i}/{len(universe)} {symbol}")
         start = next_start(store.last_price_date(symbol), today, cfg.lookback_years)
         if start > today.isoformat():
             results.append(PriceResult(symbol, None, 0, "up to date"))

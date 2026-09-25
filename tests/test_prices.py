@@ -115,3 +115,14 @@ def test_provider_errors_mark_result_failed(cfg):
     r2 = P.collect_prices(store, ["AAPL"], cfg, fetch=lambda u, h: b"[]", today=date(2026, 1, 15), yf=lambda s, d: [], sleep=lambda s: None)[0]
     assert r2.failed is False and "no bars" in r2.message
     store.close()
+
+
+def test_collect_prices_reports_progress(cfg):
+    store = Store.open(cfg.db_path)
+    for s in ("AAPL", "KO"):
+        store.upsert_security(s, first_seen="2026-01-01")
+    seen = []
+    P.collect_prices(store, ["AAPL", "KO"], cfg, fetch=lambda u, h: b"[]", today=date(2026, 1, 15), yf=lambda s, d: [],
+                     sleep=lambda s: None, progress=seen.append)
+    assert seen == ["1/2 AAPL", "2/2 KO"]
+    store.close()

@@ -83,6 +83,7 @@ def collect_sec(
     now: datetime,
     rebuild: Rebuild | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    progress: Callable[[str], None] | None = None,
 ) -> list[SecResult]:
     if not cfg.sec_user_agent:
         raise ConfigError("SEC_USER_AGENT is not set (put 'Your Name you@example.com' in .env); SEC blocks anonymous clients")
@@ -94,10 +95,13 @@ def collect_sec(
     rules = store.concept_rules()
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     results: list[SecResult] = []
-    for row in store.securities():
+    securities = store.securities()
+    for i, row in enumerate(securities, start=1):
         symbol, asset_type, cik = row["symbol"], row["asset_type"], row["cik"]
         if asset_type in _FUND_TYPES or is_money_market(symbol, row["description"]):
             continue
+        if progress:
+            progress(f"{i}/{len(securities)} {symbol}")
         if not cik:
             hit = lookup(cik_map, symbol)
             if hit is None:

@@ -158,3 +158,11 @@ def test_collect_sec_isolates_a_company_failure(project, fixtures: Path):
     assert "failed" in by["AAPL"].message and "ValueError" in by["AAPL"].message
     assert by["KO"].facts == 35 and by["KO"].message == ""
     assert store.query("SELECT COUNT(DISTINCT cik) FROM sec_facts")[0][0] == 2     # raw facts kept for both
+
+
+def test_collect_sec_reports_progress(project, fixtures: Path):
+    cfg, store = project
+    seen = []
+    sec_facts.collect_sec(store, cfg, fetch=_fetcher(fixtures), now=NOW, rebuild=lambda f, r: [], sleep=lambda s: None,
+                          progress=seen.append)
+    assert seen[0].startswith("1/") and any(s.endswith(" AAPL") for s in seen)

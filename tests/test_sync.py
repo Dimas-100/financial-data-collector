@@ -174,3 +174,12 @@ def test_derive_isolates_a_company_whose_statements_fail(project, fixtures: Path
     s = Store.open(project.db_path, migrate=False)
     assert s.query("SELECT COUNT(*) FROM financial_line_items WHERE cik='0000000001'")[0][0] > 0
     s.close()
+
+
+def test_run_sync_reports_step_progress(project, fixtures: Path):
+    seen = []
+    sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None,
+                  progress=lambda step, detail: seen.append((step, detail)))
+    steps = [s for s, _ in seen]
+    assert steps[0] == "ingest" and "prices" in steps and "sec" in steps and "derive" in steps
+    assert any(step == "prices" and detail.endswith(" AAPL") for step, detail in seen)

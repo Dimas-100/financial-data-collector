@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 - 2026-09-25
+
+- Polished terminal output (rich): a live progress line during `fdc sync`, aligned and
+  formatted tables for `status` and `query`, colored per-file results for `import`, a
+  "Next steps" panel after `init`, and one-line errors with a hint instead of tracebacks.
+  Output is plain text when not attached to a terminal (logs, pipes) and honours NO_COLOR.
+- Collectors and sync steps accept an optional progress callback.
+
 ## 0.2.0 - 2026-09-25
 
 - `derive` sync step: trailing-twelve-month statements (`financials_ttm`), point-in-time valuation
