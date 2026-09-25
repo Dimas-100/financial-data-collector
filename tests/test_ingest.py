@@ -90,3 +90,10 @@ def test_ingest_snaptrade_disabled_or_missing(project, tmp_path: Path):
     cfg.snaptrade_dir = tmp_path / "missing"
     s = ingest.ingest_snaptrade(store, cfg)
     assert s.rows == 0 and any("missing" in m for m in s.messages)
+
+
+def test_ingest_inbox_ignores_dotfiles(project):
+    cfg, store = project
+    (cfg.inbox / ".gitkeep").write_text("")
+    s = ingest.ingest_inbox(store, cfg)
+    assert s.results == [] and s.messages == []

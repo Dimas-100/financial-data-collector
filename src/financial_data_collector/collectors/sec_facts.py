@@ -95,7 +95,7 @@ def collect_sec(
     results: list[SecResult] = []
     for row in store.securities():
         symbol, asset_type, cik = row["symbol"], row["asset_type"], row["cik"]
-        if asset_type in _FUND_TYPES:
+        if asset_type in _FUND_TYPES or is_money_market(symbol, row["description"]):
             continue
         if not cik:
             hit = lookup(cik_map, symbol)
@@ -115,7 +115,12 @@ def collect_sec(
             data = json.loads(fetch(FACTS_URL.format(cik=cik), headers))
         except (HttpError, ValueError, json.JSONDecodeError) as e:
             store.mark_sec_fetch(symbol, stamp)
-            results.append(SecResult(symbol, cik, message=f"fetch failed: {e}"))
+            if isinstance(e, HttpError) and e.status == 404:
+                # SEC has no XBRL facts for this CIK: a fund or trust, not an operating company
+                store.set_asset_type(symbol, "etf")
+                results.append(SecResult(symbol, cik, message="no company facts (404); classified as etf"))
+            else:
+                results.append(SecResult(symbol, cik, message=f"fetch failed: {e}"))
             sleep(PAUSE_SECONDS)
             continue
         facts = parse_company_facts(data)

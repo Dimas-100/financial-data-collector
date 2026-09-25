@@ -78,7 +78,7 @@ def ingest_inbox(store: Store, cfg: Config) -> IngestSummary:
     if not cfg.inbox.is_dir():
         summary.messages.append(f"inbox {cfg.inbox} does not exist")
         return summary
-    for path in sorted(p for p in cfg.inbox.iterdir() if p.is_file()):
+    for path in sorted(p for p in cfg.inbox.iterdir() if p.is_file() and not p.name.startswith(".")):
         summary.add(ingest_file(store, path, move_to=cfg.processed_dir))
     return summary
 

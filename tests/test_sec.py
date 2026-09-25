@@ -115,3 +115,20 @@ def test_collect_sec_flags_fund_with_cik_as_etf(project, fixtures: Path, tmp_pat
     results = sec_facts.collect_sec(store, cfg, fetch=fetch, now=NOW, rebuild=lambda f, r: [], sleep=lambda s: None)
     assert store.query("SELECT asset_type FROM securities WHERE symbol='AAPL'")[0][0] == "etf"
     assert "no operating" in {r.symbol: r.message for r in results}["AAPL"]
+
+
+def test_collect_sec_skips_money_market_and_marks_404_as_etf(project, fixtures: Path):
+    cfg, store = project
+    store.upsert_security("FDRXX", first_seen="2026-01-01")     # money market by symbol list, asset_type unknown
+    store.upsert_security("BRK.B", first_seen="2026-01-01")     # in the CIK map, but SEC has no company facts
+
+    def fetch(url, headers):
+        if url == sec_cik.CIK_URL:
+            return (fixtures / "sec" / "company_tickers.json").read_bytes()
+        raise HttpError(404, url)
+
+    results = sec_facts.collect_sec(store, cfg, fetch=fetch, now=NOW, rebuild=lambda f, r: [], sleep=lambda s: None)
+    by = {r.symbol: r for r in results}
+    assert "FDRXX" not in by
+    assert store.query("SELECT asset_type FROM securities WHERE symbol = ?", ("BRK.B",))[0][0] == "etf"
+    assert "404" in by["BRK.B"].message and "etf" in by["BRK.B"].message

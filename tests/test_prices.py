@@ -88,3 +88,12 @@ def test_collect_prices_without_token_uses_yfinance_only(cfg, tmp_path: Path):
     results = P.collect_prices(store, ["AAPL"], cfg, fetch=lambda u, h: calls.append(u), today=date(2026, 1, 15), yf=lambda s, d: [PriceBar("2026-01-02", 1.0, 1.0)], sleep=lambda s: None)
     assert calls == [] and results[0].source == "yfinance"
     store.close()
+
+
+def test_collect_prices_reports_no_new_bars_when_history_exists(cfg):
+    store = Store.open(cfg.db_path)
+    store.upsert_security("AAPL", first_seen="2026-01-01")
+    store.write_prices("AAPL", [PriceBar("2026-01-13", 99.0, 99.0)], "tiingo")
+    results = P.collect_prices(store, ["AAPL"], cfg, fetch=lambda u, h: b"[]", today=date(2026, 1, 15), yf=lambda s, d: [], sleep=lambda s: None)
+    assert results[0].rows == 0 and results[0].message == "no new bars"
+    store.close()

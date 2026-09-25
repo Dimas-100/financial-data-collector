@@ -67,7 +67,7 @@ def _step_prices(store: Store, cfg: Config, *, fetch, now, yf, sleep) -> tuple[i
         kwargs["yf"] = yf
     results = prices_mod.collect_prices(store, universe, cfg, **kwargs)
     updated = [r for r in results if r.rows > 0]
-    nodata = [r for r in results if r.rows == 0 and r.message != "up to date"]
+    nodata = [r for r in results if r.rows == 0 and r.message not in ("up to date", "no new bars")]
     msg = f"{len(updated)} symbols updated"
     if nodata:
         msg += f", {len(nodata)} without data: " + ", ".join(f"{r.symbol} ({r.message})" for r in nodata)

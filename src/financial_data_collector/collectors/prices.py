@@ -111,6 +111,9 @@ def collect_prices(
         if bars and source:
             n = store.write_prices(symbol, bars, source)
             results.append(PriceResult(symbol, source, n, "; ".join(notes)))
+        elif store.last_price_date(symbol):
+            # history exists and nothing newer is published yet (e.g. a mutual fund before its NAV posts)
+            results.append(PriceResult(symbol, None, 0, "no new bars"))
         else:
             notes.append("no bars from any provider")
             results.append(PriceResult(symbol, None, 0, "; ".join(notes)))
