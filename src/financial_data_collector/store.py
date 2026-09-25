@@ -361,7 +361,8 @@ class Store:
             "SELECT date, dividend, split_factor FROM prices WHERE symbol = ? ORDER BY date", (symbol,))]
 
     def annual_statement_rows(self, cik: str, limit: int) -> list[dict]:
-        rows = self.query("SELECT * FROM financials_annual WHERE cik = ? ORDER BY fiscal_year DESC LIMIT ?", (cik, limit))
+        rows = self.query("SELECT * FROM financials_annual WHERE cik = ? ORDER BY fiscal_year DESC, period_end DESC LIMIT ?",
+                          (cik, limit))
         return [dict(r) for r in reversed(rows)]
 
     def quarterly_statement_rows(self, cik: str, limit: int) -> list[dict]:

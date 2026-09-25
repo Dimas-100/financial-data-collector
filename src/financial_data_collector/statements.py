@@ -55,7 +55,9 @@ def _chosen(by_concept: dict[tuple[str, str], list[Fact]], rules: list[ConceptRu
     cands: dict[tuple[str, str], list[tuple[int, Fact]]] = {}
     for r in rules:
         for f in by_concept.get((r.taxonomy, r.concept), []):
-            if f.unit in units:
+            # Proxies (DEF 14A) and other non-statement filings repeat figures with no
+            # fiscal period; they must never outrank the 10-K/10-Q that reported them.
+            if f.unit in units and f.fp in _PERIODS:
                 cands.setdefault((f.period_start, f.period_end), []).append((r.priority, f))
     return {k: _pick(v) for k, v in cands.items()}
 
@@ -78,16 +80,41 @@ def _qnum(start: str, end: str) -> int:
     return max(1, min(4, round(n / 91.3)))
 
 
+_PERIODS = {"Q1", "Q2", "Q3", "FY"}
+
+
+def fiscal_years_by_end(facts: list[Fact]) -> dict[str, int]:
+    """period_end -> the filer's own fiscal-year label, from each 10-K's own year.
+
+    A 10-K tags every comparative year with the filing's fy, so only the fact whose
+    period end is the latest duration end in that filing carries the right label.
+    """
+    own_end: dict[str, str] = {}
+    for f in facts:
+        if f.period_start and f.fp == "FY" and _within(_days(f), ANNUAL_DAYS):
+            own_end[f.accn] = max(own_end.get(f.accn, ""), f.period_end)
+    out: dict[str, int] = {}
+    for f in facts:
+        if f.period_start and f.fp == "FY" and f.fy and own_end.get(f.accn) == f.period_end \
+                and _within(_days(f), ANNUAL_DAYS):
+            out[f.period_end] = f.fy
+    return out
+
+
 def _duration_rows(item: str, kind: str, chosen: dict[tuple[str, str], Fact],
-                   quarter_number: dict[str, int], quarter_fy: dict[str, int]) -> list[LineItem]:
+                   quarter_number: dict[str, int], quarter_fy: dict[str, int],
+                   fy_by_end: dict[str, int]) -> list[LineItem]:
     annuals: dict[tuple[str, str], Fact] = {}
     quarters: dict[tuple[str, str], Fact] = {}
     halves: dict[tuple[str, str], Fact] = {}
     nines: dict[tuple[str, str], Fact] = {}
     for (s, e), f in chosen.items():
+        if f.fp not in _PERIODS:  # proxies and other non-statement filings carry no fiscal period
+            continue
         n = _days(f)
         if _within(n, ANNUAL_DAYS):
-            annuals[(s, e)] = f
+            if f.fp == "FY":  # a 10-Q's "twelve months ended" figure is not a fiscal year
+                annuals[(s, e)] = f
         elif _within(n, QUARTER_DAYS):
             quarters[(s, e)] = f
         elif _within(n, HALF_DAYS):
@@ -96,14 +123,14 @@ def _duration_rows(item: str, kind: str, chosen: dict[tuple[str, str], Fact],
             nines[(s, e)] = f
     rows: dict[tuple[str, str], LineItem] = {}
     for (s, e), f in annuals.items():
-        _put(rows, _row(item, "annual", f, fiscal_year_of(e), None))
+        _put(rows, _row(item, "annual", f, fy_by_end.get(e, fiscal_year_of(e)), None))
     starts = {s for s, _ in list(annuals) + list(halves) + list(nines)}
     starts |= {s for (s, _), f in quarters.items() if f.fp == "Q1"}
     starts |= {_day_after(e) for _, e in annuals}
     for S in sorted(starts):
         fy_fact = next((f for (s, e), f in annuals.items() if s == S), None)
         fy_end = fy_fact.period_end if fy_fact else (date.fromisoformat(S) + timedelta(days=364)).isoformat()
-        fiscal_year = fiscal_year_of(fy_end)
+        fiscal_year = fy_by_end.get(fy_end, fiscal_year_of(fy_end))
         known: dict[int, float] = {}
         ends: dict[int, str] = {}
         in_year = sorted(((k, f) for k, f in quarters.items() if S <= k[0] and k[1] <= fy_end), key=lambda kf: kf[0][1])
@@ -147,13 +174,15 @@ def rebuild(facts: list[Fact], rules: list[ConceptRule]) -> list[LineItem]:
     for r in sorted(rules, key=lambda r: (r.line_item, r.priority)):
         by_item.setdefault(r.line_item, []).append(r)
 
+    fy_by_end = fiscal_years_by_end(facts)
     annual_ends: set[str] = set()
     quarter_ends: set[str] = set()
     for f in facts:
-        if f.period_start:
+        if f.period_start and f.fp in _PERIODS:
             n = _days(f)
             if _within(n, ANNUAL_DAYS):
-                annual_ends.add(f.period_end)
+                if f.fp == "FY":
+                    annual_ends.add(f.period_end)
             elif _within(n, QUARTER_DAYS) or _within(n, HALF_DAYS) or _within(n, NINE_MONTH_DAYS):
                 quarter_ends.add(f.period_end)
 
@@ -168,11 +197,11 @@ def rebuild(facts: list[Fact], rules: list[ConceptRule]) -> list[LineItem]:
         if instants:
             instant_items.append((item, instants))
         if durations:
-            out.extend(_duration_rows(item, item_rules[0].kind, durations, quarter_number, quarter_fy))
+            out.extend(_duration_rows(item, item_rules[0].kind, durations, quarter_number, quarter_fy, fy_by_end))
     for item, instants in instant_items:
         for end, f in instants.items():
             if end in annual_ends:
-                out.append(_row(item, "annual", f, fiscal_year_of(end), None))
+                out.append(_row(item, "annual", f, fy_by_end.get(end, fiscal_year_of(end)), None))
             if end in annual_ends or end in quarter_ends:
                 fq = 4 if end in annual_ends else quarter_number.get(end)
                 out.append(_row(item, "quarter", f, quarter_fy.get(end, fiscal_year_of(end)), fq))

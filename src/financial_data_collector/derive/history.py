@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from ..store import Store
+from ..symbols import is_money_market
 
 UNIT_TYPES = {"buy", "sell", "reinvest", "transfer", "other"}
 EPS = 1e-9
@@ -181,7 +182,10 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
 
 
 def rebuild(store: Store) -> dict[str, int]:
-    result = replay(store.transactions_for_replay(), store.snapshot_units(), store.snapshot_cash(),
+    # Money-market sweeps are cash, not holdings: keep their cash effect, drop the units.
+    txs = [dict(t, symbol=None) if t.get("symbol") and is_money_market(t["symbol"]) else t
+           for t in store.transactions_for_replay()]
+    result = replay(txs, store.snapshot_units(), store.snapshot_cash(),
                     store.closes_by_symbol(), store.trading_calendar())
     return {
         "holdings_daily": store.replace_rows("holdings_daily", HOLDINGS_COLUMNS, result.holdings),

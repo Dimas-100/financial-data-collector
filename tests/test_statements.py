@@ -130,3 +130,36 @@ def test_instant_item_with_duration_facts_yields_unique_keys():
     assert len(keys) == len(set(keys))
     eq = [i for i in out if i.line_item == "stockholders_equity"]
     assert {(i.period_kind, i.period_end, i.value) for i in eq} == {("annual", "2025-12-31", 500.0), ("quarter", "2025-12-31", 500.0)}
+
+
+def test_ttm_length_facts_in_a_10q_are_not_annual_rows():
+    # Amazon-style: a 10-Q reports "twelve months ended June 30". Same length as a
+    # fiscal year, but it is not one; only fp = FY facts may become annual rows.
+    rules = [ConceptRule("net_income", "income", "duration", "us-gaap", "NetIncomeLoss", 1)]
+    facts = [
+        Fact("us-gaap", "NetIncomeLoss", "USD", "2025-01-01", "2025-12-31", 100.0, 2025, "FY", "10-K", "2026-02-06", "k25"),
+        Fact("us-gaap", "NetIncomeLoss", "USD", "2025-07-01", "2026-06-30", 130.0, 2026, "Q2", "10-Q", "2026-07-31", "q226"),
+        Fact("us-gaap", "NetIncomeLoss", "USD", "2026-04-01", "2026-06-30", 40.0, 2026, "Q2", "10-Q", "2026-07-31", "q226"),
+        Fact("us-gaap", "NetIncomeLoss", "USD", "2025-01-01", "2025-12-31", 100.0, None, None, "DEF 14A", "2026-04-09", "proxy"),
+    ]
+    out = S.rebuild(facts, rules)
+    annual = [(i.period_end, i.fiscal_year, i.value, i.accn) for i in out if i.period_kind == "annual"]
+    assert annual == [("2025-12-31", 2025, 100.0, "k25")]              # the proxy copy and the TTM row are ignored
+    assert [(i.period_end, i.value) for i in out if i.period_kind == "quarter"] == [("2026-06-30", 40.0)]
+
+
+def test_fiscal_year_label_follows_the_filers_own_10k():
+    # Home Depot-style: the year ending 2025-02-02 is "fiscal 2024" in its own 10-K.
+    rules = [ConceptRule("revenue", "income", "duration", "us-gaap", "Revenues", 1),
+             ConceptRule("total_assets", "balance", "instant", "us-gaap", "Assets", 1)]
+    facts = [
+        Fact("us-gaap", "Revenues", "USD", "2024-02-05", "2025-02-02", 500.0, 2024, "FY", "10-K", "2025-03-20", "k24"),
+        Fact("us-gaap", "Revenues", "USD", "2025-02-03", "2026-02-01", 520.0, 2025, "FY", "10-K", "2026-03-19", "k25"),
+        Fact("us-gaap", "Revenues", "USD", "2024-02-05", "2025-02-02", 501.0, 2025, "FY", "10-K", "2026-03-19", "k25"),   # restated comparative
+        Fact("us-gaap", "Assets", "USD", "", "2025-02-02", 90.0, 2024, "FY", "10-K", "2025-03-20", "k24"),
+    ]
+    out = S.rebuild(facts, rules)
+    rev = {i.period_end: (i.fiscal_year, i.value) for i in out if i.line_item == "revenue" and i.period_kind == "annual"}
+    assert rev == {"2025-02-02": (2024, 501.0), "2026-02-01": (2025, 520.0)}
+    assets = [i for i in out if i.line_item == "total_assets" and i.period_kind == "annual"][0]
+    assert assets.fiscal_year == 2024

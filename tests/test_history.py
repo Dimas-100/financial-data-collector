@@ -111,3 +111,18 @@ def test_trade_on_snapshot_day_applies_after_the_anchor():
     assert r.recon == []
     c = {row[0]: row for row in r.cash}
     assert c["2026-01-06"][2:] == (-400.0, "snapshot")
+
+
+def test_money_market_transactions_only_move_cash(tmp_path: Path):
+    s = Store.open(tmp_path / "w.db")
+    acct = AccountRef("Sample Brokerage", "brokerage", "fidelity", "brokerage")
+    s.write_transactions([
+        TransactionRow(acct, "2026-01-02", "contribution", None, None, None, 500.0, None, "EFT", "fidelity_csv"),
+        TransactionRow(acct, "2026-01-02", "buy", "SPAXX", 500.0, 1.0, -500.0, 0.0, "YOU BOUGHT SPAXX", "fidelity_csv"),
+    ])
+    s.write_prices("AAPL", [PriceBar("2026-01-02", 100.0, 100.0)], "tiingo")
+    H.rebuild(s)
+    assert s.query("SELECT COUNT(*) FROM holdings_daily")[0][0] == 0
+    assert s.query("SELECT amount FROM cash_daily")[0][0] == 0.0        # the sweep purchase is cash moving into cash
+    assert s.query("SELECT COUNT(*) FROM lots")[0][0] == 0
+    s.close()

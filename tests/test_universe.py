@@ -35,12 +35,18 @@ def test_classify_overrides_are_applied(tmp_path: Path):
 
 
 def test_read_investing_tickers(fixtures: Path):
-    assert U.read_investing_tickers(fixtures / "investing") == ["AAPL", "BRK.B", "KO", "VTI"]
+    assert U.read_investing_tickers(fixtures / "investing") == ["AAPL", "BRK.B", "GEV", "KO", "VTI"]   # GEV via scan-history.json
     assert U.read_investing_tickers(fixtures / "nope") == []
 
 
 def test_build_universe_includes_investing(tmp_path: Path, fixtures: Path):
     s = Store.open(tmp_path / "w.db")
-    assert U.build_universe(s, tmp_path / "none.txt", investing_dir=fixtures / "investing") == ["AAPL", "BRK.B", "KO", "VTI"]
-    assert s.query("SELECT COUNT(*) FROM securities")[0][0] == 4
+    assert U.build_universe(s, tmp_path / "none.txt", investing_dir=fixtures / "investing") == ["AAPL", "BRK.B", "GEV", "KO", "VTI"]
+    assert s.query("SELECT COUNT(*) FROM securities")[0][0] == 5
     s.close()
+
+
+def test_read_investing_tickers_includes_scan_promoted_names(fixtures: Path):
+    # data/scan-history.json names seen at least `promote_count` times join the universe
+    assert U.read_investing_tickers(fixtures / "investing", promote_count=3) == ["AAPL", "BRK.B", "GEV", "KO", "VTI"]
+    assert U.read_investing_tickers(fixtures / "investing", promote_count=99) == ["AAPL", "BRK.B", "KO", "VTI"]
