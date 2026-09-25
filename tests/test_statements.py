@@ -163,3 +163,22 @@ def test_fiscal_year_label_follows_the_filers_own_10k():
     assert rev == {"2025-02-02": (2024, 501.0), "2026-02-01": (2025, 520.0)}
     assets = [i for i in out if i.line_item == "total_assets" and i.period_kind == "annual"][0]
     assert assets.fiscal_year == 2024
+
+
+def test_calendar_year_disclosures_in_a_june_filer_do_not_create_fiscal_years():
+    # ADP-style June fiscal year. Its 10-K also tags a calendar-year pension period
+    # with fp = FY; that period is not a fiscal year, and a December balance sheet
+    # from a 10-Q must not become an "annual" row.
+    rules = [ConceptRule("revenue", "income", "duration", "us-gaap", "Revenues", 1),
+             ConceptRule("net_income", "income", "duration", "us-gaap", "NetIncomeLoss", 1),
+             ConceptRule("total_assets", "balance", "instant", "us-gaap", "Assets", 1)]
+    facts = [
+        Fact("us-gaap", "Revenues", "USD", "2024-07-01", "2025-06-30", 200.0, 2025, "FY", "10-K", "2025-08-06", "k25"),
+        Fact("us-gaap", "NetIncomeLoss", "USD", "2024-07-01", "2025-06-30", 40.0, 2025, "FY", "10-K", "2025-08-06", "k25"),
+        Fact("us-gaap", "DefinedBenefitPlanContributionsByEmployer", "USD", "2025-01-01", "2025-12-31", 3.0, 2025, "FY", "10-K", "2025-08-06", "k25"),
+        Fact("us-gaap", "Assets", "USD", "", "2025-06-30", 500.0, 2025, "FY", "10-K", "2025-08-06", "k25"),
+        Fact("us-gaap", "Assets", "USD", "", "2025-12-31", 800.0, 2026, "Q2", "10-Q", "2026-02-01", "q226"),
+    ]
+    out = S.rebuild(facts, rules)
+    annual = {(i.line_item, i.period_end): i.fiscal_year for i in out if i.period_kind == "annual"}
+    assert annual == {("revenue", "2025-06-30"): 2025, ("net_income", "2025-06-30"): 2025, ("total_assets", "2025-06-30"): 2025}

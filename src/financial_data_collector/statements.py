@@ -89,16 +89,36 @@ def fiscal_years_by_end(facts: list[Fact]) -> dict[str, int]:
     A 10-K tags every comparative year with the filing's fy, so only the fact whose
     period end is the latest duration end in that filing carries the right label.
     """
-    own_end: dict[str, str] = {}
+    # The filing's own year end is the period end most of its year-length facts share
+    # (a stray calendar-year pension disclosure is a handful of facts; the statements are dozens).
+    counts: dict[str, dict[str, int]] = {}
     for f in facts:
         if f.period_start and f.fp == "FY" and _within(_days(f), ANNUAL_DAYS):
-            own_end[f.accn] = max(own_end.get(f.accn, ""), f.period_end)
+            per = counts.setdefault(f.accn, {})
+            per[f.period_end] = per.get(f.period_end, 0) + 1
+    own_end = {accn: max(ends, key=lambda e: (ends[e], e)) for accn, ends in counts.items()}
     out: dict[str, int] = {}
     for f in facts:
         if f.period_start and f.fp == "FY" and f.fy and own_end.get(f.accn) == f.period_end \
                 and _within(_days(f), ANNUAL_DAYS):
             out[f.period_end] = f.fy
     return out
+
+
+def _near_fiscal_year_end(end: str, anchors: list[str]) -> bool:
+    """True when `end` falls within a week (mod one year) of a known fiscal year end.
+
+    52/53-week filers drift a few days either side; a calendar-year disclosure inside a
+    June filer is half a year away and is rejected. No anchors known: accept everything.
+    """
+    if not anchors:
+        return True
+    e = date.fromisoformat(end)
+    for a in anchors:
+        diff = abs((e - date.fromisoformat(a)).days) % 365
+        if diff <= 7 or diff >= 358:
+            return True
+    return False
 
 
 def _duration_rows(item: str, kind: str, chosen: dict[tuple[str, str], Fact],
@@ -108,12 +128,15 @@ def _duration_rows(item: str, kind: str, chosen: dict[tuple[str, str], Fact],
     quarters: dict[tuple[str, str], Fact] = {}
     halves: dict[tuple[str, str], Fact] = {}
     nines: dict[tuple[str, str], Fact] = {}
+    anchors = list(fy_by_end)
     for (s, e), f in chosen.items():
         if f.fp not in _PERIODS:  # proxies and other non-statement filings carry no fiscal period
             continue
         n = _days(f)
         if _within(n, ANNUAL_DAYS):
-            if f.fp == "FY":  # a 10-Q's "twelve months ended" figure is not a fiscal year
+            # a 10-Q's "twelve months ended" figure, or a calendar-year disclosure inside a
+            # June filer's 10-K, is not a fiscal year
+            if f.fp == "FY" and _near_fiscal_year_end(e, anchors):
                 annuals[(s, e)] = f
         elif _within(n, QUARTER_DAYS):
             quarters[(s, e)] = f
@@ -175,13 +198,14 @@ def rebuild(facts: list[Fact], rules: list[ConceptRule]) -> list[LineItem]:
         by_item.setdefault(r.line_item, []).append(r)
 
     fy_by_end = fiscal_years_by_end(facts)
+    anchors = list(fy_by_end)
     annual_ends: set[str] = set()
     quarter_ends: set[str] = set()
     for f in facts:
         if f.period_start and f.fp in _PERIODS:
             n = _days(f)
             if _within(n, ANNUAL_DAYS):
-                if f.fp == "FY":
+                if f.fp == "FY" and _near_fiscal_year_end(f.period_end, anchors):
                     annual_ends.add(f.period_end)
             elif _within(n, QUARTER_DAYS) or _within(n, HALF_DAYS) or _within(n, NINE_MONTH_DAYS):
                 quarter_ends.add(f.period_end)
