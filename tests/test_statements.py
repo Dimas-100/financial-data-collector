@@ -196,3 +196,15 @@ def test_fiscal_year_labels_come_only_from_annual_report_forms_and_stay_sane():
     ]
     out = {i.period_end: (i.fiscal_year, i.value) for i in S.rebuild(facts, rules) if i.period_kind == "annual"}
     assert out == {"2024-12-31": (2024, 101.0), "2022-12-31": (2022, 80.0)}
+
+
+def test_mistagged_fiscal_year_does_not_collide_with_a_neighbour():
+    # Honeywell-style: the FY2021 10-K tags its own year fy=2020. Two ends cannot share
+    # a label; the end whose calendar year matches keeps it, the other falls back.
+    rules = [ConceptRule("revenue", "income", "duration", "us-gaap", "Revenues", 1)]
+    facts = [
+        Fact("us-gaap", "Revenues", "USD", "2020-01-01", "2020-12-31", 90.0, 2020, "FY", "10-K", "2021-02-12", "k20"),
+        Fact("us-gaap", "Revenues", "USD", "2021-01-01", "2021-12-31", 95.0, 2020, "FY", "10-K", "2022-02-11", "k21"),
+    ]
+    out = {i.period_end: i.fiscal_year for i in S.rebuild(facts, rules) if i.period_kind == "annual"}
+    assert out == {"2020-12-31": 2020, "2021-12-31": 2021}

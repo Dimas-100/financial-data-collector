@@ -109,6 +109,17 @@ def fiscal_years_by_end(facts: list[Fact], concepts: set[tuple[str, str]] | None
         if is_year(f) and f.fy and own_end.get(f.accn) == f.period_end and f.period_end not in labels \
                 and abs(f.fy - int(f.period_end[:4])) <= 1:
             labels[f.period_end] = f.fy
+    # Two year ends can never share a label (a filer mis-tagging fy on one 10-K):
+    # the end whose calendar year matches keeps it, the others fall back to their calendar year.
+    by_label: dict[int, list[str]] = {}
+    for end, fy in labels.items():
+        by_label.setdefault(fy, []).append(end)
+    for fy, ends in by_label.items():
+        if len(ends) > 1:
+            keeper = next((e for e in ends if int(e[:4]) == fy), max(ends))
+            for e in ends:
+                if e != keeper:
+                    labels[e] = int(e[:4])
     return labels
 
 
