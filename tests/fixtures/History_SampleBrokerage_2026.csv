@@ -1,0 +1,13 @@
+
+
+Run Date,Action,Symbol,Description,Type,Price ($),Quantity,Commission ($),Fees ($),Accrued Interest ($),Amount ($),Cash Balance ($),Settlement Date
+ 01/05/2026, YOU BOUGHT APPLE INC (AAPL) (Cash), AAPL, APPLE INC, Cash, 100.00, 10, 0.00, 0.00, 0.00, -1000.00, 500.00, 01/07/2026
+ 01/06/2026, DIVIDEND RECEIVED COCA COLA CO (KO) (Cash), KO, COCA COLA CO, Cash, , , , , , 9.80, 509.80,
+ 01/06/2026, REINVESTMENT COCA COLA CO (KO) (Cash), KO, COCA COLA CO, Cash, 49.00, 0.2, , , , -9.80, 500.00,
+ 01/10/2026, ELECTRONIC FUNDS TRANSFER RECEIVED (Cash), , , Cash, , , , , , 500.00, 1000.00,
+ 01/12/2026, YOU SOLD VANGUARD TOTAL STOCK MARKET ETF (VTI) (Cash), VTI, VANGUARD TOTAL STOCK MARKET ETF, Cash, 200.00, -2, 0.00, 0.01, 0.00, 399.99, 1399.99, 01/14/2026
+ 01/15/2026, DISTRIBUTION (Cash), , , Cash, , , , , , -100.00, 1299.99,
+ 01/20/2026, JOURNALED SHARES (Cash), KO, COCA COLA CO, Cash, , 3, , , , , 1299.99,
+
+"The data and information in this spreadsheet is provided to you solely for your use and is not for distribution."
+"Date downloaded 01/25/2026 9:00 pm"
