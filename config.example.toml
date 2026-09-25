@@ -1,0 +1,20 @@
+# financial-data-collector configuration. Copy to config.toml (gitignored).
+# Relative paths resolve against this file's folder.
+
+[paths]
+db = "data/warehouse.db"
+inbox = "inbox"                    # drop Fidelity CSV exports here; they move to inbox/processed
+watchlist = "watchlist.txt"        # optional: one extra symbol per line to collect prices/SEC for
+
+[prices]
+lookback_years = 5                 # first fetch depth per symbol
+
+[sec]
+max_age_hours = 24                 # refetch a company's facts at most this often
+
+[sources.snaptrade]
+enabled = true                     # owner-only: investing's SnapTrade export. Ignored if dir is missing.
+dir = "../investing/fidelity/dashboard-data"
+
+[classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto"
+# VXUS = "etf"

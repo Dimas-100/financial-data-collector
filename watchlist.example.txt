@@ -1,0 +1,4 @@
+# Copy to watchlist.txt (gitignored). One symbol per line; '#' starts a comment.
+# Symbols here get prices and SEC statements collected even if you never held them.
+VTI
+KO

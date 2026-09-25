@@ -60,6 +60,7 @@ undertaken only after this database has proven itself.
 | Statement shaping | Python computes a `financial_line_items` table after each SEC fetch; thin SQL views pivot it | The duration/Q4/latest-filed rules are easier to test in Python than in SQL, and materializing keeps Claude's queries instant. (Revision from the in-chat design, which had pure views.) |
 | Public repo | `Dimas-100/financial-data-collector`, MIT | Owner's request 2026-09-25. Created once a sync runs end to end on fixtures with the privacy guard in place. |
 | Privacy | `data/`, `inbox/`, `config.toml`, `.env` gitignored; automated test; fixtures synthetic | Same rule trading-rails lives by: no private symbols, sizes, labels or credentials ever reach the repo. |
+| Package layout | migrations and seeds ship inside the package; shared dataclasses in `models.py`; `ingest.py`, `sync.py`, `readonly.py` split out of the CLI | Implementation-plan deviation 2026-09-25: an installed copy must be self-contained, and the CLI stays thin. |
 
 ## 4. Architecture and data flow
 
@@ -460,17 +461,17 @@ financial-data-collector/
   AGENTS.md  CLAUDE.md (@AGENTS.md)  README.md  LICENSE (MIT)  CHANGELOG.md
   pyproject.toml  config.example.toml  .env.example  .gitignore  watchlist.example.txt
   src/financial_data_collector/
-    __init__.py  __main__.py  cli.py  config.py  store.py  migrate.py
-    symbols.py  universe.py  statements.py  http.py  mcp_server.py
-    adapters/  __init__.py  base.py  fidelity_positions.py  fidelity_history.py  snaptrade.py
+    __init__.py  __main__.py  cli.py  config.py  models.py  store.py  migrate.py
+    symbols.py  universe.py  ingest.py  sync.py  statements.py  http.py  readonly.py  mcp_server.py
+    adapters/   __init__.py  base.py  fidelity_positions.py  fidelity_history.py  snaptrade.py
     collectors/ __init__.py  prices.py  sec_cik.py  sec_facts.py
-  migrations/  0001_init.sql  0002_views.sql
-  seeds/       concept_map.csv
+    migrations/ 0001_init.sql  0002_views.sql        (inside the package: an installed copy is self-contained)
+    seeds/      concept_map.csv
   tests/       test_*.py  fixtures/
   scripts/     schedule_sync.ps1  run_sync.ps1
   docs/        QUERIES.md  superpowers/specs/  superpowers/plans/
-  data/        .gitkeep   (db, backups/, cache/ — gitignored)
-  inbox/       .gitkeep   (processed/ — gitignored)
+  data/        .gitkeep   (db, backups/, cache/ - gitignored)
+  inbox/       .gitkeep   (processed/ - gitignored)
 ```
 
 Dependencies: `requests`, `python-dotenv`, `yfinance`, `mcp`; dev: `pytest`.
