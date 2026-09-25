@@ -11,12 +11,14 @@ from . import http
 from .collectors import prices as prices_mod
 from .collectors.sec_facts import collect_sec
 from .config import Config, ConfigError
+from .derive import history, valuation
+from .export.cockpit import export_cockpit
 from .ingest import ingest_inbox, ingest_snaptrade
 from .models import PriceBar
 from .store import Store, utcnow
 from .universe import build_universe
 
-STEPS = ("ingest", "prices", "sec")
+STEPS = ("ingest", "prices", "sec", "derive", "export")
 NETWORK_STEPS = {"prices", "sec"}
 
 
@@ -61,7 +63,7 @@ def _step_ingest(store: Store, cfg: Config, **_) -> tuple[int, str, str]:
 
 
 def _step_prices(store: Store, cfg: Config, *, fetch, now, yf, sleep) -> tuple[int, str, str]:
-    universe = build_universe(store, cfg.watchlist, classify=cfg.classify)
+    universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir)
     kwargs = {"fetch": fetch, "today": now.date(), "sleep": sleep}
     if yf is not None:
         kwargs["yf"] = yf
@@ -95,7 +97,27 @@ def _step_sec(store: Store, cfg: Config, *, fetch, now, sleep, **_) -> tuple[int
     return sum(r.facts for r in results), msg, status
 
 
-_RUNNERS: dict[str, Callable] = {"ingest": _step_ingest, "prices": _step_prices, "sec": _step_sec}
+def _step_derive(store: Store, cfg: Config, **_) -> tuple[int, str, str]:
+    counts = history.rebuild(store)
+    counts["valuation_daily symbols"] = valuation.rebuild(store)
+    return sum(counts.values()), ", ".join(f"{k} {v}" for k, v in counts.items()), "ok"
+
+
+def _step_export(store: Store, cfg: Config, *, now, **_) -> tuple[int, str, str]:
+    if not cfg.export_cockpit:
+        return 0, "export.cockpit disabled in config.toml", "skipped"
+    universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir)
+    results = export_cockpit(store, cfg, universe, now)
+    written = sum(1 for _, s in results if s == "written")
+    msg = ", ".join(f"{name} {status}" for name, status in results)
+    if all(s == "skipped" for _, s in results):
+        return 0, f"target folder missing ({cfg.export_dir}); " + msg, "skipped"
+    return written, msg, "ok"
+
+
+_RUNNERS: dict[str, Callable] = {
+    "ingest": _step_ingest, "prices": _step_prices, "sec": _step_sec, "derive": _step_derive, "export": _step_export,
+}
 
 
 def run_sync(

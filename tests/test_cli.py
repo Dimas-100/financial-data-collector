@@ -68,3 +68,12 @@ def test_sync_dry_run(tmp_path: Path, capsys):
     rc = cli.main(["--root", str(tmp_path), "sync", "--dry-run"])
     out = capsys.readouterr().out
     assert rc == 0 and "ingest" in out and "prices" in out and "sec" in out
+
+
+def test_export_command_writes_three_files(tmp_path: Path, capsys):
+    cli.main(["--root", str(tmp_path), "init"])
+    out = tmp_path / "cockpit"
+    out.mkdir()
+    rc = cli.main(["--root", str(tmp_path), "export", "--dir", str(out)])
+    assert rc == 0 and sorted(p.name for p in out.iterdir()) == ["dividends.json", "fundamentals.json", "prices.json"]
+    assert "written" in capsys.readouterr().out

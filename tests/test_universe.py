@@ -32,3 +32,15 @@ def test_classify_overrides_are_applied(tmp_path: Path):
     assert out == ["VTI"]
     assert s.query("SELECT asset_type FROM securities WHERE symbol='VTI'")[0][0] == "etf"
     s.close()
+
+
+def test_read_investing_tickers(fixtures: Path):
+    assert U.read_investing_tickers(fixtures / "investing") == ["AAPL", "BRK.B", "KO", "VTI"]
+    assert U.read_investing_tickers(fixtures / "nope") == []
+
+
+def test_build_universe_includes_investing(tmp_path: Path, fixtures: Path):
+    s = Store.open(tmp_path / "w.db")
+    assert U.build_universe(s, tmp_path / "none.txt", investing_dir=fixtures / "investing") == ["AAPL", "BRK.B", "KO", "VTI"]
+    assert s.query("SELECT COUNT(*) FROM securities")[0][0] == 4
+    s.close()

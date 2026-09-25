@@ -47,12 +47,12 @@ def _counts(cfg):
 
 def test_full_sync_then_noop(project, fixtures: Path):
     rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["ingest", "prices", "sec"]
-    assert all(s.status == "ok" for s in rep.steps), rep.steps
+    assert [s.step for s in rep.steps] == ["ingest", "prices", "sec", "derive", "export"]
+    assert [s.status for s in rep.steps] == ["ok", "ok", "ok", "ok", "skipped"], rep.steps   # export disabled by default
     assert rep.exit_code == 0
     c1 = _counts(project)
     assert c1["position_snapshots"] > 0 and c1["prices"] > 0 and c1["sec_facts"] == 35
-    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 3
+    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 5
     assert "without data" in rep.steps[1].message          # KO, VTI, BRK.B had no bars
     rep2 = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert rep2.steps[0].rows == 0
@@ -65,12 +65,12 @@ def test_only_and_skip(project, fixtures: Path):
     rep = sync.run_sync(project, only=["prices"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert [s.step for s in rep.steps] == ["prices"]
     rep = sync.run_sync(project, skip=["sec"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["ingest", "prices"]
+    assert [s.step for s in rep.steps] == ["ingest", "prices", "derive", "export"]
 
 
 def test_dry_run_touches_nothing(project):
     rep = sync.run_sync(project, dry_run=True)
-    assert rep.dry_run and [s.step for s in rep.steps] == ["ingest", "prices", "sec"]
+    assert rep.dry_run and [s.step for s in rep.steps] == ["ingest", "prices", "sec", "derive", "export"]
     assert not project.db_path.exists()
 
 
@@ -118,3 +118,22 @@ def test_quiet_morning_with_dead_symbol_is_ok(project, fixtures: Path):
     step = rep.steps[0]
     assert step.status == "ok", step
     assert "no new bars" not in step.message and "DEAD" in step.message
+
+
+def test_derive_and_export_steps(project, fixtures: Path, tmp_path: Path):
+    rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    by = {s.step: s for s in rep.steps}
+    assert by["derive"].status == "ok" and "holdings_daily" in by["derive"].message
+    s = Store.open(project.db_path, migrate=False)
+    assert s.query("SELECT COUNT(*) FROM holdings_daily")[0][0] > 0
+    assert s.query("SELECT COUNT(*) FROM valuation_daily")[0][0] > 0
+    assert s.query("SELECT COUNT(*) FROM portfolio_daily_full")[0][0] >= s.query("SELECT COUNT(*) FROM portfolio_daily")[0][0]
+    s.close()
+    assert by["export"].status == "skipped" and "disabled" in by["export"].message
+    out = tmp_path / "cockpit"
+    out.mkdir()
+    project.export_cockpit = True
+    project.export_dir = out
+    rep = sync.run_sync(project, only=["export"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    assert rep.steps[0].status == "ok" and rep.steps[0].rows == 3
+    assert sorted(p.name for p in out.iterdir()) == ["dividends.json", "fundamentals.json", "prices.json"]

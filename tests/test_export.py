@@ -72,8 +72,8 @@ def test_write_if_changed(tmp_path: Path):
     assert E.write_if_changed(p, payload) is True
     stamp = p.stat().st_mtime_ns
     assert E.write_if_changed(p, dict(payload, as_of="t2")) is False and p.stat().st_mtime_ns == stamp
-    assert E.write_if_changed(p, dict(payload, by_ticker={"A": [2]})) is True
-    assert json.loads(p.read_text())["as_of"] == "t2"
+    assert E.write_if_changed(p, dict(payload, as_of="t3", by_ticker={"A": [2]})) is True
+    assert json.loads(p.read_text())["as_of"] == "t3"
 
 
 def test_export_cockpit_skips_missing_dir_and_reports(store: Store, tmp_path: Path):

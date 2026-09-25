@@ -36,6 +36,8 @@ def _parser() -> argparse.ArgumentParser:
     q.add_argument("--limit", type=int, default=500)
     m = sub.add_parser("mcp", help="run the read-only MCP server for Claude Desktop (stdio)")
     m.add_argument("--print-config", action="store_true", help="print the claude_desktop_config.json snippet")
+    e = sub.add_parser("export", help="write the cockpit feed files (prices, dividends, fundamentals) now")
+    e.add_argument("--dir", help="target folder (default: [export.cockpit].dir from config.toml)")
     return p
 
 
@@ -134,6 +136,28 @@ def cmd_query(root: Path, args) -> int:
     return 0
 
 
+def cmd_export(root: Path, args) -> int:
+    from datetime import datetime, timezone
+
+    from .export.cockpit import export_cockpit
+    from .universe import build_universe
+
+    cfg = load_config(root)
+    store = Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
+    try:
+        universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir)
+        results = export_cockpit(store, cfg, universe, datetime.now(timezone.utc),
+                                 out_dir=Path(args.dir) if args.dir else None)
+    finally:
+        store.close()
+    for name, status in results:
+        print(f"{name}: {status}")
+    if all(s == "skipped" for _, s in results):
+        print("target folder missing; pass --dir or set [export.cockpit].dir", file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_mcp(root: Path, args) -> int:
     from . import mcp_server
 
@@ -161,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_query(root, args)
         if args.cmd == "mcp":
             return cmd_mcp(root, args)
+        if args.cmd == "export":
+            return cmd_export(root, args)
     except ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

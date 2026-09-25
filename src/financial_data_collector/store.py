@@ -351,6 +351,23 @@ class Store:
         dates |= {r[0] for r in self.query("SELECT DISTINCT as_of_date FROM cash_balances")}
         return sorted(dates)
 
+    # ---- export helpers ---------------------------------------------------------
+    def adj_close_series(self, symbol: str, start: str) -> list[tuple[str, float]]:
+        return [tuple(r) for r in self.query(
+            "SELECT date, adj_close FROM prices WHERE symbol = ? AND date >= ? ORDER BY date", (symbol, start))]
+
+    def price_events(self, symbol: str) -> list[tuple[str, float, float]]:
+        return [tuple(r) for r in self.query(
+            "SELECT date, dividend, split_factor FROM prices WHERE symbol = ? ORDER BY date", (symbol,))]
+
+    def annual_statement_rows(self, cik: str, limit: int) -> list[dict]:
+        rows = self.query("SELECT * FROM financials_annual WHERE cik = ? ORDER BY fiscal_year DESC LIMIT ?", (cik, limit))
+        return [dict(r) for r in reversed(rows)]
+
+    def quarterly_statement_rows(self, cik: str, limit: int) -> list[dict]:
+        rows = self.query("SELECT * FROM financials_quarterly WHERE cik = ? ORDER BY period_end DESC LIMIT ?", (cik, limit))
+        return [dict(r) for r in reversed(rows)]
+
     def closes_by_symbol(self) -> dict[str, list[tuple[str, float]]]:
         out: dict[str, list[tuple[str, float]]] = {}
         for r in self.query("SELECT symbol, date, close FROM prices ORDER BY symbol, date"):
