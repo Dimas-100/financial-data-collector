@@ -1,0 +1,30 @@
+# --- private data: never commit ---
+data/*
+!data/.gitkeep
+inbox/*
+!inbox/.gitkeep
+config.toml
+.env
+watchlist.txt
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# --- python ---
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- editors / os ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
