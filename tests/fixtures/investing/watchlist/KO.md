@@ -1,0 +1,3 @@
+---
+ticker: KO       # trailing comment
+---

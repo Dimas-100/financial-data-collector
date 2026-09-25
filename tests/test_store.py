@@ -55,11 +55,11 @@ def test_apply_migrations_backs_up_before_pending(tmp_path: Path):
     extra = tmp_path / "mig"
     extra.mkdir()
     (extra / "0001_init.sql").write_text((migrate.MIGRATIONS_DIR / "0001_init.sql").read_text())
-    (extra / "0003_more.sql").write_text("CREATE TABLE extra_t (x INTEGER);")
+    (extra / "9999_more.sql").write_text("CREATE TABLE extra_t (x INTEGER);")
     conn = sqlite3.connect(db)
     backup = tmp_path / "backups" / "w-backup.db"
     applied = migrate.apply_migrations(conn, extra, backup_to=backup)
-    assert applied == [3]
+    assert applied == [9999]
     assert backup.exists()
     assert conn.execute("SELECT COUNT(*) FROM extra_t").fetchone()[0] == 0
     conn.close()

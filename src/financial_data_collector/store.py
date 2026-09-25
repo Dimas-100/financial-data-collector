@@ -304,3 +304,55 @@ class Store:
 
     def counts(self) -> dict[str, int]:
         return {t: self.conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in COUNT_TABLES}
+
+    # ---- derived data (rebuilt from scratch by the derive step) --------------
+    def replace_rows(self, table: str, columns: tuple[str, ...], rows: Iterable[tuple]) -> int:
+        rows = list(rows)
+        cols, marks = ", ".join(columns), ", ".join("?" for _ in columns)
+        with self.conn:
+            self.conn.execute(f"DELETE FROM {table}")
+            self.conn.executemany(f"INSERT INTO {table} ({cols}) VALUES ({marks})", rows)
+        return len(rows)
+
+    def prices_series(self, symbol: str) -> list[tuple[str, float, float]]:
+        return [tuple(r) for r in self.query(
+            "SELECT date, close, dividend FROM prices WHERE symbol = ? ORDER BY date", (symbol,))]
+
+    def ttm_by_symbol(self) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {}
+        for r in self.query(
+            "SELECT symbol, period_end, available_from, revenue, net_income, ocf, fcf, eps_diluted, "
+            "shares_outstanding, shares_diluted FROM financials_ttm WHERE symbol IS NOT NULL "
+            "ORDER BY symbol, available_from, period_end"
+        ):
+            out.setdefault(r["symbol"], []).append(dict(r))
+        return out
+
+    def transactions_for_replay(self) -> list[dict]:
+        return [dict(r) for r in self.query(
+            "SELECT id, account_id, trade_date, type, symbol, units, price, amount FROM transactions "
+            "ORDER BY trade_date, id")]
+
+    def snapshot_units(self) -> dict[tuple[str, int], dict[str, float]]:
+        out: dict[tuple[str, int], dict[str, float]] = {}
+        for r in self.query("SELECT as_of_date, account_id, symbol, quantity FROM position_snapshots"):
+            out.setdefault((r[0], r[1]), {})[r[2]] = r[3]
+        for r in self.query("SELECT DISTINCT as_of_date, account_id FROM cash_balances"):
+            out.setdefault((r[0], r[1]), {})  # a cash-only day is still a full statement of the account
+        return out
+
+    def snapshot_cash(self) -> dict[tuple[str, int], float]:
+        return {(r[0], r[1]): r[2] for r in self.query(
+            "SELECT as_of_date, account_id, SUM(amount) FROM cash_balances GROUP BY 1, 2")}
+
+    def trading_calendar(self) -> list[str]:
+        dates = {r[0] for r in self.query("SELECT DISTINCT date FROM prices")}
+        dates |= {r[0] for r in self.query("SELECT DISTINCT as_of_date FROM position_snapshots")}
+        dates |= {r[0] for r in self.query("SELECT DISTINCT as_of_date FROM cash_balances")}
+        return sorted(dates)
+
+    def closes_by_symbol(self) -> dict[str, list[tuple[str, float]]]:
+        out: dict[str, list[tuple[str, float]]] = {}
+        for r in self.query("SELECT symbol, date, close FROM prices ORDER BY symbol, date"):
+            out.setdefault(r[0], []).append((r[1], r[2]))
+        return out

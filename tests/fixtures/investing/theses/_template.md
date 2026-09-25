@@ -1,0 +1,4 @@
+---
+ticker: TMPL
+---
+template, skipped

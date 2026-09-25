@@ -60,7 +60,9 @@ def test_rebuild_writes_only_symbols_with_statements(tmp_path: Path, fixtures: P
         s.write_prices(sym, [PriceBar("2026-01-15", 100.0, 100.0), PriceBar("2026-02-02", 110.0, 110.0, 1.0)], "tiingo")
     n = V.rebuild(s)
     rows = s.query("SELECT symbol, date, revenue_ttm, shares, pe FROM valuation_daily ORDER BY symbol, date")
-    assert n == 1 and [tuple(r)[:3] for r in rows] == [("AAPL", "2026-02-02", 1100.0)]   # 2026-01-15 precedes the 10-K
-    assert rows[0]["shares"] == 990.0 and rows[0]["pe"] is None                          # no four-quarter EPS in the fixture
+    # 2026-01-15 already has the Q3-2025 10-Q window in force (1090); the 10-K window (1100) starts 2026-02-01
+    assert n == 1 and [tuple(r)[:3] for r in rows] == [("AAPL", "2026-01-15", 1090.0), ("AAPL", "2026-02-02", 1100.0)]
+    assert rows[0]["shares"] is None                                                     # no share count until the 10-K
+    assert rows[1]["shares"] == 990.0 and rows[1]["pe"] is None                          # no four-quarter EPS in the fixture
     assert s.query("SELECT COUNT(*) FROM valuation_latest")[0][0] == 1
     s.close()
