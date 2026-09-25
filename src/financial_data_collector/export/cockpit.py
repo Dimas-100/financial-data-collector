@@ -11,6 +11,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ..derive.adjust import adjusted_closes
 from ..store import Store
 
 FILES = ("prices.json", "dividends.json", "fundamentals.json")
@@ -37,9 +38,12 @@ def _history_from(now: datetime) -> str:
 
 def build_prices(store: Store, universe: list[str], now: datetime) -> dict:
     src_map = {r["symbol"]: r["price_source"] for r in store.securities()}
+    start = _history_from(now)
     by, sources, misses = {}, {}, []
     for sym in sorted(universe):
-        rows = store.adj_close_series(sym, _history_from(now))
+        # adjusted locally from close/dividend/split so every bar shares one basis
+        # (the stored adj_close column is spliced across incremental fetches)
+        rows = [(d, c) for d, c in adjusted_closes(store.prices_series(sym)) if d >= start]
         if not rows:
             misses.append(sym)
             continue

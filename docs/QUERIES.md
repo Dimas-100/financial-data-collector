@@ -86,8 +86,9 @@ SELECT substr(sell_date, 1, 4) AS year, SUM(gain) AS gain, SUM(cost_known = 0) A
 FROM realized_gains GROUP BY 1 ORDER BY 1;
 
 -- open lots and their unrealized gain at the latest close
-SELECT l.symbol, l.open_date, l.units_left, l.cost_per_unit, v.close, (v.close - l.cost_per_unit) * l.units_left AS unrealized
-FROM lots l JOIN valuation_latest v ON v.symbol = l.symbol WHERE l.units_left > 0 ORDER BY l.symbol, l.open_date;
+SELECT l.symbol, l.open_date, l.units_left, l.cost_per_unit, p.close, (p.close - l.cost_per_unit) * l.units_left AS unrealized
+FROM lots l JOIN prices p ON p.symbol = l.symbol AND p.date = (SELECT MAX(date) FROM prices p2 WHERE p2.symbol = l.symbol)
+WHERE l.units_left > 0 ORDER BY l.symbol, l.open_date;
 
 -- where the replay disagrees with a real snapshot (splits, missing transactions)
 SELECT * FROM reconciliation ORDER BY as_of_date;

@@ -101,11 +101,16 @@ def _step_derive(store: Store, cfg: Config, **_) -> tuple[int, str, str]:
     # Statements are a function of the shaper and the concept map, not of the fetch:
     # reshape every company from its stored facts so a code or seed change applies everywhere.
     rules = store.concept_rules()
-    reshaped = 0
+    reshaped, failed = 0, []
     for cik in store.ciks_with_facts():
-        store.replace_line_items(cik, statements.rebuild(store.facts_for(cik), rules))
-        reshaped += 1
+        try:
+            store.replace_line_items(cik, statements.rebuild(store.facts_for(cik), rules))
+            reshaped += 1
+        except Exception as e:  # one odd filer keeps its previous rows; the rest still rebuild
+            failed.append(f"{cik} ({type(e).__name__}: {e})")
     counts = {"statements reshaped": reshaped}
+    if failed:
+        counts[f"statements {len(failed)} failed: " + "; ".join(failed)[:300]] = len(failed)
     counts.update(history.rebuild(store))
     counts["valuation_daily symbols"] = valuation.rebuild(store)
     return sum(counts.values()), ", ".join(f"{k} {v}" for k, v in counts.items()), "ok"

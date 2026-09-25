@@ -106,6 +106,7 @@ class LineItem:
     fiscal_quarter: int | None
     value: float
     concept: str
-    filed: str
+    filed: str  # latest filing that reported the period (the restatement in force)
     accn: str
     is_derived: bool = False
+    first_filed: str = ""  # when the period was first public; point-in-time analysis uses this

@@ -208,3 +208,22 @@ def test_mistagged_fiscal_year_does_not_collide_with_a_neighbour():
     ]
     out = {i.period_end: i.fiscal_year for i in S.rebuild(facts, rules) if i.period_kind == "annual"}
     assert out == {"2020-12-31": 2020, "2021-12-31": 2021}
+
+
+def test_first_filed_survives_later_re_reporting():
+    rules = [ConceptRule("total_assets", "balance", "instant", "us-gaap", "Assets", 1),
+             ConceptRule("revenue", "income", "duration", "us-gaap", "Revenues", 1)]
+    facts = [
+        Fact("us-gaap", "Assets", "USD", "", "2025-12-31", 500.0, 2025, "FY", "10-K", "2026-02-01", "k25"),
+        Fact("us-gaap", "Assets", "USD", "", "2025-12-31", 505.0, 2026, "Q1", "10-Q", "2026-05-01", "q126"),   # re-reported comparative
+        Fact("us-gaap", "Revenues", "USD", "2025-01-01", "2025-12-31", 1000.0, 2025, "FY", "10-K", "2026-02-01", "k25"),
+        Fact("us-gaap", "Revenues", "USD", "2025-10-01", "2025-12-31", 260.0, 2025, "FY", "10-K", "2026-02-01", "k25"),
+        Fact("us-gaap", "Revenues", "USD", "2025-01-01", "2025-09-30", 740.0, 2025, "Q3", "10-Q", "2025-11-01", "q325"),
+        Fact("us-gaap", "Revenues", "USD", "2025-01-01", "2025-03-31", 240.0, 2025, "Q1", "10-Q", "2025-05-01", "q125"),
+        Fact("us-gaap", "Revenues", "USD", "2025-01-01", "2025-06-30", 490.0, 2025, "Q2", "10-Q", "2025-08-01", "q225"),
+    ]
+    out = {(i.line_item, i.period_kind, i.period_end): i for i in S.rebuild(facts, rules)}
+    assets = out[("total_assets", "annual", "2025-12-31")]
+    assert (assets.value, assets.filed, assets.first_filed) == (505.0, "2026-05-01", "2026-02-01")
+    q2 = out[("revenue", "quarter", "2025-06-30")]                      # derived from H1 - Q1
+    assert q2.is_derived and q2.first_filed == "2025-08-01"

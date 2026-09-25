@@ -18,7 +18,7 @@ def _rows(rows):
 
 
 def test_point_in_time_selection():
-    prices = [("2025-04-30", 10.0, 0.0), ("2025-05-01", 20.0, 0.0), ("2025-08-01", 24.0, 0.0)]
+    prices = [("2025-04-30", 10.0, 0.0, 1.0), ("2025-05-01", 20.0, 0.0, 1.0), ("2025-08-01", 24.0, 0.0, 1.0)]
     rows = _rows(V.build("AAPL", prices, [TTM1, TTM2]))
     assert [r["date"] for r in rows] == ["2025-05-01", "2025-08-01"]       # nothing before the first filing
     r1, r2 = rows
@@ -32,12 +32,12 @@ def test_point_in_time_selection():
 
 def test_null_rules():
     ttm = dict(TTM1, revenue=0.0, eps_diluted=-1.0, fcf=0.0)
-    (r,) = _rows(V.build("X", [("2025-05-01", 10.0, 0.0)], [ttm]))
+    (r,) = _rows(V.build("X", [("2025-05-01", 10.0, 0.0, 1.0)], [ttm]))
     assert r["pe"] is None and r["ps"] is None and r["p_fcf"] is None and r["market_cap"] == 500.0
 
 
 def test_dividends_trailing_window():
-    prices = [("2025-05-01", 10.0, 1.0), ("2025-11-01", 10.0, 0.5), ("2026-04-30", 10.0, 0.0), ("2026-05-02", 10.0, 0.0)]
+    prices = [("2025-05-01", 10.0, 1.0, 1.0), ("2025-11-01", 10.0, 0.5, 1.0), ("2026-04-30", 10.0, 0.0, 1.0), ("2026-05-02", 10.0, 0.0, 1.0)]
     by = {r["date"]: r for r in _rows(V.build("X", prices, [TTM1]))}
     assert by["2025-11-01"]["dividends_12m"] == 1.5 and abs(by["2025-11-01"]["dividend_yield"] - 0.15) < 1e-9
     assert by["2026-04-30"]["dividends_12m"] == 1.5      # 364 days back is still inside the window
@@ -45,7 +45,7 @@ def test_dividends_trailing_window():
 
 
 def test_no_ttm_no_rows():
-    assert V.build("X", [("2025-05-01", 10.0, 0.0)], []) == []
+    assert V.build("X", [("2025-05-01", 10.0, 0.0, 1.0)], []) == []
 
 
 def test_rebuild_writes_only_symbols_with_statements(tmp_path: Path, fixtures: Path):
@@ -65,4 +65,27 @@ def test_rebuild_writes_only_symbols_with_statements(tmp_path: Path, fixtures: P
     assert rows[0]["shares"] is None                                                     # no share count until the 10-K
     assert rows[1]["shares"] == 990.0 and rows[1]["pe"] is None                          # no four-quarter EPS in the fixture
     assert s.query("SELECT COUNT(*) FROM valuation_latest")[0][0] == 1
+    s.close()
+
+
+def test_split_after_period_end_scales_shares_eps_and_dividends():
+    prices = [("2025-05-01", 100.0, 1.0, 1.0), ("2025-06-02", 50.0, 0.0, 2.0)]      # 2:1 split on 06-02
+    ttm = dict(TTM1, shares_outstanding=50.0, eps_diluted=2.0)
+    by = {r["date"]: r for r in _rows(V.build("X", prices, [ttm]))}
+    assert (by["2025-05-01"]["shares"], by["2025-05-01"]["market_cap"], by["2025-05-01"]["pe"]) == (50.0, 5000.0, 50.0)
+    assert (by["2025-06-02"]["shares"], by["2025-06-02"]["market_cap"], by["2025-06-02"]["eps_ttm"], by["2025-06-02"]["pe"]) == (100.0, 5000.0, 1.0, 50.0)
+    assert by["2025-06-02"]["dividends_12m"] == 0.5                                  # the pre-split dividend in post-split share terms
+
+
+def test_rebuild_covers_every_share_class_of_a_cik(tmp_path: Path, fixtures: Path):
+    s = Store.open(tmp_path / "w.db")
+    facts = parse_company_facts(json.loads((fixtures / "sec" / "companyfacts_SAMPLE.json").read_text()))
+    for sym in ("BRK.A", "BRK.B"):
+        s.upsert_security(sym, "SAMPLE HOLDING", "stock", "2026-01-01")
+        s.set_security_cik(sym, "0000000001", "Sample Corp")
+        s.write_prices(sym, [PriceBar("2026-02-02", 10.0 if sym == "BRK.B" else 15000.0, 10.0)], "tiingo")
+    s.write_sec_facts("0000000001", facts)
+    s.replace_line_items("0000000001", statements.rebuild(facts, s.concept_rules()))
+    assert V.rebuild(s) == 2
+    assert [r[0] for r in s.query("SELECT symbol FROM valuation_latest ORDER BY 1")] == ["BRK.A", "BRK.B"]
     s.close()

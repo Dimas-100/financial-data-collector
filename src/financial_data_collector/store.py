@@ -15,6 +15,7 @@ from .models import (
 COUNT_TABLES = (
     "accounts", "securities", "position_snapshots", "cash_balances", "transactions",
     "prices", "sec_facts", "financial_line_items", "sync_runs", "ingested_files",
+    "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily",
 )
 
 
@@ -269,10 +270,11 @@ class Store:
             self.conn.executemany(
                 """INSERT INTO financial_line_items
                    (cik, line_item, period_kind, period_start, period_end, fiscal_year, fiscal_quarter,
-                    value, concept, filed, accn, is_derived)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    value, concept, filed, accn, is_derived, first_filed)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [(cik, i.line_item, i.period_kind, i.period_start, i.period_end, i.fiscal_year,
-                  i.fiscal_quarter, i.value, i.concept, i.filed, i.accn, int(i.is_derived)) for i in items],
+                  i.fiscal_quarter, i.value, i.concept, i.filed, i.accn, int(i.is_derived),
+                  i.first_filed or i.filed) for i in items],
             )
         return len(items)
 
@@ -317,19 +319,26 @@ class Store:
             self.conn.executemany(f"INSERT INTO {table} ({cols}) VALUES ({marks})", rows)
         return len(rows)
 
-    def prices_series(self, symbol: str) -> list[tuple[str, float, float]]:
+    def prices_series(self, symbol: str) -> list[tuple[str, float, float, float]]:
         return [tuple(r) for r in self.query(
-            "SELECT date, close, dividend FROM prices WHERE symbol = ? ORDER BY date", (symbol,))]
+            "SELECT date, close, dividend, split_factor FROM prices WHERE symbol = ? ORDER BY date", (symbol,))]
 
-    def ttm_by_symbol(self) -> dict[str, list[dict]]:
+    def ttm_by_cik(self) -> dict[str, list[dict]]:
         out: dict[str, list[dict]] = {}
         for r in self.query(
-            "SELECT symbol, period_end, available_from, revenue, net_income, ocf, fcf, eps_diluted, "
-            "shares_outstanding, shares_diluted FROM financials_ttm WHERE symbol IS NOT NULL "
-            "ORDER BY symbol, available_from, period_end"
+            "SELECT cik, period_end, available_from, revenue, net_income, ocf, fcf, eps_diluted, "
+            "shares_outstanding, shares_diluted FROM financials_ttm ORDER BY cik, available_from, period_end"
         ):
-            out.setdefault(r["symbol"], []).append(dict(r))
+            out.setdefault(r["cik"], []).append(dict(r))
         return out
+
+    def securities_with_cik(self) -> list[tuple[str, str]]:
+        return [(r[0], r[1]) for r in self.query(
+            "SELECT symbol, cik FROM securities WHERE cik IS NOT NULL ORDER BY symbol")]
+
+    def snapshot_fetch_times(self) -> dict[tuple[str, int], str | None]:
+        return {(r[0], r[1]): r[2] for r in self.query(
+            "SELECT as_of_date, account_id, MAX(source_fetched_at) FROM position_snapshots GROUP BY 1, 2")}
 
     def transactions_for_replay(self) -> list[dict]:
         return [dict(r) for r in self.query(

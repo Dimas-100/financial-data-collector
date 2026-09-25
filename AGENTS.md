@@ -29,7 +29,7 @@ projects consume the database; this one owns collection and storage. Design spec
 
 ```
 src/financial_data_collector/
-  cli.py            fdc init | sync | import | status | query | mcp
+  cli.py            fdc init | sync | import | status | query | export | mcp
   sync.py           runs steps ingest -> prices -> sec -> derive -> export, logs sync_runs, exit codes
   derive/           history.py (replay -> holdings_daily, cash_daily, lots, realized_gains, reconciliation), valuation.py (valuation_daily)
   export/cockpit.py prices.json / dividends.json / fundamentals.json for the investing cockpit

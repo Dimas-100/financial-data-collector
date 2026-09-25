@@ -37,7 +37,9 @@ def test_prices_payload(store: Store):
     assert set(p) == {"as_of", "source", "lookback_days", "sources", "by_ticker", "misses"}
     assert p["as_of"] == "2026-03-01T00:00:00+00:00" and p["lookback_days"] == 1826
     assert p["misses"] == ["VTI"] and p["sources"] == {"AAPL": "tiingo", "KO": "yfinance"}
-    assert p["by_ticker"]["AAPL"] == [{"d": "2026-01-02", "c": 99.5}, {"d": "2026-01-05", "c": 50.9}, {"d": "2026-01-06", "c": 52.0}]
+    # adjusted locally: 52 stays; 51 x (51-0.25)/51; 100 x that x 1/2 for the split
+    assert [r["d"] for r in p["by_ticker"]["AAPL"]] == ["2026-01-02", "2026-01-05", "2026-01-06"]
+    assert p["by_ticker"]["AAPL"][-1]["c"] == 52.0 and p["by_ticker"]["AAPL"][0]["c"] < 50.0
     assert "VTI" not in p["by_ticker"]
 
 
@@ -85,3 +87,18 @@ def test_export_cockpit_skips_missing_dir_and_reports(store: Store, tmp_path: Pa
     assert E.export_cockpit(store, cfg, ["AAPL"], NOW, out_dir=out) == [(n, "written") for n in names]
     assert json.loads((out / "prices.json").read_text())["by_ticker"]["AAPL"]
     assert E.export_cockpit(store, cfg, ["AAPL"], NOW, out_dir=out) == [(n, "unchanged") for n in names]
+
+
+def test_adjusted_closes_are_computed_from_dividends_and_splits():
+    from financial_data_collector.derive.adjust import adjusted_closes
+    bars = [("2026-01-02", 100.0, 0.0, 1.0), ("2026-01-05", 100.0, 1.0, 1.0), ("2026-01-06", 50.0, 0.0, 2.0)]
+    assert adjusted_closes(bars) == [("2026-01-02", 49.5), ("2026-01-05", 50.0), ("2026-01-06", 50.0)]
+    assert adjusted_closes([]) == []
+
+
+def test_prices_export_rebases_older_bars(store: Store):
+    # AAPL bars: 100 (div 1.0 on 01-02), 51 with a 2:1 split on 01-05, 52 (div 0.25 on 01-06); stored adj_close is ignored
+    p = E.build_prices(store, ["AAPL"], NOW)
+    got = [(r["d"], r["c"]) for r in p["by_ticker"]["AAPL"]]
+    assert got[-1] == ("2026-01-06", 52.0)
+    # descending: F=1 -> 06: 52; F *= ((51-0.25)/51)/1 -> 05: 51*0.995098=50.75; F *= ((100-0)/100)/2 -> 02: 100*0.497549=49.75\n    assert got[1] == ("2026-01-05", round(51.0 * ((51.0 - 0.25) / 51.0), 4))\n    assert got[0] == ("2026-01-02", round(100.0 * ((51.0 - 0.25) / 51.0) * 0.5, 4))

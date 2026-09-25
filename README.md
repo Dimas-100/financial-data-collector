@@ -63,7 +63,9 @@ Funds (ETFs, mutual funds) get positions and prices only; they file no statement
 Replayed history before your first snapshot assumes the transaction history starts at account opening; for an
 account with a partial history (a broker feed that only goes back a year) treat `reconstructed` cash as approximate.
 Stock splits are not applied during replay; `reconciliation` shows where units drift, and every real snapshot
-re-anchors the series.
+re-anchors the series. A snapshot fetched before the market open (before 13:30 UTC) is the state at the start of
+its day, so that day's trades land on top of it; one fetched later (or a CSV, whose time is unknown) already
+contains them and anchors after.
 
 See `docs/QUERIES.md` for a cookbook.
 

@@ -119,10 +119,42 @@ def test_money_market_transactions_only_move_cash(tmp_path: Path):
     s.write_transactions([
         TransactionRow(acct, "2026-01-02", "contribution", None, None, None, 500.0, None, "EFT", "fidelity_csv"),
         TransactionRow(acct, "2026-01-02", "buy", "SPAXX", 500.0, 1.0, -500.0, 0.0, "YOU BOUGHT SPAXX", "fidelity_csv"),
+        TransactionRow(acct, "2026-01-02", "dividend", "SPAXX", None, None, 2.0, None, "DIVIDEND RECEIVED SPAXX", "fidelity_csv"),
     ])
     s.write_prices("AAPL", [PriceBar("2026-01-02", 100.0, 100.0)], "tiingo")
     H.rebuild(s)
     assert s.query("SELECT COUNT(*) FROM holdings_daily")[0][0] == 0
-    assert s.query("SELECT amount FROM cash_daily")[0][0] == 0.0        # the sweep purchase is cash moving into cash
+    assert s.query("SELECT amount FROM cash_daily")[0][0] == 502.0      # the sweep purchase is cash moving into cash; its dividend is income
     assert s.query("SELECT COUNT(*) FROM lots")[0][0] == 0
     s.close()
+
+
+def test_same_day_round_trip_inserted_sell_first():
+    # Fidelity downloads and the SnapTrade feed are newest-first, so the sell can get the lower id.
+    txs = [tx(1, "2026-01-05", "sell", "AAPL", -5, 110.0, 550.0), tx(2, "2026-01-05", "buy", "AAPL", 5, 100.0, -500.0)]
+    r = H.replay(txs, {}, {}, {"AAPL": [("2026-01-05", 110.0)]}, CAL)
+    (g,) = r.gains
+    assert (g[5], g[6], g[9]) == (500.0, 50.0, 1)                      # cost known: the buy was applied first
+    assert all(l[4] == 0.0 for l in r.lots) and r.holdings == []       # flat position, no open lot
+
+
+def test_post_open_snapshot_anchors_after_the_days_trades():
+    txs = [tx(1, "2026-01-02", "buy", "AAPL", 10, 100.0, -1000.0), tx(2, "2026-01-06", "buy", "AAPL", 5, 100.0, -500.0)]
+    snaps = {("2026-01-06", 1): {"AAPL": 15.0}}                          # fetched after the buy, so it already holds 15
+    times = {("2026-01-06", 1): "2026-01-06T20:00:00.000Z"}
+    r = H.replay(txs, snaps, {("2026-01-06", 1): 100.0}, {"AAPL": [("2026-01-02", 100.0)]}, CAL, fetch_times=times)
+    h = _h(r)
+    assert h[("2026-01-06", "AAPL")][3] == 15.0 and h[("2026-01-07", "AAPL")][3] == 15.0
+    assert r.recon == []
+    assert {row[0]: row[2] for row in r.cash}["2026-01-06"] == 100.0     # cash anchored after the trade too
+    pre = {("2026-01-06", 1): "2026-01-06T12:54:00.000Z"}
+    r2 = H.replay(txs, {("2026-01-06", 1): {"AAPL": 10.0}}, {}, {"AAPL": [("2026-01-02", 100.0)]}, CAL, fetch_times=pre)
+    assert _h(r2)[("2026-01-06", "AAPL")][3] == 15.0 and r2.recon == []   # pre-open: anchor first, then the trade
+
+
+def test_trades_after_the_last_calendar_day_still_reach_lots_and_gains():
+    txs = [tx(1, "2026-01-02", "buy", "AAPL", 10, 100.0, -1000.0), tx(2, "2026-01-09", "sell", "AAPL", -10, 120.0, 1200.0)]
+    r = H.replay(txs, {}, {}, {"AAPL": [("2026-01-02", 100.0)]}, CAL)   # calendar ends 01-07
+    (g,) = r.gains
+    assert g[2] == "2026-01-09" and g[6] == 200.0
+    assert r.holdings[-1][3] == 10.0                                    # emitted days are unchanged

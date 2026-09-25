@@ -77,3 +77,12 @@ def test_export_command_writes_three_files(tmp_path: Path, capsys):
     rc = cli.main(["--root", str(tmp_path), "export", "--dir", str(out)])
     assert rc == 0 and sorted(p.name for p in out.iterdir()) == ["dividends.json", "fundamentals.json", "prices.json"]
     assert "written" in capsys.readouterr().out
+
+
+def test_status_after_a_sync(tmp_path: Path, capsys):
+    cli.main(["--root", str(tmp_path), "init"])
+    assert cli.main(["--root", str(tmp_path), "sync", "--only", "derive,export"]) == 0
+    capsys.readouterr()
+    assert cli.main(["--root", str(tmp_path), "status"]) == 0
+    out = capsys.readouterr().out
+    assert "derive" in out and "export" in out and "holdings_daily=" in out

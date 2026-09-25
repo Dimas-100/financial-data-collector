@@ -85,10 +85,21 @@ def _consume(lots: list[_Lot], need: float) -> tuple[float, str | None, bool, li
     return cost, first, known, emptied
 
 
+MARKET_OPEN_UTC = "13:30"  # 09:30 New York in summer; a fetch stamped earlier is a pre-open snapshot
+
+
+def _post_open(fetched_at: str | None) -> bool:
+    """A snapshot fetched at/after the open (or of unknown time) already contains that day's trades."""
+    return fetched_at is None or len(fetched_at) < 16 or fetched_at[11:16] >= MARKET_OPEN_UTC
+
+
 def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, float]],
            cash_snapshots: dict[tuple[str, int], float], closes: dict[str, list[tuple[str, float]]],
-           calendar: list[str]) -> ReplayResult:
-    txs = sorted(transactions, key=lambda t: (t["trade_date"], t.get("id") or 0))
+           calendar: list[str], fetch_times: dict[tuple[str, int], str | None] | None = None) -> ReplayResult:
+    # Within a day, rows that add units come before rows that remove them: both Fidelity
+    # downloads and the SnapTrade feed are newest-first, so a same-day round trip would
+    # otherwise replay sell-before-buy and look like a short sale plus an open lot.
+    txs = sorted(transactions, key=lambda t: (t["trade_date"], 1 if (_signed_units(t) or 0) < 0 else 0, t.get("id") or 0))
     accounts = {t["account_id"] for t in txs} | {a for _, a in snapshots} | {a for _, a in cash_snapshots}
     first: dict[int, str] = {}
     for t in txs:
@@ -139,15 +150,21 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
             if t.get("amount") is not None:
                 state["cash"] += t["amount"]
 
+        def apply_through(day: str, inclusive: bool) -> None:
+            nonlocal ptr
+            while ptr < len(mine) and (mine[ptr]["trade_date"] <= day if inclusive else mine[ptr]["trade_date"] < day):
+                apply(mine[ptr])
+                ptr += 1
+
         for d in cal:
             if d < first[acct]:
                 continue
-            # 1. anything dated before today that is still pending (weekend-dated rows)
-            while ptr < len(mine) and mine[ptr]["trade_date"] < d:
-                apply(mine[ptr])
-                ptr += 1
-            # 2. a snapshot is the state at the START of its day: reconcile, then re-anchor
             key = (d, acct)
+            # A pre-open snapshot is the state at the START of its day (anchor, then the
+            # day's trades); one fetched after the open already contains them (trades, then anchor).
+            # Without fetch times (tests, CSV-only setups) every snapshot is treated as pre-open.
+            after_trades = fetch_times is not None and key in snapshots and _post_open(fetch_times.get(key))
+            apply_through(d, inclusive=after_trades)
             basis = "reconstructed"
             if key in snapshots:
                 snap = snapshots[key]
@@ -162,10 +179,7 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
             if key in cash_snapshots:
                 state["cash"] = cash_snapshots[key]
                 cbasis = "snapshot"
-            # 3. today's own trades land on top of the anchored state
-            while ptr < len(mine) and mine[ptr]["trade_date"] <= d:
-                apply(mine[ptr])
-                ptr += 1
+            apply_through(d, inclusive=True)
             cash = state["cash"]
             for sym in sorted(units):
                 u = units[sym]
@@ -174,6 +188,10 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
                 c = close_on(sym, d)
                 out.holdings.append((d, acct, sym, u, c, (u * c) if c is not None else None, basis))
             out.cash.append((d, acct, cash, cbasis))
+        # trades dated after the last calendar day (today, before its bar exists) still shape lots and gains
+        while ptr < len(mine):
+            apply(mine[ptr])
+            ptr += 1
         for sym in sorted(set(open_lots) | set(closed_lots)):
             for lot in closed_lots.get(sym, []) + open_lots.get(sym, []):
                 out.lots.append((acct, sym, lot.open_date, lot.units_open, lot.units_left, lot.cost_total,
@@ -182,11 +200,17 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
 
 
 def rebuild(store: Store) -> dict[str, int]:
-    # Money-market sweeps are cash, not holdings: keep their cash effect, drop the units.
-    txs = [dict(t, symbol=None) if t.get("symbol") and is_money_market(t["symbol"]) else t
-           for t in store.transactions_for_replay()]
+    # Money-market sweeps ARE cash: buying or selling one moves cash into cash, so those
+    # rows vanish; their dividends and interest are income and keep their amount.
+    txs: list[dict] = []
+    for t in store.transactions_for_replay():
+        if t.get("symbol") and is_money_market(t["symbol"]):
+            if t["type"] in ("buy", "sell", "reinvest"):
+                continue
+            t = dict(t, symbol=None)
+        txs.append(t)
     result = replay(txs, store.snapshot_units(), store.snapshot_cash(),
-                    store.closes_by_symbol(), store.trading_calendar())
+                    store.closes_by_symbol(), store.trading_calendar(), fetch_times=store.snapshot_fetch_times())
     return {
         "holdings_daily": store.replace_rows("holdings_daily", HOLDINGS_COLUMNS, result.holdings),
         "cash_daily": store.replace_rows("cash_daily", CASH_COLUMNS, result.cash),

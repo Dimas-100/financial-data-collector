@@ -13,7 +13,7 @@ from .readonly import UnsafeSql, run_readonly
 from .store import Store
 from .sync import STEPS, run_sync
 
-STALE_HOURS = {"ingest": 48, "prices": 48, "sec": 336}
+STALE_HOURS = {"ingest": 48, "prices": 48, "sec": 336, "derive": 48, "export": 48}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -22,7 +22,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"fdc {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init", help="create data/, inbox/, config.toml, .env and the database")
-    s = sub.add_parser("sync", help="ingest inbox + SnapTrade, then fetch prices and SEC facts")
+    s = sub.add_parser("sync", help="ingest, fetch prices and SEC facts, derive analytics, export cockpit files")
     s.add_argument("--only", help=f"comma list of steps to run ({', '.join(STEPS)})")
     s.add_argument("--skip", help="comma list of steps to skip")
     s.add_argument("--dry-run", action="store_true")
@@ -107,7 +107,7 @@ def cmd_status(root: Path) -> int:
             if r is None:
                 print(f"  {step:8} never run")
                 continue
-            stale = " STALE" if (r["age_hours"] or 0) > STALE_HOURS[step] else ""
+            stale = " STALE" if (r["age_hours"] or 0) > STALE_HOURS.get(step, 48) else ""
             print(f"  {step:8} {r['status']:8} {r['age_hours']:>7} h ago  {r['rows_written']} rows{stale}  {r['message'][:120]}")
         print(f"latest snapshot: {store.latest_snapshot_date() or 'none'}")
         print("rows:", ", ".join(f"{k}={v}" for k, v in store.counts().items()))

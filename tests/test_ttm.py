@@ -60,4 +60,13 @@ def test_new_tables_and_views_exist(store: Store):
     names = {r[0] for r in store.query("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
     assert {"holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily",
             "financial_line_items_ttm", "financials_ttm", "valuation_latest", "portfolio_daily_full"} <= names
-    assert [r[0] for r in store.query("SELECT version FROM schema_version ORDER BY 1")] == [1, 2, 3]
+    assert [r[0] for r in store.query("SELECT version FROM schema_version ORDER BY 1")] == [1, 2, 3, 4]
+
+
+def test_ttm_available_from_uses_first_filing(store: Store):
+    from financial_data_collector.models import Fact as F
+    facts = store.facts_for(CIK) + [F("us-gaap", "Assets", "USD", "", "2025-12-31", 5510.0, 2026, "Q1", "10-Q", "2026-05-01", "q126")]
+    store.replace_line_items(CIK, statements.rebuild(facts, store.concept_rules()))
+    assert _ttm(store, "total_assets", "2025-12-31") == (5510.0, 1, "2026-02-01")   # value re-reported, availability unchanged
+    row = store.query("SELECT available_from FROM financials_ttm WHERE cik=? AND period_end='2025-12-31'", (CIK,))[0]
+    assert row[0] == "2026-02-01"

@@ -153,3 +153,24 @@ def test_derive_reshapes_statements_from_stored_facts(project, fixtures: Path):
     s = Store.open(project.db_path, migrate=False)
     assert s.query("SELECT COUNT(*) FROM financial_line_items")[0][0] > 0
     s.close()
+
+
+def test_derive_isolates_a_company_whose_statements_fail(project, fixtures: Path, monkeypatch):
+    sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    s = Store.open(project.db_path, migrate=False)
+    s.write_sec_facts("0000000099", s.facts_for("0000000001")[:3])
+    s.close()
+    from financial_data_collector import statements as st
+    real = st.rebuild
+
+    def flaky(facts, rules):
+        if len(facts) == 3:
+            raise ValueError("odd filer")
+        return real(facts, rules)
+
+    monkeypatch.setattr(sync.statements, "rebuild", flaky)
+    rep = sync.run_sync(project, only=["derive"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    assert rep.steps[0].status == "ok" and "1 failed" in rep.steps[0].message
+    s = Store.open(project.db_path, migrate=False)
+    assert s.query("SELECT COUNT(*) FROM financial_line_items WHERE cik='0000000001'")[0][0] > 0
+    s.close()
