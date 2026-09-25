@@ -113,33 +113,39 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
         cash = 0.0
         open_lots: dict[str, list[_Lot]] = {}
         closed_lots: dict[str, list[_Lot]] = {}
+        state = {"cash": 0.0}
+
+        def apply(t: dict) -> None:
+            sym = t.get("symbol")
+            su = _signed_units(t)
+            if sym and su is not None and t["type"] in UNIT_TYPES:
+                units[sym] = units.get(sym, 0.0) + su
+                book = open_lots.setdefault(sym, [])
+                if su > 0:
+                    book.append(_open_lot(t, su))
+                elif su < 0:
+                    cost, first_lot, known, emptied = _consume(book, -su)
+                    closed_lots.setdefault(sym, []).extend(emptied)
+                    if t["type"] == "sell":
+                        proceeds = t.get("amount")
+                        if proceeds is None and t.get("price"):
+                            proceeds = -su * t["price"]
+                        gain = (proceeds - cost) if (proceeds is not None and known) else None
+                        days = ((date.fromisoformat(t["trade_date"]) - date.fromisoformat(first_lot)).days
+                                if first_lot else None)
+                        out.gains.append((acct, sym, t["trade_date"], -su, proceeds, cost, gain, first_lot,
+                                          days, int(known), t.get("id")))
+            if t.get("amount") is not None:
+                state["cash"] += t["amount"]
+
         for d in cal:
             if d < first[acct]:
                 continue
-            while ptr < len(mine) and mine[ptr]["trade_date"] <= d:
-                t = mine[ptr]
+            # 1. anything dated before today that is still pending (weekend-dated rows)
+            while ptr < len(mine) and mine[ptr]["trade_date"] < d:
+                apply(mine[ptr])
                 ptr += 1
-                sym = t.get("symbol")
-                su = _signed_units(t)
-                if sym and su is not None and t["type"] in UNIT_TYPES:
-                    units[sym] = units.get(sym, 0.0) + su
-                    book = open_lots.setdefault(sym, [])
-                    if su > 0:
-                        book.append(_open_lot(t, su))
-                    elif su < 0:
-                        cost, first_lot, known, emptied = _consume(book, -su)
-                        closed_lots.setdefault(sym, []).extend(emptied)
-                        if t["type"] == "sell":
-                            proceeds = t.get("amount")
-                            if proceeds is None and t.get("price"):
-                                proceeds = -su * t["price"]
-                            gain = (proceeds - cost) if (proceeds is not None and known) else None
-                            days = ((date.fromisoformat(t["trade_date"]) - date.fromisoformat(first_lot)).days
-                                    if first_lot else None)
-                            out.gains.append((acct, sym, t["trade_date"], -su, proceeds, cost, gain, first_lot,
-                                              days, int(known), t.get("id")))
-                if t.get("amount") is not None:
-                    cash += t["amount"]
+            # 2. a snapshot is the state at the START of its day: reconcile, then re-anchor
             key = (d, acct)
             basis = "reconstructed"
             if key in snapshots:
@@ -148,12 +154,18 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
                     proj, actual = units.get(sym, 0.0), snap.get(sym, 0.0)
                     if abs(proj - actual) > 1e-6:
                         out.recon.append((d, acct, sym, proj, actual, actual - proj))
-                units = dict(snap)
+                units.clear()
+                units.update(snap)
                 basis = "snapshot"
             cbasis = "reconstructed"
             if key in cash_snapshots:
-                cash = cash_snapshots[key]
+                state["cash"] = cash_snapshots[key]
                 cbasis = "snapshot"
+            # 3. today's own trades land on top of the anchored state
+            while ptr < len(mine) and mine[ptr]["trade_date"] <= d:
+                apply(mine[ptr])
+                ptr += 1
+            cash = state["cash"]
             for sym in sorted(units):
                 u = units[sym]
                 if abs(u) <= EPS:

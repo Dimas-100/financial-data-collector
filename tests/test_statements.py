@@ -112,3 +112,21 @@ def test_in_progress_year_without_annual():
     ]
     out = S.rebuild(facts, rules)
     assert sorted((i.fiscal_year, i.fiscal_quarter, i.value) for i in out) == [(2027, 1, 10.0), (2027, 2, 11.0)]
+
+
+def test_instant_item_with_duration_facts_yields_unique_keys():
+    # Some filers tag StockholdersEquity both as an instant (balance sheet) and as a
+    # duration (equity roll-forward). The line item must still have one row per period.
+    rules = [ConceptRule("stockholders_equity", "balance", "instant", "us-gaap", "StockholdersEquity", 1),
+             ConceptRule("revenue", "income", "duration", "us-gaap", "Revenues", 1)]
+    facts = [
+        Fact("us-gaap", "StockholdersEquity", "USD", "", "2025-12-31", 500.0, 2025, "FY", "10-K", "2026-02-01", "k25"),
+        Fact("us-gaap", "StockholdersEquity", "USD", "2025-01-01", "2025-12-31", 500.0, 2025, "FY", "10-K", "2026-02-01", "k25"),
+        Fact("us-gaap", "StockholdersEquity", "USD", "2025-10-01", "2025-12-31", 500.0, 2025, "FY", "10-K", "2026-02-01", "k25"),
+        Fact("us-gaap", "Revenues", "USD", "2025-01-01", "2025-12-31", 1000.0, 2025, "FY", "10-K", "2026-02-01", "k25"),
+    ]
+    out = S.rebuild(facts, rules)
+    keys = [(i.line_item, i.period_kind, i.period_end) for i in out]
+    assert len(keys) == len(set(keys))
+    eq = [i for i in out if i.line_item == "stockholders_equity"]
+    assert {(i.period_kind, i.period_end, i.value) for i in eq} == {("annual", "2025-12-31", 500.0), ("quarter", "2025-12-31", 500.0)}

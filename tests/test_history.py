@@ -97,3 +97,17 @@ def test_rebuild_from_store(tmp_path: Path):
     assert full["2026-01-06"]["total"] == 2100.0 and full["2026-01-06"]["basis"] == "snapshot"
     assert full["2026-01-07"]["total"] == 2120.0 and full["2026-01-07"]["fidelity_total"] == 2120.0
     s.close()
+
+
+def test_trade_on_snapshot_day_applies_after_the_anchor():
+    # A snapshot is the state at the start of its day (morning fetch, or an evening
+    # fetch dated the next UTC day), so a trade dated that day lands on top of it.
+    txs = [tx(1, "2026-01-02", "buy", "AAPL", 10, 100.0, -1000.0), tx(2, "2026-01-06", "buy", "AAPL", 5, 100.0, -500.0)]
+    snaps = {("2026-01-06", 1): {"AAPL": 10.0}}
+    cash = {("2026-01-06", 1): 100.0}
+    r = H.replay(txs, snaps, cash, {"AAPL": [("2026-01-02", 100.0)]}, CAL)
+    h = _h(r)
+    assert h[("2026-01-06", "AAPL")][3] == 15.0 and h[("2026-01-07", "AAPL")][3] == 15.0
+    assert r.recon == []
+    c = {row[0]: row for row in r.cash}
+    assert c["2026-01-06"][2:] == (-400.0, "snapshot")

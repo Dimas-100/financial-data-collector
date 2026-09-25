@@ -132,8 +132,14 @@ def collect_sec(
             sleep(PAUSE_SECONDS)
             continue
         store.write_sec_facts(cik, facts)
-        items = rebuild(facts, rules)
-        store.replace_line_items(cik, items)
+        try:
+            items = rebuild(facts, rules)
+            store.replace_line_items(cik, items)
+        except Exception as e:  # one odd filer must not abort the rest; its raw facts are kept
+            store.mark_sec_fetch(symbol, stamp)
+            results.append(SecResult(symbol, cik, facts=len(facts), message=f"statements failed: {type(e).__name__}: {e}"))
+            sleep(PAUSE_SECONDS)
+            continue
         store.mark_sec_fetch(symbol, stamp)
         results.append(SecResult(symbol, cik, facts=len(facts), line_items=len(items)))
         sleep(PAUSE_SECONDS)

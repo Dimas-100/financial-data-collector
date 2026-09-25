@@ -132,3 +132,29 @@ def test_collect_sec_skips_money_market_and_marks_404_as_etf(project, fixtures: 
     assert "FDRXX" not in by
     assert store.query("SELECT asset_type FROM securities WHERE symbol = ?", ("BRK.B",))[0][0] == "etf"
     assert "404" in by["BRK.B"].message and "etf" in by["BRK.B"].message
+
+
+def test_collect_sec_isolates_a_company_failure(project, fixtures: Path):
+    cfg, store = project
+    store.upsert_security("KO", asset_type="stock", first_seen="2026-01-01")
+
+    def fetch(url, headers):
+        if url == sec_cik.CIK_URL:
+            return (fixtures / "sec" / "company_tickers.json").read_bytes()
+        if "companyfacts" in url:
+            return (fixtures / "sec" / "companyfacts_SAMPLE.json").read_bytes()
+        raise HttpError(404, url)
+
+    seen = []
+
+    def rebuild(facts, rules):
+        seen.append(len(facts))
+        if len(seen) == 1:
+            raise ValueError("bad concept map for this filer")
+        return []
+
+    results = sec_facts.collect_sec(store, cfg, fetch=fetch, now=NOW, rebuild=rebuild, sleep=lambda s: None)
+    by = {r.symbol: r for r in results}
+    assert "failed" in by["AAPL"].message and "ValueError" in by["AAPL"].message
+    assert by["KO"].facts == 35 and by["KO"].message == ""
+    assert store.query("SELECT COUNT(DISTINCT cik) FROM sec_facts")[0][0] == 2     # raw facts kept for both

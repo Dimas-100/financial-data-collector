@@ -176,4 +176,12 @@ def rebuild(facts: list[Fact], rules: list[ConceptRule]) -> list[LineItem]:
             if end in annual_ends or end in quarter_ends:
                 fq = 4 if end in annual_ends else quarter_number.get(end)
                 out.append(_row(item, "quarter", f, quarter_fy.get(end, fiscal_year_of(end)), fq))
-    return out
+    # A filer can tag the same concept as an instant and as a duration (equity
+    # roll-forwards); keep one row per (line_item, period_kind, period_end), latest filed.
+    unique: dict[tuple[str, str, str], LineItem] = {}
+    for li in out:
+        key = (li.line_item, li.period_kind, li.period_end)
+        old = unique.get(key)
+        if old is None or (li.filed, li.accn) > (old.filed, old.accn):
+            unique[key] = li
+    return list(unique.values())
