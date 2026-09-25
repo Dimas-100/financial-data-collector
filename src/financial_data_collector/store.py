@@ -252,6 +252,9 @@ class Store:
             )
         return len(facts)
 
+    def ciks_with_facts(self) -> list[str]:
+        return [r[0] for r in self.query("SELECT DISTINCT cik FROM sec_facts ORDER BY cik")]
+
     def facts_for(self, cik: str) -> list[Fact]:
         rows = self.query(
             "SELECT taxonomy, concept, unit, period_start, period_end, value, fy, fp, form, filed, accn, frame "

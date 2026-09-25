@@ -137,3 +137,19 @@ def test_derive_and_export_steps(project, fixtures: Path, tmp_path: Path):
     rep = sync.run_sync(project, only=["export"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert rep.steps[0].status == "ok" and rep.steps[0].rows == 3
     assert sorted(p.name for p in out.iterdir()) == ["dividends.json", "fundamentals.json", "prices.json"]
+
+
+def test_derive_reshapes_statements_from_stored_facts(project, fixtures: Path):
+    # Line items are a function of the shaping code and the concept map, so derive
+    # rebuilds them from sec_facts every run; a company fetched last week with an
+    # older shaper must not keep stale rows.
+    sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    s = Store.open(project.db_path, migrate=False)
+    s.replace_line_items("0000000001", [])
+    assert s.query("SELECT COUNT(*) FROM financial_line_items")[0][0] == 0
+    s.close()
+    rep = sync.run_sync(project, only=["derive"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    assert rep.steps[0].status == "ok" and "statements" in rep.steps[0].message
+    s = Store.open(project.db_path, migrate=False)
+    assert s.query("SELECT COUNT(*) FROM financial_line_items")[0][0] > 0
+    s.close()

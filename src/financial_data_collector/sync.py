@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from . import http
+from . import http, statements
 from .collectors import prices as prices_mod
 from .collectors.sec_facts import collect_sec
 from .config import Config, ConfigError
@@ -98,7 +98,15 @@ def _step_sec(store: Store, cfg: Config, *, fetch, now, sleep, **_) -> tuple[int
 
 
 def _step_derive(store: Store, cfg: Config, **_) -> tuple[int, str, str]:
-    counts = history.rebuild(store)
+    # Statements are a function of the shaper and the concept map, not of the fetch:
+    # reshape every company from its stored facts so a code or seed change applies everywhere.
+    rules = store.concept_rules()
+    reshaped = 0
+    for cik in store.ciks_with_facts():
+        store.replace_line_items(cik, statements.rebuild(store.facts_for(cik), rules))
+        reshaped += 1
+    counts = {"statements reshaped": reshaped}
+    counts.update(history.rebuild(store))
     counts["valuation_daily symbols"] = valuation.rebuild(store)
     return sum(counts.values()), ", ".join(f"{k} {v}" for k, v in counts.items()), "ok"
 
