@@ -158,3 +158,20 @@ def test_trades_after_the_last_calendar_day_still_reach_lots_and_gains():
     (g,) = r.gains
     assert g[2] == "2026-01-09" and g[6] == 200.0
     assert r.holdings[-1][3] == 10.0                                    # emitted days are unchanged
+
+
+def test_snapshot_fetch_times_treat_the_feed_as_pre_open(tmp_path: Path):
+    # SnapTrade re-syncs the broker about once a day (early), so an afternoon fetch still
+    # shows morning positions: the feed is always start-of-day. A CSV download is live and
+    # carries no time, so it counts as post-open.
+    s = Store.open(tmp_path / "w.db")
+    fid = AccountRef("Sample Brokerage", "brokerage", "fidelity", "brokerage")
+    roth = AccountRef("Sample Roth", "roth", "fidelity", "roth_ira")
+    s.write_snapshot(Snapshot("2026-01-06", "snaptrade", [PositionRow(fid, "AAPL", None, 10, 100.0, 1000.0)], [],
+                              fetched_at="2026-01-06T20:00:00.000Z"))
+    s.write_snapshot(Snapshot("2026-01-06", "fidelity_csv", [PositionRow(roth, "VTI", None, 1, 200.0, 200.0)], []))
+    times = s.snapshot_fetch_times()
+    ids = {r[0]: r[1] for r in s.query("SELECT label, id FROM accounts")}
+    assert not H._post_open(times[("2026-01-06", ids["Sample Brokerage"])])
+    assert H._post_open(times[("2026-01-06", ids["Sample Roth"])])
+    s.close()
