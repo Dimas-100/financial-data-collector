@@ -1,0 +1,11 @@
+{
+  "fetchedAt": "2026-01-16T00:00:00.000Z",
+  "activities": [
+    {"tradeDate": "2026-01-05T00:00:00.000Z", "settlementDate": "2026-01-07T00:00:00.000Z", "type": "BUY", "symbol": "AAPL", "units": 10, "price": 100.0, "amount": -1000.0, "fee": 0, "accountLabel": "Sample Brokerage"},
+    {"tradeDate": "2026-01-06T00:00:00.000Z", "settlementDate": null, "type": "DIVIDEND", "symbol": "KO", "units": 0, "price": 0, "amount": 9.8, "fee": 0, "accountLabel": "Sample Brokerage"},
+    {"tradeDate": "2026-01-06T00:00:00.000Z", "settlementDate": null, "type": "REI", "symbol": "KO", "units": 0.2, "price": 49.0, "amount": -9.8, "fee": 0, "accountLabel": "Sample Brokerage"},
+    {"tradeDate": "2026-01-10T00:00:00.000Z", "settlementDate": null, "type": "CONTRIBUTION", "symbol": null, "units": 0, "price": 0, "amount": 500.0, "fee": 0, "accountLabel": "Sample Roth"},
+    {"tradeDate": "2026-01-12T00:00:00.000Z", "settlementDate": "2026-01-14T00:00:00.000Z", "type": "SELL", "symbol": "BRKB", "units": -1, "price": 400.0, "amount": 400.0, "fee": 0.01, "accountLabel": "Webull Sample Cash"},
+    {"tradeDate": "2026-01-13T00:00:00.000Z", "settlementDate": null, "type": "FEE", "symbol": null, "units": 0, "price": 0, "amount": -1.0, "fee": 0, "accountLabel": "Webull Sample Cash"}
+  ]
+}

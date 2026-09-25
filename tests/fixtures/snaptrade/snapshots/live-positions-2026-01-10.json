@@ -1,0 +1,14 @@
+{
+  "fetchedAt": "2026-01-10T13:05:00.000Z",
+  "accounts": [
+    {
+      "label": "Sample Brokerage", "slug": "brokerage",
+      "holdings": [
+        {"symbol": "AAPL", "description": "APPLE INC", "units": 10, "price": 99.0, "marketValue": 990.0, "averageCost": 90.0, "openPnl": 90.0, "currency": "USD"}
+      ],
+      "cash": [{"currency": "USD", "amount": 20.0}],
+      "totalMarketValue": 1010.0
+    }
+  ],
+  "totalMarketValue": 1010.0
+}

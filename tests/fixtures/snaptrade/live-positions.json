@@ -1,0 +1,32 @@
+{
+  "fetchedAt": "2026-01-16T00:00:00.000Z",
+  "accounts": [
+    {
+      "label": "Sample Brokerage", "slug": "brokerage",
+      "holdings": [
+        {"symbol": "AAPL", "description": "APPLE INC", "units": 10, "price": 101.0, "marketValue": 1010.0, "averageCost": 90.0, "openPnl": 110.0, "currency": "USD"},
+        {"symbol": "SPAXX", "description": "FIDELITY GOVERNMENT MONEY MARKET", "units": 25.5, "price": 1.0, "marketValue": 25.5, "averageCost": 1.0, "openPnl": 0, "currency": "USD"}
+      ],
+      "cash": [{"currency": "USD", "amount": 25.5}],
+      "totalMarketValue": 1035.5
+    },
+    {
+      "label": "Webull Sample Cash", "slug": "brokerage",
+      "holdings": [
+        {"symbol": "KO", "description": "COCA COLA CO", "units": 3, "price": 50.0, "marketValue": 150.0, "averageCost": 48.0, "openPnl": 6.0, "currency": "USD"}
+      ],
+      "cash": [{"currency": "USD", "amount": 10.0}],
+      "totalMarketValue": 160.0
+    },
+    {
+      "label": "Sample Roth", "slug": "roth",
+      "holdings": [
+        {"symbol": "VTI", "description": "VANGUARD TOTAL STOCK MARKET ETF", "units": 5, "price": 201.0, "marketValue": 1005.0, "averageCost": 160.0, "openPnl": 205.0, "currency": "USD"}
+      ],
+      "cash": [{"currency": "USD", "amount": 0.2}],
+      "totalMarketValue": 1005.2
+    },
+    {"label": "Webull Crypto", "slug": "other", "holdings": [], "cash": [], "totalMarketValue": 0}
+  ],
+  "totalMarketValue": 2200.7
+}
