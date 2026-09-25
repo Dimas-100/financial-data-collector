@@ -83,26 +83,33 @@ def _qnum(start: str, end: str) -> int:
 _PERIODS = {"Q1", "Q2", "Q3", "FY"}
 
 
-def fiscal_years_by_end(facts: list[Fact]) -> dict[str, int]:
-    """period_end -> the filer's own fiscal-year label, from each 10-K's own year.
+_ANNUAL_FORMS = ("10-K", "20-F", "40-F")  # amendments (10-K/A) start with the same prefix
 
-    A 10-K tags every comparative year with the filing's fy, so only the fact whose
-    period end is the latest duration end in that filing carries the right label.
+
+def fiscal_years_by_end(facts: list[Fact], concepts: set[tuple[str, str]] | None = None) -> dict[str, int]:
+    """period_end -> the filer's own fiscal-year label.
+
+    Only annual-report forms define years. A 10-K tags its comparative years with the
+    filing's own fy, so the label is taken from the fact whose end is the LATEST
+    year-length end in that filing, counting only mapped statement concepts (a
+    calendar-year pension disclosure inside a June filer is not a statement). The
+    original filer of a year labels it (earliest filing wins), and a label more than
+    a year away from the calendar year of the end is discarded as a tagging error.
     """
-    # The filing's own year end is the period end most of its year-length facts share
-    # (a stray calendar-year pension disclosure is a handful of facts; the statements are dozens).
-    counts: dict[str, dict[str, int]] = {}
+    def is_year(f: Fact) -> bool:
+        return bool(f.period_start) and f.fp == "FY" and f.form.startswith(_ANNUAL_FORMS) \
+            and _within(_days(f), ANNUAL_DAYS)
+
+    own_end: dict[str, str] = {}
     for f in facts:
-        if f.period_start and f.fp == "FY" and _within(_days(f), ANNUAL_DAYS):
-            per = counts.setdefault(f.accn, {})
-            per[f.period_end] = per.get(f.period_end, 0) + 1
-    own_end = {accn: max(ends, key=lambda e: (ends[e], e)) for accn, ends in counts.items()}
-    out: dict[str, int] = {}
-    for f in facts:
-        if f.period_start and f.fp == "FY" and f.fy and own_end.get(f.accn) == f.period_end \
-                and _within(_days(f), ANNUAL_DAYS):
-            out[f.period_end] = f.fy
-    return out
+        if is_year(f) and (concepts is None or (f.taxonomy, f.concept) in concepts):
+            own_end[f.accn] = max(own_end.get(f.accn, ""), f.period_end)
+    labels: dict[str, int] = {}
+    for f in sorted(facts, key=lambda f: (f.filed, f.accn)):
+        if is_year(f) and f.fy and own_end.get(f.accn) == f.period_end and f.period_end not in labels \
+                and abs(f.fy - int(f.period_end[:4])) <= 1:
+            labels[f.period_end] = f.fy
+    return labels
 
 
 def _near_fiscal_year_end(end: str, anchors: list[str]) -> bool:
@@ -197,7 +204,7 @@ def rebuild(facts: list[Fact], rules: list[ConceptRule]) -> list[LineItem]:
     for r in sorted(rules, key=lambda r: (r.line_item, r.priority)):
         by_item.setdefault(r.line_item, []).append(r)
 
-    fy_by_end = fiscal_years_by_end(facts)
+    fy_by_end = fiscal_years_by_end(facts, {(r.taxonomy, r.concept) for r in rules})
     anchors = list(fy_by_end)
     annual_ends: set[str] = set()
     quarter_ends: set[str] = set()

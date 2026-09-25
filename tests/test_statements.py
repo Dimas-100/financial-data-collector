@@ -182,3 +182,17 @@ def test_calendar_year_disclosures_in_a_june_filer_do_not_create_fiscal_years():
     out = S.rebuild(facts, rules)
     annual = {(i.line_item, i.period_end): i.fiscal_year for i in out if i.period_kind == "annual"}
     assert annual == {("revenue", "2025-06-30"): 2025, ("net_income", "2025-06-30"): 2025, ("total_assets", "2025-06-30"): 2025}
+
+
+def test_fiscal_year_labels_come_only_from_annual_report_forms_and_stay_sane():
+    rules = [ConceptRule("revenue", "income", "duration", "us-gaap", "Revenues", 1)]
+    facts = [
+        # the original 10-K labels 2024-12-31 as fiscal 2024
+        Fact("us-gaap", "Revenues", "USD", "2024-01-01", "2024-12-31", 100.0, 2024, "FY", "10-K", "2025-02-10", "k24"),
+        # an 8-K recast filed later carries fy 2025 for the same period: not an annual report, must not relabel
+        Fact("us-gaap", "Revenues", "USD", "2024-01-01", "2024-12-31", 101.0, 2025, "FY", "8-K", "2025-06-01", "recast"),
+        # a 10-K whose own year end is 2022-12-31 but whose fy tag is absurdly 2024: label falls back to the calendar year
+        Fact("us-gaap", "Revenues", "USD", "2022-01-01", "2022-12-31", 80.0, 2024, "FY", "10-K", "2023-02-10", "k22"),
+    ]
+    out = {i.period_end: (i.fiscal_year, i.value) for i in S.rebuild(facts, rules) if i.period_kind == "annual"}
+    assert out == {"2024-12-31": (2024, 101.0), "2022-12-31": (2022, 80.0)}
