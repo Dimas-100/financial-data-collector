@@ -23,6 +23,9 @@ def test_detect(fixtures: Path):
         ("REINVESTMENT KO (Cash)", "reinvest"),
         ("ELECTRONIC FUNDS TRANSFER RECEIVED (Cash)", "contribution"),
         ("CONTRIBUTION (Cash)", "contribution"),
+        ("CASH CONTRIBUTION CURRENT YEAR (Cash)", "contribution"),
+        ("CASH CONTRIBUTION PRIOR YEAR (Cash)", "contribution"),
+        ("DIRECT DEBIT BANK ACCTVERIFY (Cash)", "withdrawal"),
         ("DIRECT DEPOSIT PAYROLL (Cash)", "contribution"),
         ("ELECTRONIC FUNDS TRANSFER PAID (Cash)", "withdrawal"),
         ("DISTRIBUTION (Cash)", "withdrawal"),
@@ -117,3 +120,14 @@ def test_zero_quantity_is_stored_as_null(fixtures: Path, tmp_path: Path):
     dst.write_text("\n".join(lines), encoding="utf-8")
     row = [r for r in fh.parse(dst) if r.trade_date == "2026-01-22"][0]
     assert row.units is None and row.amount == 2.5     # matches the SnapTrade adapter, so cross-source dedupe keys agree
+
+
+def test_a_share_distribution_moves_shares_not_cash(fixtures: Path, tmp_path: Path):
+    # a split or spin-off hands out shares; the Amount column is their value, and no cash moves
+    lines = read_text_lines(fixtures / FIX)
+    lines.insert(4, " 01/23/2026, DISTRIBUTION COCA COLA CO (KO) (Cash), KO, COCA COLA CO, Cash, , 3, , , , 150.00, 1299.99, ")
+    dst = tmp_path / "History_SampleBrokerage_2026.csv"
+    dst.write_text("\n".join(lines), encoding="utf-8")
+    row = [r for r in fh.parse(dst) if r.trade_date == "2026-01-23"][0]
+    assert (row.type, row.symbol, row.units, row.amount) == ("other", "KO", 3.0, None)
+    assert [r.type for r in fh.parse(dst) if r.trade_date == "2026-01-15"] == ["withdrawal"]  # cash leaving still is

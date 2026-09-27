@@ -10,6 +10,11 @@
   start-of-day was live, a deposit dropped until the balance showed it (a cash-only statement has no fetch
   time), and an instant deposit added on top of a morning statement that already held it. A deposit on its
   way counts in the account from its date; one the statements never show stops counting after seven days.
+- Fidelity history: IRA deposits ("CASH CONTRIBUTION CURRENT YEAR" / "PRIOR YEAR") are contributions, not
+  'other', so they count as money put in; "DIRECT DEBIT" is a withdrawal; a share distribution (a split) moves
+  shares and no cash. Migration 0005 repairs rows already stored: retypes them, drops the IRA deposits the
+  SnapTrade feed already holds, stores 0 units as NULL, and re-keys each row the way an import keys it now.
+  A history file imported before the identical-rows fix can be imported again to recover a collapsed repeat.
 
 ## 0.3.0 - 2026-09-25
 

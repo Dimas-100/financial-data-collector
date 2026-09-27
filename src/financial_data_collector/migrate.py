@@ -7,6 +7,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .adapters.base import dedupe_key
+
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 SEEDS_DIR = Path(__file__).parent / "seeds"
 _MIG_NAME = re.compile(r"^(\d{4})_.+\.sql$")
@@ -59,6 +61,8 @@ def apply_migrations(
             conn.backup(dest)
         finally:
             dest.close()
+    # a migration that repairs stored transactions re-keys them exactly the way an import would
+    conn.create_function("fdc_dedupe_key", 6, dedupe_key, deterministic=True)
     applied: list[int] = []
     for version, path in pending:
         sql = path.read_text(encoding="utf-8")

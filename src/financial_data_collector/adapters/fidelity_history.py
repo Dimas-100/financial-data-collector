@@ -24,8 +24,10 @@ _ACTION_TYPES: tuple[tuple[str, str], ...] = (
     ("REINVESTMENT", "reinvest"),
     ("ELECTRONIC FUNDS TRANSFER RECEIVED", "contribution"),
     ("CONTRIBUTION", "contribution"),
+    ("CASH CONTRIBUTION", "contribution"),  # IRAs: "CASH CONTRIBUTION CURRENT YEAR" / "PRIOR YEAR"
     ("DIRECT DEPOSIT", "contribution"),
     ("ELECTRONIC FUNDS TRANSFER PAID", "withdrawal"),
+    ("DIRECT DEBIT", "withdrawal"),
     ("DISTRIBUTION", "withdrawal"),
     ("INTEREST EARNED", "interest"),
     ("ADVISOR FEE", "fee"),
@@ -51,11 +53,19 @@ def detect(lines: list[str]) -> bool:
     return any(_is_header(l) for l in lines[:10])
 
 
+def _is_share_distribution(action: str, units: float | None) -> bool:
+    """Shares handed out (a split, a spin-off): Fidelity calls it DISTRIBUTION too, but shares arrive and no cash
+    leaves; its Amount is the shares' value."""
+    return action.strip().upper().startswith("DISTRIBUTION") and bool(units) and units > 0
+
+
 def classify_action(action: str, units: float | None = None) -> str:
     u = (action or "").strip().upper()
     if u.startswith("EXCHANGE"):  # fund exchange: shares in (buy) or out (sell) of this fund
         if units:
             return "buy" if units > 0 else "sell"
+        return "other"
+    if _is_share_distribution(u, units):
         return "other"
     for prefix, kind in _ACTION_TYPES:
         if u.startswith(prefix):
@@ -126,7 +136,7 @@ def parse(path: Path, account: str | None = None) -> list[TransactionRow]:
             symbol=canonical(symbol_raw) or None,
             units=units,
             price=clean_number(row.get("Price ($)")),
-            amount=clean_number(row.get("Amount ($)")),
+            amount=None if _is_share_distribution(action, units) else clean_number(row.get("Amount ($)")),
             fee=fee,
             description=scrub_account_numbers(action),
             source=SOURCE,
