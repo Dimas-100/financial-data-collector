@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -199,14 +200,20 @@ class Store:
 
     def write_transactions(self, rows: Iterable[TransactionRow]) -> int:
         n = 0
+        # identical rows in one batch are separate transactions (three $100 deposits in a day): the second and
+        # third get "#2", "#3"; the first keeps the plain key, so rows stored before this rule still match
+        repeats: Counter[str] = Counter()
         with self.conn:
             for r in rows:
                 aid = self._account_id(r.account, r.trade_date)
                 if r.symbol:
                     self._ensure_security(r.symbol, None, None, r.trade_date)
+                key = dedupe_key(r.account.label, r.trade_date, r.type, r.symbol, r.units, r.amount)
+                repeats[key] += 1
+                if repeats[key] > 1:
+                    key = f"{key}#{repeats[key]}"
                 if self._seen_from_other_source(aid, r):
                     continue
-                key = dedupe_key(r.account.label, r.trade_date, r.type, r.symbol, r.units, r.amount)
                 cur = self.conn.execute(
                     """INSERT OR IGNORE INTO transactions
                        (account_id, trade_date, settlement_date, type, symbol, units, price, amount, fee,

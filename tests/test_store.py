@@ -186,3 +186,11 @@ def test_same_trade_from_two_sources_is_stored_once(store: Store):
     assert store.write_transactions([feed_row]) == 0          # same trade, fee rounding differs by a cent
     assert store.write_transactions([other]) == 1             # a different trade the same day still lands
     assert store.query("SELECT COUNT(*) FROM transactions")[0][0] == 2
+
+
+def test_identical_rows_in_one_batch_are_separate_transactions(store: Store):
+    deposit = TransactionRow(ACCT, "2026-01-05", "contribution", None, None, None, 100.0, None, "CONTRIBUTION", "snaptrade")
+    assert store.write_transactions([deposit, deposit, deposit]) == 3   # three $100 deposits the same day
+    assert store.write_transactions([deposit, deposit, deposit]) == 0   # the same file again changes nothing
+    assert store.write_transactions([deposit]) == 0                      # the first keeps the old key, so rows stored earlier still match
+    assert store.query("SELECT SUM(amount) FROM transactions")[0][0] == 300.0

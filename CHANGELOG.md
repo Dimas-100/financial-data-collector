@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Identical transactions in one import are kept as separate rows (three $100 deposits on the same day
+  were stored as one). The first keeps its old dedupe key, so re-importing a file still changes nothing.
+
 ## 0.3.0 - 2026-09-25
 
 - Polished terminal output (rich): a live progress line during `fdc sync`, aligned and
