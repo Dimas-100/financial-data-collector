@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 from ..store import Store
 from ..symbols import is_money_market
@@ -86,11 +86,52 @@ def _consume(lots: list[_Lot], need: float) -> tuple[float, str | None, bool, li
 
 
 MARKET_OPEN_UTC = "13:30"  # 09:30 New York in summer; a fetch stamped earlier is a pre-open snapshot
+TRANSIT_DAYS = 7           # a deposit the statements never show stops counting after a week
+CASH_TOLERANCE = 0.05      # dollars: what "the cash change is explained by these rows" allows for rounding
+MAX_TRANSIT = 12           # more unexplained cash rows than this at one statement: fall back to the clock
 
 
 def _post_open(fetched_at: str | None) -> bool:
     """A snapshot fetched at/after the open (or of unknown time) already contains that day's trades."""
     return fetched_at is None or len(fetched_at) < 16 or fetched_at[11:16] >= MARKET_OPEN_UTC
+
+
+@dataclass(eq=False)
+class _Row:
+    """A transaction applied to the replay but not yet confirmed by a statement."""
+    date: str
+    symbol: str | None      # set when the row moves units
+    units: float
+    cash: float
+
+
+def _held_today(rows: list[_Row], want: float, by_clock: bool) -> int:
+    """How many of a symbol's same-day rows (in replay order) the statement already holds: the prefix whose units
+    explain the statement, nearest to the clock's guess; the clock's guess when none does."""
+    guess = len(rows) if by_clock else 0
+    sums = [0.0]
+    for row in rows:
+        sums.append(sums[-1] + row.units)
+    fits = [k for k, s in enumerate(sums) if abs(s - want) <= 1e-6]
+    return min(fits, key=lambda k: (abs(k - guess), -k)) if fits else guess
+
+
+def _landed(rows: list[_Row], unexplained: float, guess: list[bool]) -> list[bool]:
+    """Which cash-only rows the statement's cash already holds: the subset that explains the cash change, closest
+    to the clock's guess (earlier rows land first on a tie); the clock's guess when no subset does. A deposit is
+    dated when it is sent, but a broker's balance can show it a day or two later, or before that day's trades."""
+    n = len(rows)
+    if n > MAX_TRANSIT:
+        return guess
+    best: tuple | None = None
+    for mask in range(1 << n):
+        held = [bool(mask >> i & 1) for i in range(n)]
+        if abs(sum(r.cash for r, h in zip(rows, held) if h) - unexplained) > CASH_TOLERANCE:
+            continue
+        key = (sum(h != g for h, g in zip(held, guess)), [not h for h in held])
+        if best is None or key < best[0]:
+            best = (key, held)
+    return best[1] if best else guess
 
 
 def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, float]],
@@ -121,17 +162,20 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
     for acct in sorted(accounts):
         mine = [t for t in txs if t["account_id"] == acct]
         ptr = 0
-        units: dict[str, float] = {}
-        cash = 0.0
+        # what the last statement said, plus the rows applied since that no statement has confirmed yet
+        confirmed: dict[str, float] = {}
+        confirmed_cash = 0.0
+        pending: list[_Row] = []
         open_lots: dict[str, list[_Lot]] = {}
         closed_lots: dict[str, list[_Lot]] = {}
-        state = {"cash": 0.0}
 
         def apply(t: dict) -> None:
             sym = t.get("symbol")
             su = _signed_units(t)
-            if sym and su is not None and t["type"] in UNIT_TYPES:
-                units[sym] = units.get(sym, 0.0) + su
+            moves = bool(sym) and su is not None and t["type"] in UNIT_TYPES
+            pending.append(_Row(t["trade_date"], sym if moves else None, su if moves else 0.0,
+                                t["amount"] if t.get("amount") is not None else 0.0))
+            if moves:
                 book = open_lots.setdefault(sym, [])
                 if su > 0:
                     book.append(_open_lot(t, su))
@@ -147,12 +191,10 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
                                 if first_lot else None)
                         out.gains.append((acct, sym, t["trade_date"], -su, proceeds, cost, gain, first_lot,
                                           days, int(known), t.get("id")))
-            if t.get("amount") is not None:
-                state["cash"] += t["amount"]
 
-        def apply_through(day: str, inclusive: bool) -> None:
+        def apply_through(day: str) -> None:
             nonlocal ptr
-            while ptr < len(mine) and (mine[ptr]["trade_date"] <= day if inclusive else mine[ptr]["trade_date"] < day):
+            while ptr < len(mine) and mine[ptr]["trade_date"] <= day:
                 apply(mine[ptr])
                 ptr += 1
 
@@ -160,27 +202,58 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
             if d < first[acct]:
                 continue
             key = (d, acct)
-            # A pre-open snapshot is the state at the START of its day (anchor, then the
-            # day's trades); one fetched after the open already contains them (trades, then anchor).
-            # Without fetch times (tests, CSV-only setups) every snapshot is treated as pre-open.
-            after_trades = fetch_times is not None and key in snapshots and _post_open(fetch_times.get(key))
-            apply_through(d, inclusive=after_trades)
-            basis = "reconstructed"
-            if key in snapshots:
-                snap = snapshots[key]
-                for sym in sorted(set(units) | set(snap)):
-                    proj, actual = units.get(sym, 0.0), snap.get(sym, 0.0)
-                    if abs(proj - actual) > 1e-6:
-                        out.recon.append((d, acct, sym, proj, actual, actual - proj))
-                units.clear()
-                units.update(snap)
-                basis = "snapshot"
-            cbasis = "reconstructed"
-            if key in cash_snapshots:
-                state["cash"] = cash_snapshots[key]
-                cbasis = "snapshot"
-            apply_through(d, inclusive=True)
-            cash = state["cash"]
+            apply_through(d)
+            basis = cbasis = "reconstructed"
+            if key in snapshots or key in cash_snapshots:
+                # Which applied rows does this statement already hold? Its fetch time is only a guess (a feed stamped
+                # start-of-day can be live, a cash-only statement has no time), so the statement's own units and cash
+                # decide, and the clock breaks ties. Without fetch times (tests, CSV-only setups) the guess is pre-open.
+                by_clock = fetch_times is not None and key in snapshots and _post_open(fetch_times.get(key))
+                trades = [r for r in pending if r.symbol]
+                held = {id(r) for r in trades if r.date < d}          # a trade is in every statement after its day
+                today: dict[str, list[_Row]] = {}
+                for r in trades:
+                    if r.date == d:
+                        today.setdefault(r.symbol, []).append(r)
+                if key in snapshots:
+                    snap = snapshots[key]
+                    for sym, rows in today.items():
+                        base = confirmed.get(sym, 0.0) + sum(r.units for r in trades if r.symbol == sym and r.date < d)
+                        held |= {id(r) for r in rows[:_held_today(rows, snap.get(sym, 0.0) - base, by_clock)]}
+                    projected = dict(confirmed)
+                    for r in trades:
+                        if id(r) in held:
+                            projected[r.symbol] = projected.get(r.symbol, 0.0) + r.units
+                    for sym in sorted(set(projected) | set(snap)):
+                        proj, actual = projected.get(sym, 0.0), snap.get(sym, 0.0)
+                        if abs(proj - actual) > 1e-6:
+                            out.recon.append((d, acct, sym, proj, actual, actual - proj))
+                    confirmed = dict(snap)
+                    basis = "snapshot"
+                else:
+                    held |= {id(r) for rows in today.values() for r in rows if by_clock}
+                    for r in trades:
+                        if id(r) in held:
+                            confirmed[r.symbol] = confirmed.get(r.symbol, 0.0) + r.units
+                if key in cash_snapshots:
+                    cutoff = (date.fromisoformat(d) - timedelta(days=TRANSIT_DAYS)).isoformat()
+                    others = [r for r in pending if not r.symbol]
+                    held |= {id(r) for r in others if r.date < cutoff}
+                    recent = [r for r in others if r.date >= cutoff]
+                    unexplained = (cash_snapshots[key] - confirmed_cash
+                                   - sum(r.cash for r in pending if id(r) in held))
+                    landed = _landed(recent, unexplained, [r.date < d or by_clock for r in recent])
+                    held |= {id(r) for r, h in zip(recent, landed) if h}
+                    confirmed_cash = cash_snapshots[key]
+                    cbasis = "snapshot"
+                else:
+                    confirmed_cash += sum(r.cash for r in pending if id(r) in held)   # only trades are held here
+                pending = [r for r in pending if id(r) not in held]
+            units = dict(confirmed)
+            for r in pending:
+                if r.symbol:
+                    units[r.symbol] = units.get(r.symbol, 0.0) + r.units
+            cash = confirmed_cash + sum(r.cash for r in pending)
             for sym in sorted(units):
                 u = units[sym]
                 if abs(u) <= EPS:

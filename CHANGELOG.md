@@ -4,6 +4,12 @@
 
 - Identical transactions in one import are kept as separate rows (three $100 deposits on the same day
   were stored as one). The first keeps its old dedupe key, so re-importing a file still changes nothing.
+- The replay no longer decides by the clock alone whether a snapshot already holds its day's rows. A
+  statement's own units say which same-day trades it holds, and its cash says which deposits and other cash
+  rows have landed; the fetch time only breaks ties. Fixes a buy counted twice when a feed stamped
+  start-of-day was live, a deposit dropped until the balance showed it (a cash-only statement has no fetch
+  time), and an instant deposit added on top of a morning statement that already held it. A deposit on its
+  way counts in the account from its date; one the statements never show stops counting after seven days.
 
 ## 0.3.0 - 2026-09-25
 

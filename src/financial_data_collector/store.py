@@ -343,9 +343,10 @@ class Store:
         return [(r[0], r[1]) for r in self.query(
             "SELECT symbol, cik FROM securities WHERE cik IS NOT NULL ORDER BY symbol")]
 
-    # The SnapTrade feed re-syncs the broker about once a day, early, so whatever time the
-    # export ran its positions are start-of-day: report it as a pre-open time. A CSV export
-    # is live but carries no time, so it stays None (treated as post-open by the replay).
+    # The SnapTrade feed usually re-syncs the broker once a day, early, so whatever time the
+    # export ran its positions are most likely start-of-day: report it as a pre-open time. A CSV
+    # export is live but carries no time, so it stays None (post-open). Either way this is only
+    # the replay's guess: a statement's own units and cash decide what it holds (derive/history.py).
     _FEED_PRE_OPEN = "1970-01-01T00:00:00Z"
 
     def snapshot_fetch_times(self) -> dict[tuple[str, int], str | None]:

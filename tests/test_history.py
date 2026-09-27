@@ -160,6 +160,87 @@ def test_trades_after_the_last_calendar_day_still_reach_lots_and_gains():
     assert r.holdings[-1][3] == 10.0                                    # emitted days are unchanged
 
 
+WEEKS = ["2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09", "2026-01-12",
+         "2026-01-13", "2026-01-14", "2026-01-15", "2026-01-16"]
+
+
+def _cash(r):
+    return {row[0]: row[2] for row in r.cash}
+
+
+def test_live_snapshot_already_holding_the_days_buy_is_not_counted_twice():
+    # The feed is stamped start-of-day, but this broker's snapshot was taken after the buy:
+    # its units already hold it, so the buy must not land on top again.
+    txs = [tx(1, "2026-01-02", "buy", "AAPL", 10, 100.0, -1000.0), tx(2, "2026-01-06", "buy", "AAPL", 5, 100.0, -500.0)]
+    times = {("2026-01-06", 1): Store._FEED_PRE_OPEN}
+    r = H.replay(txs, {("2026-01-06", 1): {"AAPL": 15.0}}, {("2026-01-06", 1): 100.0},
+                 {"AAPL": [("2026-01-02", 100.0)]}, CAL, fetch_times=times)
+    h = _h(r)
+    assert h[("2026-01-06", "AAPL")][3] == 15.0 and h[("2026-01-07", "AAPL")][3] == 15.0
+    assert _cash(r)["2026-01-06"] == 100.0 and _cash(r)["2026-01-07"] == 100.0
+    assert r.recon == []
+
+
+def test_deposit_in_transit_counts_from_its_date_until_the_balance_shows_it():
+    # The deposit is dated 01-05 but the broker's cash only shows it on 01-07; cash-only
+    # statements carry no fetch time. The money is the owner's from 01-05 on.
+    txs = [tx(1, "2026-01-02", "contribution", None, None, None, 100.0),
+           tx(2, "2026-01-05", "contribution", None, None, None, 200.0)]
+    days = ["2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07"]
+    snaps = {(d, 1): {} for d in days}
+    cash = {("2026-01-02", 1): 100.0, ("2026-01-05", 1): 100.0, ("2026-01-06", 1): 100.0, ("2026-01-07", 1): 300.0}
+    r = H.replay(txs, snaps, cash, {}, WEEKS[:6], fetch_times={})
+    assert _cash(r) == {"2026-01-02": 100.0, "2026-01-05": 300.0, "2026-01-06": 300.0, "2026-01-07": 300.0,
+                        "2026-01-08": 300.0, "2026-01-09": 300.0}
+
+
+def test_instant_deposit_already_in_a_start_of_day_snapshot_is_not_added_again():
+    # The morning snapshot already shows the day's deposit but not the day's buy.
+    txs = [tx(1, "2026-01-02", "contribution", None, None, None, 1000.0), tx(2, "2026-01-02", "buy", "AAPL", 5, 100.0, -500.0),
+           tx(3, "2026-01-06", "contribution", None, None, None, 200.0), tx(4, "2026-01-06", "buy", "KO", 2, 50.0, -100.0)]
+    snaps = {("2026-01-05", 1): {"AAPL": 5.0}, ("2026-01-06", 1): {"AAPL": 5.0}}
+    cash = {("2026-01-05", 1): 500.0, ("2026-01-06", 1): 700.0}
+    times = {k: Store._FEED_PRE_OPEN for k in snaps}
+    r = H.replay(txs, snaps, cash, {"AAPL": [("2026-01-02", 100.0)], "KO": [("2026-01-02", 50.0)]}, CAL,
+                 fetch_times=times)
+    h = _h(r)
+    assert _cash(r)["2026-01-06"] == 600.0 and _cash(r)["2026-01-07"] == 600.0
+    assert h[("2026-01-06", "KO")][3] == 2.0 and h[("2026-01-06", "AAPL")][3] == 5.0
+    assert r.recon == []
+
+
+def test_one_of_two_identical_deposits_lands_and_the_other_stays_in_transit():
+    txs = [tx(1, "2026-01-02", "contribution", None, None, None, 10.0),
+           tx(2, "2026-01-06", "contribution", None, None, None, 5.0), tx(3, "2026-01-06", "contribution", None, None, None, 5.0)]
+    days = ["2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07"]
+    cash = {("2026-01-02", 1): 10.0, ("2026-01-05", 1): 10.0, ("2026-01-06", 1): 15.0, ("2026-01-07", 1): 20.0}
+    r = H.replay(txs, {(d, 1): {} for d in days}, cash, {}, CAL, fetch_times={})
+    assert _cash(r) == {"2026-01-02": 10.0, "2026-01-05": 10.0, "2026-01-06": 20.0, "2026-01-07": 20.0}
+
+
+def test_a_deposit_the_balance_never_shows_stops_counting_after_seven_days():
+    # Money in transit is the owner's, but not forever: after a week of statements without
+    # it, the statements win.
+    txs = [tx(1, "2026-01-02", "contribution", None, None, None, 100.0),
+           tx(2, "2026-01-05", "contribution", None, None, None, 200.0)]
+    r = H.replay(txs, {(d, 1): {} for d in WEEKS}, {(d, 1): 100.0 for d in WEEKS}, {}, WEEKS)
+    c = _cash(r)
+    assert c["2026-01-02"] == 100.0
+    assert [c[d] for d in WEEKS[1:7]] == [300.0] * 6                   # 01-05 .. 01-12
+    assert [c[d] for d in WEEKS[7:]] == [100.0] * 4                    # 01-13 on
+
+
+def test_same_day_round_trip_before_a_start_of_day_snapshot_is_applied_once():
+    txs = [tx(1, "2026-01-02", "buy", "KO", 4, 50.0, -200.0),
+           tx(2, "2026-01-06", "sell", "KO", -4, 51.0, 204.0), tx(3, "2026-01-06", "buy", "KO", 4, 50.5, -202.0)]
+    snaps = {("2026-01-06", 1): {"KO": 4.0}, ("2026-01-07", 1): {"KO": 4.0}}
+    cash = {("2026-01-06", 1): 800.0, ("2026-01-07", 1): 802.0}
+    times = {k: Store._FEED_PRE_OPEN for k in snaps}
+    r = H.replay(txs, snaps, cash, {"KO": [("2026-01-02", 50.0)]}, CAL, fetch_times=times)
+    assert _cash(r)["2026-01-06"] == 802.0 and _cash(r)["2026-01-07"] == 802.0
+    assert _h(r)[("2026-01-07", "KO")][3] == 4.0 and r.recon == []
+
+
 def test_snapshot_fetch_times_treat_the_feed_as_pre_open(tmp_path: Path):
     # SnapTrade re-syncs the broker about once a day (early), so an afternoon fetch still
     # shows morning positions: the feed is always start-of-day. A CSV download is live and
