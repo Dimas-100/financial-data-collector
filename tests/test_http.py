@@ -66,3 +66,27 @@ def test_connection_errors_retry_then_raise_http_error(monkeypatch):
     with pytest.raises(http.HttpError) as e:
         http.fetch("https://x/y", sleep=lambda s: None)
     assert e.value.status == 0 and "ReadTimeout" in str(e.value)
+
+
+def test_post_returns_status_and_body_without_retrying(monkeypatch):
+    calls = []
+
+    def fake_post(url, headers=None, data=None, timeout=None, allow_redirects=None):
+        calls.append((url, headers, data, timeout, allow_redirects))
+        return _Resp(403, b"used")
+
+    monkeypatch.setattr(http.requests, "post", fake_post)
+    assert http.post("https://x/claim/t", {"Content-Length": "0"}) == (403, b"used")
+    assert len(calls) == 1 and calls[0][2] == b"" and calls[0][3] == 30 and calls[0][4] is False
+
+
+def test_post_transport_failure_names_only_the_type(monkeypatch):
+    import requests as rq
+
+    def boom(url, headers=None, data=None, timeout=None, allow_redirects=None):
+        raise rq.ConnectionError("secret-in-url https://t0k3n@x")
+
+    monkeypatch.setattr(http.requests, "post", boom)
+    with pytest.raises(http.HttpError) as e:
+        http.post("https://x/claim/t")
+    assert e.value.status == 0 and str(e.value).startswith("ConnectionError for ") and "t0k3n" not in str(e.value).split(" for ")[0]

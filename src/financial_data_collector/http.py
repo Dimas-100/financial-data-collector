@@ -49,3 +49,14 @@ def fetch(
         raise err
     assert last is not None
     raise last
+
+
+def post(url: str, headers: dict[str, str] | None = None, *, timeout: int = 30) -> tuple[int, bytes]:
+    """One POST with an empty body and no retry: the status and the body, whatever the status. A SimpleFIN setup
+    token is spent by the first attempt, so a second one would only report it used. The detail carries the
+    failure's type only, never its text, which can repeat the address."""
+    try:
+        resp = requests.post(url, headers=headers, data=b"", timeout=timeout, allow_redirects=False)
+    except requests.RequestException as e:
+        raise HttpError(0, url, type(e).__name__) from None
+    return resp.status_code, resp.content
