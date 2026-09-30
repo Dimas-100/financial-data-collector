@@ -3,20 +3,39 @@ from __future__ import annotations
 
 import argparse
 import csv
+import getpass
 import sys
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.text import Text
 
-from . import __version__, ui
+from . import __version__, http, ui
 from .config import ConfigError, init_project, load_config
+from .connections import service, simplefin
+from .connections.base import ConnectionFailed
+from .connections.keys import ENV_REF, KeyHome, SnapTradeKeys
+from .connections.names import KINDS
 from .ingest import ingest_file
 from .readonly import UnsafeSql, run_readonly
 from .store import Store
 from .sync import STEPS, run_sync
 
 STALE_HOURS = {"ingest": 48, "prices": 48, "sec": 336, "derive": 48, "export": 48}
+SNAPTRADE_SITE = "https://dashboard.snaptrade.com/"
+SNAPTRADE_STEPS = (
+    "1. Sign in at SnapTrade (free for personal use) and connect each brokerage there.\n"
+    "2. Create a personal API key: a client id and a consumer key.\n"
+    "3. Paste them below. What you type stays hidden and is checked with SnapTrade right away."
+)
+SIMPLEFIN_STEPS = (
+    "1. Sign in at SimpleFIN Bridge ($15 a year) and connect each bank and card there.\n"
+    "2. Choose New app and copy the setup token it shows. It works once.\n"
+    "3. Paste it below. What you type stays hidden."
+)
+_ask = getpass.getpass      # hidden input; tests replace it
+_open = webbrowser.open     # tests replace it
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -41,6 +60,20 @@ def _parser() -> argparse.ArgumentParser:
     m.add_argument("--print-config", action="store_true", help="print the claude_desktop_config.json snippet")
     e = sub.add_parser("export", help="write the cockpit feed files (prices, dividends, fundamentals) now")
     e.add_argument("--dir", help="target folder (default: [export.cockpit].dir from config.toml)")
+    c = sub.add_parser("connect", help="connect a brokerage (snaptrade) or a bank (simplefin) with your own key")
+    c.add_argument("service", choices=service.NAMES)
+    c.add_argument("--with-user", action="store_true", help="a SnapTrade key that has a registered user (four values)")
+    c.add_argument("--no-browser", action="store_true", help="don't open the service's site")
+    sub.add_parser("connections", help="every connection: when it last worked, its accounts, its last error")
+    d = sub.add_parser("disconnect", help="forget a connection's key; stored history stays")
+    d.add_argument("name", choices=service.NAMES)
+    a = sub.add_parser("accounts", help="every account, its kind, limit and rate; 'accounts set' changes them")
+    asub = a.add_subparsers(dest="action")
+    s2 = asub.add_parser("set", help="confirm or correct an account's kind, set a card's limit or a yearly rate")
+    s2.add_argument("label")
+    s2.add_argument("--kind", choices=KINDS)
+    s2.add_argument("--limit", type=float, help="a card's or line's credit limit")
+    s2.add_argument("--rate", type=float, help="yearly rate in percent: what cash earns or debt costs")
     return p
 
 
@@ -58,7 +91,8 @@ def cmd_init(root: Path) -> int:
     ui.console.print(Text("database ready: ") + Text(str(cfg.db_path), style="bold"))
     steps = [
         "1. Open .env and set SEC_USER_AGENT to your name and email (SEC requires a contact line).",
-        "2. Download a Fidelity \"Portfolio Positions\" export and drop it in inbox/.",
+        "2. Connect a brokerage: fdc connect snaptrade   (or a bank: fdc connect simplefin)",
+        "   Or download a Fidelity \"Portfolio Positions\" export and drop it in inbox/.",
         "3. Run: fdc sync   (the first run fetches five years of prices and every SEC filing)",
     ]
     if cfg.snaptrade_dir and cfg.snaptrade_dir.is_dir():
@@ -190,6 +224,120 @@ def cmd_mcp(root: Path, args) -> int:
     return 0
 
 
+def _accounts_table(rows) -> object:
+    body = [[r.label, r.institution, r.account_type + ("" if r.kind_confirmed else " (guessed)")] for r in rows]
+    return ui.table(["account", "institution", "kind"], body, title="accounts found")
+
+
+def cmd_connect(root: Path, args) -> int:
+    cfg = load_config(root)
+    store = Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
+    home = KeyHome.for_root(cfg.root)
+    now = datetime.now(timezone.utc)
+    try:
+        if args.service == "snaptrade":
+            ui.console.print(ui.panel(SNAPTRADE_STEPS, "Connect your brokerages"))
+            if not args.no_browser:
+                _open(SNAPTRADE_SITE)
+            client_id = _ask("Client id: ").strip()
+            consumer_key = _ask("Consumer key: ").strip()
+            user_id = user_secret = None
+            if args.with_user:
+                user_id = _ask("User id: ").strip()
+                user_secret = _ask("User secret: ").strip()
+            if not client_id or not consumer_key or (args.with_user and not (user_id and user_secret)):
+                ui.error("every value is needed")
+                return 2
+            found, notes = service.connect_snaptrade(
+                store, home, SnapTradeKeys(client_id, consumer_key, user_id or None, user_secret or None),
+                fetch=http.fetch, now=now)
+        else:
+            ui.console.print(ui.panel(SIMPLEFIN_STEPS, "Connect your banks and cards"))
+            if not args.no_browser:
+                _open(simplefin.SITE)
+            token = _ask("Setup token: ").strip()
+            if not token:
+                ui.error("a setup token is needed")
+                return 2
+            found, notes = service.connect_simplefin(store, home, token, post=http.post, fetch=http.fetch, now=now)
+        if store.connection(args.service)["key_ref"] == ENV_REF:
+            ui.hint("no key store on this computer: the key is in .env instead")
+    except ConnectionFailed as e:
+        ui.error(str(e))
+        return 1
+    finally:
+        store.close()
+    if found:
+        ui.console.print(_accounts_table(found))
+    else:
+        ui.console.print(Text("connected, but no accounts yet: add them on the service's site", style="yellow"))
+    for note in notes:
+        ui.hint(note)
+    ui.hint("run fdc sync to fetch balances, holdings and activity")
+    return 0
+
+
+def cmd_connections(root: Path) -> int:
+    cfg = load_config(root)
+    store = Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
+    try:
+        rows = service.overview(store)
+    finally:
+        store.close()
+    if not rows:
+        ui.console.print("no connections")
+        ui.hint("fdc connect snaptrade   or   fdc connect simplefin")
+        return 0
+    body = [[r.name, r.created_at[:10], r.last_ok_at or "never", r.accounts, r.last_error] for r in rows]
+    ui.console.print(ui.table(["connection", "since", "last worked", "accounts", "last error"], body))
+    return 0
+
+
+def cmd_disconnect(root: Path, args) -> int:
+    cfg = load_config(root)
+    store = Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
+    try:
+        gone = service.disconnect(store, KeyHome.for_root(cfg.root), args.name, now=datetime.now(timezone.utc))
+    finally:
+        store.close()
+    if not gone:
+        ui.error(f"no {args.name} connection")
+        return 1
+    ui.console.print(Text(f"{args.name} disconnected; its accounts and history stay", style="green"))
+    return 0
+
+
+def cmd_accounts(root: Path, args) -> int:
+    cfg = load_config(root)
+    store = Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
+    try:
+        if args.action == "set":
+            if args.limit is not None and args.limit < 0:
+                ui.error("--limit is an amount, 0 or more")
+                return 2
+            if args.rate is not None and not 0 <= args.rate <= 100:
+                ui.error("--rate is a yearly percentage between 0 and 100")
+                return 2
+            if args.kind is None and args.limit is None and args.rate is None:
+                ui.error("nothing to set: give --kind, --limit or --rate")
+                return 2
+            if not store.set_account(args.label, kind=args.kind, credit_limit=args.limit, rate_pct=args.rate):
+                ui.error(f"no account called {args.label!r}")
+                ui.hint("fdc accounts lists them")
+                return 1
+            ui.console.print(Text(f"{args.label}: saved", style="green"))
+            return 0
+        rows = store.accounts_overview()
+    finally:
+        store.close()
+    body = [[r["label"], r["institution"], r["account_type"] + ("" if r["kind_confirmed"] else " (guessed)"),
+             r["credit_limit"], r["rate_pct"], r["origin"]] for r in rows]
+    ui.console.print(ui.table(["account", "institution", "kind", "limit", "rate %", "from"], body))
+    if any(not r["kind_confirmed"] for r in rows):
+        ui.hint('confirm a guessed kind: fdc accounts set "<account>" --kind checking')
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = Path(args.root).resolve()
@@ -208,6 +356,14 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_mcp(root, args)
         if args.cmd == "export":
             return cmd_export(root, args)
+        if args.cmd == "connect":
+            return cmd_connect(root, args)
+        if args.cmd == "connections":
+            return cmd_connections(root)
+        if args.cmd == "disconnect":
+            return cmd_disconnect(root, args)
+        if args.cmd == "accounts":
+            return cmd_accounts(root, args)
     except ConfigError as e:
         ui.error(str(e))
         ui.hint("run: fdc init" if "not found" in str(e) else "check config.toml for the line reported above")

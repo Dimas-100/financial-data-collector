@@ -92,7 +92,8 @@ def test_init_prints_next_steps_for_a_stranger(tmp_path: Path, capsys):
     cli.main(["--root", str(tmp_path), "init"])
     out = capsys.readouterr().out
     assert "Next steps" in out and "SEC_USER_AGENT" in out and "inbox" in out and "fdc sync" in out
-    assert "SnapTrade" not in out and "investing" not in out          # owner-only sources are not mentioned on a fresh clone
+    assert "investing" not in out                                  # the owner-only source is not mentioned on a fresh clone
+    assert "fdc connect" in out
 
 
 def test_status_renders_a_table_and_hints(tmp_path: Path, capsys):
@@ -109,3 +110,98 @@ def test_config_error_is_one_line_with_a_hint(tmp_path: Path, capsys):
     assert cli.main(["--root", str(tmp_path), "status"]) == 2
     err = capsys.readouterr().err
     assert "error:" in err and "Traceback" not in err
+
+
+import base64
+import json
+
+import pytest
+
+from financial_data_collector.connections import keys as K
+
+
+def _root(tmp_path, monkeypatch):
+    cli.main(["--root", str(tmp_path), "init"])
+    monkeypatch.setattr(cli, "_open", lambda url: True)
+    return str(tmp_path)
+
+
+def test_connect_snaptrade_prompts_hidden_and_lists_accounts(tmp_path, monkeypatch, capsys):
+    from tests.test_snaptrade_connection import _fetch
+    root = _root(tmp_path, monkeypatch)
+    answers = iter([" synthetic-client \n", "synthetic-consumer-key"])
+    monkeypatch.setattr(cli, "_ask", lambda prompt: next(answers))
+    monkeypatch.setattr(cli.http, "fetch", _fetch([]))
+    rc = cli.main(["--root", root, "connect", "snaptrade"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Example Brokerage Sample Roth IRA" in out and "roth_ira" in out and "guessed" in out
+    assert "synthetic-client" not in out and "synthetic-consumer-key" not in out
+    assert "fdc sync" in out
+    rc = cli.main(["--root", root, "connections"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "snaptrade" in out and "2" in out and "synthetic" not in out
+
+
+def test_connect_snaptrade_refused_key_is_one_line(tmp_path, monkeypatch, capsys):
+    from financial_data_collector.http import HttpError
+    root = _root(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "_ask", lambda prompt: "x")
+
+    def refused(url, headers):
+        raise HttpError(401, url)
+    monkeypatch.setattr(cli.http, "fetch", refused)
+    assert cli.main(["--root", root, "connect", "snaptrade"]) == 1
+    err = capsys.readouterr().err
+    assert "error:" in err and "refused the key" in err and "Traceback" not in err
+
+
+def test_connect_simplefin_and_disconnect(tmp_path, monkeypatch, capsys):
+    from tests.test_simplefin import ACCESS, ANSWER
+    root = _root(tmp_path, monkeypatch)
+    token = base64.b64encode(b"https://bridge.example.org/simplefin/claim/abc").decode()
+    monkeypatch.setattr(cli, "_ask", lambda prompt: token)
+    monkeypatch.setattr(cli.http, "post", lambda url, headers: (200, ACCESS.encode()))
+    monkeypatch.setattr(cli.http, "fetch", lambda url, headers: json.dumps(ANSWER).encode())
+    assert cli.main(["--root", root, "connect", "simplefin"]) == 0
+    out = capsys.readouterr().out
+    assert "Example Bank Everyday Checking" in out and "needs attention" in out and ACCESS not in out
+    assert cli.main(["--root", root, "accounts"]) == 0
+    out = capsys.readouterr().out
+    assert "Example Bank Cash Rewards Visa" in out and "credit_card" in out and "guessed" in out
+    assert cli.main(["--root", root, "accounts", "set", "Example Bank Cash Rewards Visa", "--kind", "credit_card",
+                     "--limit", "5000", "--rate", "24.9"]) == 0
+    assert cli.main(["--root", root, "accounts"]) == 0
+    out = capsys.readouterr().out
+    assert "5,000" in out and "24.9" in out
+    assert cli.main(["--root", root, "accounts", "set", "Nobody", "--kind", "checking"]) == 1
+    with pytest.raises(SystemExit) as e:   # argparse itself refuses a kind that isn't one of KINDS
+        cli.main(["--root", root, "accounts", "set", "Example Bank Cash Rewards Visa", "--kind", "spaceship"])
+    assert e.value.code == 2
+    assert cli.main(["--root", root, "accounts", "set", "Example Bank Cash Rewards Visa", "--rate", "150"]) == 2
+    capsys.readouterr()
+    assert cli.main(["--root", root, "disconnect", "simplefin"]) == 0
+    assert cli.main(["--root", root, "disconnect", "simplefin"]) == 1
+    assert cli.main(["--root", root, "connections"]) == 0
+    assert "no connections" in capsys.readouterr().out
+
+
+def test_connect_without_a_key_store_says_where_the_key_went(tmp_path, monkeypatch, capsys, no_real_key_store):
+    from tests.test_snaptrade_connection import _fetch
+    root = _root(tmp_path, monkeypatch)
+    no_real_key_store.broken = True
+    monkeypatch.setattr(cli, "_ask", lambda prompt: "v")
+    monkeypatch.setattr(cli.http, "fetch", _fetch([]))
+    assert cli.main(["--root", root, "connect", "snaptrade"]) == 0
+    assert "no key store on this computer: the key is in .env instead" in capsys.readouterr().out
+    assert "FDC_SNAPTRADE_CLIENT_ID=v" in (tmp_path / ".env").read_text()
+
+
+def test_connect_with_user_asks_for_four_values(tmp_path, monkeypatch):
+    from tests.test_snaptrade_connection import _fetch
+    root = _root(tmp_path, monkeypatch)
+    asked = []
+    monkeypatch.setattr(cli, "_ask", lambda prompt: asked.append(prompt) or "v")
+    monkeypatch.setattr(cli.http, "fetch", _fetch([]))
+    assert cli.main(["--root", root, "connect", "snaptrade", "--with-user", "--no-browser"]) == 0
+    assert len(asked) == 4
