@@ -22,6 +22,9 @@ lookback_years = 5                 # first fetch depth per symbol
 [sec]
 max_age_hours = 24                 # refetch a company's facts at most this often
 
+[connections]
+min_hours = 6                      # ask a connected service (fdc connect) at most this often
+
 [sources.snaptrade]
 enabled = true                     # owner-only: investing's SnapTrade export. Ignored if dir is missing.
 dir = "../investing/fidelity/dashboard-data"
@@ -42,6 +45,11 @@ ENV_EXAMPLE = """# Copy to .env (gitignored). Values are never logged.
 SEC_USER_AGENT=Your Name you@example.com
 # Optional: Tiingo token for prices (free at tiingo.com). Without it, yfinance is used.
 TIINGO_API_TOKEN=
+# A connection (fdc connect) keeps its key in your computer's key store. Only on a computer without one
+# does fdc connect write it here instead (never paste a key here yourself unless there is no key store):
+# FDC_SNAPTRADE_CLIENT_ID=
+# FDC_SNAPTRADE_CONSUMER_KEY=
+# FDC_SIMPLEFIN_ACCESS_URL=
 """
 
 
@@ -60,6 +68,7 @@ class Config:
     cache_dir: Path
     lookback_years: int = 5
     sec_max_age_hours: int = 24
+    connections_min_hours: float = 6.0
     snaptrade_enabled: bool = True
     snaptrade_dir: Path | None = None
     classify: dict[str, str] = field(default_factory=dict)
@@ -107,6 +116,7 @@ def load_config(root: Path) -> Config:
     paths = raw.get("paths", {})
     prices = raw.get("prices", {})
     sec = raw.get("sec", {})
+    connections = raw.get("connections", {})
     sources = raw.get("sources", {})
     snap = sources.get("snaptrade", {})
     investing = sources.get("investing", {})
@@ -117,6 +127,9 @@ def load_config(root: Path) -> Config:
     snap_dir = snap.get("dir", "../investing/fidelity/dashboard-data")
     investing_dir = investing.get("content_dir", "../investing")
     export_dir = export.get("dir", "../investing/data")
+    min_hours = connections.get("min_hours", 6)
+    if not isinstance(min_hours, (int, float)) or isinstance(min_hours, bool) or min_hours < 0:
+        raise ConfigError(f"{cfg_path}: [connections] min_hours must be a number of hours, 0 or more")
     return Config(
         root=root,
         db_path=db_path,
@@ -127,6 +140,7 @@ def load_config(root: Path) -> Config:
         cache_dir=db_path.parent / "cache",
         lookback_years=int(prices.get("lookback_years", 5)),
         sec_max_age_hours=int(sec.get("max_age_hours", 24)),
+        connections_min_hours=float(min_hours),
         snaptrade_enabled=bool(snap.get("enabled", True)),
         snaptrade_dir=(root / snap_dir).resolve() if snap_dir else None,
         classify={str(k).upper(): str(v) for k, v in raw.get("classify", {}).items()},

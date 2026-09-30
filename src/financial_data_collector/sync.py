@@ -11,6 +11,8 @@ from . import http, statements
 from .collectors import prices as prices_mod
 from .collectors.sec_facts import collect_sec
 from .config import Config, ConfigError
+from .connections.keys import KeyHome
+from .connections.service import run as run_connections
 from .derive import history, valuation
 from .export.cockpit import export_cockpit
 from .ingest import ingest_inbox, ingest_snaptrade
@@ -18,8 +20,8 @@ from .models import PriceBar
 from .store import Store, utcnow
 from .universe import build_universe
 
-STEPS = ("ingest", "prices", "sec", "derive", "export")
-NETWORK_STEPS = {"prices", "sec"}
+STEPS = ("connections", "ingest", "prices", "sec", "derive", "export")
+NETWORK_STEPS = {"connections", "prices", "sec"}
 
 
 @dataclass
@@ -40,7 +42,8 @@ class SyncReport:
 
     @property
     def exit_code(self) -> int:
-        network = [s for s in self.steps if s.step in NETWORK_STEPS]
+        network = [s for s in self.steps if s.step in NETWORK_STEPS
+                   and not (s.step == "connections" and s.status == "skipped")]
         if network and all(s.status == "error" for s in network):
             return 1
         return 0
@@ -58,6 +61,12 @@ def _select_steps(only, skip) -> list[str]:
 Progress = Callable[[str], None]
 
 
+def _step_connections(store: Store, cfg: Config, *, fetch, now, progress: Progress, keys=None,
+                      **_) -> tuple[int, str, str]:
+    home = keys or KeyHome.for_root(cfg.root)
+    return run_connections(store, home, min_hours=cfg.connections_min_hours, fetch=fetch, now=now, progress=progress)
+
+
 def _step_ingest(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple[int, str, str]:
     progress("inbox")
     a = ingest_inbox(store, cfg)
@@ -67,7 +76,7 @@ def _step_ingest(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple
     return a.rows + b.rows, "; ".join(msgs), "ok"
 
 
-def _step_prices(store: Store, cfg: Config, *, fetch, now, yf, sleep, progress: Progress) -> tuple[int, str, str]:
+def _step_prices(store: Store, cfg: Config, *, fetch, now, yf, sleep, progress: Progress, **_) -> tuple[int, str, str]:
     universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir)
     kwargs = {"fetch": fetch, "today": now.date(), "sleep": sleep, "progress": progress}
     if yf is not None:
@@ -139,7 +148,8 @@ def _step_export(store: Store, cfg: Config, *, now, progress: Progress, **_) -> 
 
 
 _RUNNERS: dict[str, Callable] = {
-    "ingest": _step_ingest, "prices": _step_prices, "sec": _step_sec, "derive": _step_derive, "export": _step_export,
+    "connections": _step_connections, "ingest": _step_ingest, "prices": _step_prices, "sec": _step_sec,
+    "derive": _step_derive, "export": _step_export,
 }
 
 
@@ -154,8 +164,10 @@ def run_sync(
     yf: Callable[[str, str], list[PriceBar]] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     progress: Callable[[str, str], None] | None = None,
+    keys: KeyHome | None = None,
 ) -> SyncReport:
-    """Run the selected steps. `progress(step, detail)` is called as work advances (for a live display)."""
+    """Run the selected steps. `progress(step, detail)` is called as work advances (for a live display). `keys`
+    is where the connections step finds its keys; by default the key store, or .env, beside config.toml."""
     now = now or datetime.now(timezone.utc)
     run_id = now.strftime("%Y%m%dT%H%M%SZ")
     steps = _select_steps(only, skip)
@@ -175,7 +187,7 @@ def run_sync(
             report_progress("starting")
             try:
                 rows, message, status = _RUNNERS[step](store, cfg, fetch=fetch, now=now, yf=yf, sleep=sleep,
-                                                       progress=report_progress)
+                                                       progress=report_progress, keys=keys)
             except ConfigError as e:
                 rows, message, status = 0, str(e), "skipped"
             except Exception as e:  # isolate: log and continue with the next step

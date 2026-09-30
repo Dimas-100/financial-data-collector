@@ -7,6 +7,7 @@ import pytest
 
 from financial_data_collector import config as C
 from financial_data_collector import sync
+from financial_data_collector.connections import keys as K
 from financial_data_collector.collectors import sec_cik
 from financial_data_collector.http import HttpError
 from financial_data_collector.store import Store
@@ -47,30 +48,30 @@ def _counts(cfg):
 
 def test_full_sync_then_noop(project, fixtures: Path):
     rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["ingest", "prices", "sec", "derive", "export"]
-    assert [s.status for s in rep.steps] == ["ok", "ok", "ok", "ok", "skipped"], rep.steps   # export disabled by default
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "sec", "derive", "export"]
+    assert [s.status for s in rep.steps] == ["skipped", "ok", "ok", "ok", "ok", "skipped"], rep.steps   # no connections; export disabled by default
     assert rep.exit_code == 0
     c1 = _counts(project)
     assert c1["position_snapshots"] > 0 and c1["prices"] > 0 and c1["sec_facts"] == 35
-    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 5
-    assert "without data" in rep.steps[1].message          # KO, VTI, BRK.B had no bars
+    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 6
+    assert "without data" in rep.steps[2].message          # KO, VTI, BRK.B had no bars
     rep2 = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert rep2.steps[0].rows == 0
+    assert rep2.steps[1].rows == 0
     c2 = _counts(project)
     assert {k: v for k, v in c2.items() if k != "sync_runs"} == {k: v for k, v in c1.items() if k != "sync_runs"}
-    assert rep2.steps[2].message.startswith("0 fetched")
+    assert rep2.steps[3].message.startswith("0 fetched")
 
 
 def test_only_and_skip(project, fixtures: Path):
     rep = sync.run_sync(project, only=["prices"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert [s.step for s in rep.steps] == ["prices"]
     rep = sync.run_sync(project, skip=["sec"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["ingest", "prices", "derive", "export"]
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "derive", "export"]
 
 
 def test_dry_run_touches_nothing(project):
     rep = sync.run_sync(project, dry_run=True)
-    assert rep.dry_run and [s.step for s in rep.steps] == ["ingest", "prices", "sec", "derive", "export"]
+    assert rep.dry_run and [s.step for s in rep.steps] == ["connections", "ingest", "prices", "sec", "derive", "export"]
     assert not project.db_path.exists()
 
 
@@ -181,5 +182,34 @@ def test_run_sync_reports_step_progress(project, fixtures: Path):
     sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None,
                   progress=lambda step, detail: seen.append((step, detail)))
     steps = [s for s, _ in seen]
-    assert steps[0] == "ingest" and "prices" in steps and "sec" in steps and "derive" in steps
+    assert steps[0] == "connections" and "ingest" in steps and "prices" in steps and "sec" in steps and "derive" in steps
     assert any(step == "prices" and detail.endswith(" AAPL") for step, detail in seen)
+
+
+def test_connections_step_runs_the_connections(project, fixtures: Path, tmp_path: Path):
+    from tests.test_simplefin import ACCESS, ANSWER
+    import json as _json
+
+    home = K.KeyHome(K.MemoryKeyStore(), K.EnvFile(tmp_path / ".env", environ={"FDC_SIMPLEFIN_ACCESS_URL": ACCESS}))
+
+    def fetch(url, headers):
+        if "simplefin" in url:
+            return _json.dumps(ANSWER).encode()
+        return _fetch(fixtures)(url, headers)
+    rep = sync.run_sync(project, only=["connections", "derive"], fetch=fetch, now=NOW, yf=lambda s, d: [],
+                        sleep=lambda s: None, keys=home)
+    by = {s.step: s for s in rep.steps}
+    assert by["connections"].status == "ok" and "simplefin: 3 accounts" in by["connections"].message
+    s = Store.open(project.db_path, migrate=False)
+    assert s.query("SELECT COUNT(*) FROM accounts WHERE origin = 'simplefin'")[0][0] == 3
+    assert s.query("SELECT COUNT(*) FROM cash_daily")[0][0] > 0
+    assert s.query("SELECT COUNT(*) FROM reconciliation")[0][0] == 0
+    s.close()
+
+
+def test_a_skipped_connections_step_leaves_the_exit_code_to_the_other_network_steps(project):
+    def down(url, headers):
+        raise HttpError(500, url)
+    rep = sync.run_sync(project, fetch=down, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    by = {s.step: s for s in rep.steps}
+    assert by["connections"].status == "skipped" and rep.exit_code == 1
