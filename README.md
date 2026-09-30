@@ -27,9 +27,11 @@ Then:
 
 1. Open `.env` and set `SEC_USER_AGENT=Your Name you@example.com` (SEC requires it). Optionally
    add a free Tiingo token; without one, prices come from yfinance.
-2. On fidelity.com: Accounts, Positions, Download. Save the CSV into `inbox/`.
-   Optional: Accounts, Activity and Orders, Download, for transaction history. If that file has no
-   `Account` column, import it explicitly: `fdc import path\to\History.csv --account "My Brokerage"`.
+2. Connect a brokerage (`fdc connect snaptrade`) or a bank (`fdc connect simplefin`) with your own key:
+   see [docs/connections.md](docs/connections.md). Or, on fidelity.com: Accounts, Positions, Download, and
+   save the CSV into `inbox/`. Optional: Accounts, Activity and Orders, Download, for transaction history;
+   if that file has no `Account` column, import it explicitly:
+   `fdc import path\to\History.csv --account "My Brokerage"`.
 3. Run `fdc sync`. The first run pulls five years of prices and every SEC filing for your companies.
    Later runs are incremental. Run it whenever you like, or schedule it.
 
@@ -99,16 +101,19 @@ investing cockpit in this warehouse reads). Set `[export.cockpit]` in `config.to
 
 ## Other brokers and sources
 
-The universal input is Fidelity's positions CSV. A second adapter ingests the JSON produced by a
-SnapTrade-based export (see `config.example.toml`, section `sources.snaptrade`); it is skipped when
-the folder does not exist. Adding a broker means writing one adapter that returns
-`models.Snapshot`; see `src/financial_data_collector/adapters/`.
+`fdc connect snaptrade` covers 35+ brokerages and `fdc connect simplefin` covers banks, cards and loans, each
+with a key you hold yourself ([docs/connections.md](docs/connections.md)). Fidelity's positions CSV is the
+file route. A second adapter ingests the JSON produced by a SnapTrade-based export (see `config.example.toml`,
+section `sources.snaptrade`); it is skipped when the folder does not exist. Adding another file format means
+writing one adapter that returns `models.Snapshot`; see `src/financial_data_collector/adapters/`.
 
 ## Privacy
 
 `data/`, `inbox/`, `config.toml`, `.env` and `watchlist.txt` are gitignored. The test suite fails if
 git ever tracks a database, a CSV outside the synthetic fixtures, or an env file. Account numbers in
-Fidelity exports are discarded on import and never stored.
+Fidelity exports are discarded on import and never stored. Connection keys live in your computer's key
+store, never in the repo; account numbers and service ids from a connection are never stored, and bank
+transactions are never requested.
 
 Output is colored and tabular in a terminal and plain text in logs and pipes; set `NO_COLOR=1` to force plain.
 
