@@ -9,6 +9,7 @@ from typing import Iterable
 
 from . import migrate as _migrate
 from .adapters.base import dedupe_key
+from .connections.names import slug_for
 from .models import (
     AccountRef, ConceptRule, Fact, LineItem, PriceBar, Snapshot, TransactionRow,
 )
@@ -66,6 +67,8 @@ class Store:
 
     # ---- accounts / securities ------------------------------------------
     def _account_id(self, ref: AccountRef, first_seen: str) -> int:
+        if ref.external_key:
+            return self._connected_account_id(ref, first_seen)
         self.conn.execute(
             """INSERT INTO accounts (label, slug, institution, account_type, first_seen)
                VALUES (?, ?, ?, ?, ?)
@@ -77,6 +80,45 @@ class Store:
             (ref.label, ref.slug, ref.institution, ref.account_type, first_seen),
         )
         return self.conn.execute("SELECT id FROM accounts WHERE label = ?", (ref.label,)).fetchone()[0]
+
+    def _connected_account_id(self, ref: AccountRef, first_seen: str) -> int:
+        """An account from a connection is known by its external_key, never by its label. The label is fixed when
+        the account is first seen; the kind changes only while it is still a guess; a confirmed kind, a limit and
+        a rate are what the person set and are never touched."""
+        row = self.conn.execute("SELECT id, kind_confirmed FROM accounts WHERE external_key = ?",
+                                (ref.external_key,)).fetchone()
+        if row is None:
+            cur = self.conn.execute(
+                """INSERT INTO accounts (label, slug, institution, account_type, first_seen, external_key, origin,
+                                         kind_confirmed, flows)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (self._free_label(ref.label), ref.slug, ref.institution, ref.account_type, first_seen,
+                 ref.external_key, ref.origin, int(ref.kind_confirmed), ref.flows),
+            )
+            return cur.lastrowid
+        aid = row[0]
+        if not row[1]:
+            self.conn.execute("UPDATE accounts SET account_type = ?, slug = ?, kind_confirmed = ? WHERE id = ?",
+                              (ref.account_type, ref.slug, int(ref.kind_confirmed), aid))
+        self.conn.execute(
+            "UPDATE accounts SET first_seen = MIN(first_seen, ?), "
+            "institution = CASE WHEN ? != 'unknown' THEN ? ELSE institution END WHERE id = ?",
+            (first_seen, ref.institution, ref.institution, aid),
+        )
+        return aid
+
+    def _free_label(self, label: str) -> str:
+        taken = {r[0] for r in self.conn.execute("SELECT label FROM accounts WHERE label = ? OR label LIKE ?",
+                                                 (label, label + " %"))}
+        if label not in taken:
+            return label
+        n = 2
+        while f"{label} {n}" in taken:
+            n += 1
+        return f"{label} {n}"
+
+    def _label_of(self, aid: int) -> str:
+        return self.conn.execute("SELECT label FROM accounts WHERE id = ?", (aid,)).fetchone()[0]
 
     def upsert_account(self, ref: AccountRef, first_seen: str) -> int:
         with self.conn:
@@ -173,11 +215,11 @@ class Store:
                 if aid in stale:
                     continue
                 self.conn.execute(
-                    """INSERT INTO cash_balances (as_of_date, account_id, currency, amount, source)
-                       VALUES (?,?,?,?,?)
+                    """INSERT INTO cash_balances (as_of_date, account_id, currency, amount, available, source)
+                       VALUES (?,?,?,?,?,?)
                        ON CONFLICT(as_of_date, account_id, currency) DO UPDATE SET
-                         amount = excluded.amount, source = excluded.source""",
-                    (snap.as_of_date, aid, c.currency, c.amount, snap.source),
+                         amount = excluded.amount, available = excluded.available, source = excluded.source""",
+                    (snap.as_of_date, aid, c.currency, c.amount, c.available, snap.source),
                 )
                 n += 1
         return n
@@ -208,7 +250,8 @@ class Store:
                 aid = self._account_id(r.account, r.trade_date)
                 if r.symbol:
                     self._ensure_security(r.symbol, None, None, r.trade_date)
-                key = dedupe_key(r.account.label, r.trade_date, r.type, r.symbol, r.units, r.amount)
+                label = self._label_of(aid) if r.account.external_key else r.account.label
+                key = dedupe_key(label, r.trade_date, r.type, r.symbol, r.units, r.amount)
                 repeats[key] += 1
                 if repeats[key] > 1:
                     key = f"{key}#{repeats[key]}"
@@ -224,6 +267,73 @@ class Store:
                 )
                 n += cur.rowcount
         return n
+
+    # ---- connections --------------------------------------------------------
+    def connection(self, name: str) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM connections WHERE name = ?", (name,)).fetchone()
+
+    def connections(self, active_only: bool = False) -> list[sqlite3.Row]:
+        where = " WHERE removed_at IS NULL" if active_only else ""
+        return self.query(f"SELECT * FROM connections{where} ORDER BY name")
+
+    def save_connection(self, name: str, key_ref: str, when: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO connections (name, key_ref, created_at) VALUES (?,?,?)
+                   ON CONFLICT(name) DO UPDATE SET key_ref = excluded.key_ref, created_at = excluded.created_at,
+                     removed_at = NULL, last_error = ''""",
+                (name, key_ref, when),
+            )
+
+    def mark_connection(self, name: str, *, fetched_at: str, ok: bool, error: str = "") -> None:
+        with self.conn:
+            if ok:
+                self.conn.execute("UPDATE connections SET last_fetch_at = ?, last_ok_at = ?, last_error = '' "
+                                  "WHERE name = ?", (fetched_at, fetched_at, name))
+            else:
+                self.conn.execute("UPDATE connections SET last_fetch_at = ?, last_error = ? WHERE name = ?",
+                                  (fetched_at, error[:1000], name))
+
+    def remove_connection(self, name: str, when: str) -> bool:
+        with self.conn:
+            cur = self.conn.execute("UPDATE connections SET removed_at = ? WHERE name = ? AND removed_at IS NULL",
+                                    (when, name))
+            return cur.rowcount > 0
+
+    def accounts_of(self, origin: str) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM accounts WHERE origin = ?", (origin,)).fetchone()[0]
+
+    def newest_activity_dates(self, origin: str) -> dict[str, str]:
+        """The newest stored activity per connected account of an origin, by external_key."""
+        return {r[0]: r[1] for r in self.query(
+            "SELECT a.external_key, MAX(t.trade_date) FROM transactions t JOIN accounts a ON a.id = t.account_id "
+            "WHERE a.origin = ? AND a.external_key IS NOT NULL GROUP BY a.external_key", (origin,))}
+
+    # ---- what the person sets about an account ---------------------------------
+    def accounts_overview(self) -> list[sqlite3.Row]:
+        return self.query("SELECT id, label, institution, account_type, kind_confirmed, credit_limit, rate_pct, "
+                          "origin, flows FROM accounts ORDER BY label")
+
+    def set_account(self, label: str, *, kind: str | None = None, credit_limit: float | None = None,
+                    rate_pct: float | None = None) -> bool:
+        """What the person says about an account; a sync never changes it afterwards. False when no account has
+        that label."""
+        sets: list[str] = []
+        params: list[object] = []
+        if kind is not None:
+            sets += ["account_type = ?", "slug = ?", "kind_confirmed = 1"]
+            params += [kind, slug_for(kind)]
+        if credit_limit is not None:
+            sets.append("credit_limit = ?")
+            params.append(float(credit_limit))
+        if rate_pct is not None:
+            sets.append("rate_pct = ?")
+            params.append(float(rate_pct))
+        if not sets:
+            return self.conn.execute("SELECT 1 FROM accounts WHERE label = ?", (label,)).fetchone() is not None
+        with self.conn:
+            cur = self.conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE label = ?", (*params, label))
+            return cur.rowcount > 0
 
     # ---- prices -----------------------------------------------------------
     def last_price_date(self, symbol: str) -> str | None:
