@@ -92,6 +92,10 @@ Claude Code needs no setup: the database is a file, and `fdc query` works from t
 .\scripts\schedule_sync.ps1 -Remove
 ```
 
+The task runs on battery too. A start that arrives while a sync is running waits for it to finish, so a
+job that writes files the collector reads can end with `Start-ScheduledTask "FinancialDataCollector Sync"`
+and know a sync will read them.
+
 Logs go to `%LOCALAPPDATA%\financial-data-collector\sync.log`. On macOS/Linux use cron or launchd
 to run `fdc --root /path/to/repo sync`.
 

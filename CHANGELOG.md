@@ -11,6 +11,9 @@
   after the balance showed it, the replay now pairs it with that earlier cash instead of adding it again as money in
   transit. A split the records carry as a transaction (Fidelity's share distribution) isn't counted twice.
   `Store.splits_by_symbol()` feeds the replay its splits.
+- The scheduled sync (`scripts/schedule_sync.ps1`) runs on battery, and a start that arrives while a sync
+  is running waits its turn instead of being dropped. A laptop left unplugged never synced, and a sync that
+  began just before a feed finished writing left the warehouse a day behind.
 - Connections: `fdc connect snaptrade` (brokerages, a personal key) and `fdc connect simplefin` (banks, cards
   and loans, balances only), `fdc connections`, `fdc disconnect`, `fdc accounts` and `fdc accounts set`. Keys
   live in the operating system's key store, or in `.env` on a computer without one. `fdc sync` gains a first
