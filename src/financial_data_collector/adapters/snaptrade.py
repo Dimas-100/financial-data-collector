@@ -16,8 +16,9 @@ from ..symbols import canonical, is_money_market
 from .base import infer_account_type
 
 SOURCE = "snaptrade"
-_ACTIVITY_TYPES = {"BUY": "buy", "SELL": "sell", "DIVIDEND": "dividend", "CONTRIBUTION": "contribution",
+ACTIVITY_TYPES = {"BUY": "buy", "SELL": "sell", "DIVIDEND": "dividend", "CONTRIBUTION": "contribution",
                    "REI": "reinvest", "WITHDRAWAL": "withdrawal", "INTEREST": "interest", "FEE": "fee"}
+_ACTIVITY_TYPES = ACTIVITY_TYPES
 
 
 def _account(label: str, slug: str | None = None) -> AccountRef:
@@ -84,7 +85,7 @@ def parse_activity(path: Path) -> list[TransactionRow]:
         rows.append(TransactionRow(
             account=_account(label),
             trade_date=trade,
-            type=_ACTIVITY_TYPES.get(raw_type, "other"),
+            type=ACTIVITY_TYPES.get(raw_type, "other"),
             symbol=canonical(raw_symbol) or None,
             units=_nonzero(a.get("units")),
             price=_nonzero(a.get("price")),

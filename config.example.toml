@@ -12,6 +12,9 @@ lookback_years = 5                 # first fetch depth per symbol
 [sec]
 max_age_hours = 24                 # refetch a company's facts at most this often
 
+[connections]
+min_hours = 6                      # ask a connected service (fdc connect) at most this often
+
 [sources.snaptrade]
 enabled = true                     # owner-only: investing's SnapTrade export. Ignored if dir is missing.
 dir = "../investing/fidelity/dashboard-data"

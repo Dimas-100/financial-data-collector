@@ -58,3 +58,17 @@ def test_process_env_overrides_dotenv(tmp_path: Path, monkeypatch):
 def test_placeholder_user_agent_counts_as_unset(tmp_path: Path):
     C.init_project(tmp_path)                       # .env holds the example placeholder
     assert C.load_config(tmp_path).sec_user_agent is None
+
+
+def test_connections_min_hours(tmp_path):
+    from financial_data_collector import config as C
+    C.init_project(tmp_path)
+    assert C.load_config(tmp_path).connections_min_hours == 6.0
+    (tmp_path / "config.toml").write_text("[connections]\nmin_hours = 0.5\n")
+    assert C.load_config(tmp_path).connections_min_hours == 0.5
+    (tmp_path / "config.toml").write_text("[connections]\nmin_hours = -1\n")
+    try:
+        C.load_config(tmp_path)
+        assert False
+    except C.ConfigError as e:
+        assert "min_hours" in str(e)

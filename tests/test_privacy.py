@@ -40,3 +40,15 @@ def test_powershell_scripts_are_ascii_without_bom():
         raw = p.read_bytes()
         assert not raw.startswith(b"\xef\xbb\xbf"), f"{p.name} has a BOM"
         assert all(b < 128 for b in raw), f"{p.name} is not pure ASCII"
+
+
+def test_no_key_value_and_no_worktree_is_tracked():
+    import re
+    key_line = re.compile(r"^\s*FDC_(SNAPTRADE|SIMPLEFIN)_[A-Z_]+\s*=\s*\S", re.M)
+    for f in _tracked():
+        assert not f.lower().startswith(".worktrees/"), f
+        if f.startswith("tests/"):
+            continue   # synthetic values under test are fine
+        if f.endswith((".md", ".toml", ".py", ".example", ".txt", ".ps1", ".yml", ".yaml")):
+            text = (ROOT / f).read_text(encoding="utf-8", errors="replace")
+            assert not key_line.search(text), f"{f} holds a connection key value"

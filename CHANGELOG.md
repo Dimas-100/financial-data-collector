@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Connections: `fdc connect snaptrade` (brokerages, a personal key) and `fdc connect simplefin` (banks, cards
+  and loans, balances only), `fdc connections`, `fdc disconnect`, `fdc accounts` and `fdc accounts set`. Keys
+  live in the operating system's key store, or in `.env` on a computer without one. `fdc sync` gains a first
+  step, `connections`. Migration 0006 adds the `connections` table, an account's `external_key`, `origin`,
+  `kind_confirmed`, `credit_limit`, `rate_pct` and `flows`, and `cash_balances.available`. A connected account
+  is known by a hashed key, so a rename keeps its history. Spec: `docs/superpowers/specs/2026-09-29-connections-design.md`.
 - Identical transactions in one import are kept as separate rows (three $100 deposits on the same day
   were stored as one). The first keeps its old dedupe key, so re-importing a file still changes nothing.
 - The replay no longer decides by the clock alone whether a snapshot already holds its day's rows. A
