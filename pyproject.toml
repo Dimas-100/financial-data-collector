@@ -15,6 +15,7 @@ dependencies = [
   "yfinance>=0.2.40",
   "mcp>=2.0",
   "rich>=13",
+  "keyring>=25",
 ]
 
 [project.optional-dependencies]

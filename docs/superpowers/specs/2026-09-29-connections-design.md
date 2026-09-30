@@ -34,7 +34,7 @@ This is part 1 of four that make kestrel (the dashboard that reads this warehous
 
 ## 3. Step zero: a trial with real keys
 
-Nothing is built on an assumption about either service until it has been tried. The first task runs by hand, in a separate root (`fdc --root <a test folder>`), against a real personal SnapTrade key and a real SimpleFIN token, and confirms:
+The build went ahead on the shapes SnapTrade documents and on the shapes the owner's own exporters have read daily for months; what remains unproven is only the personal key's authentication. So the trial runs after the build, as its acceptance: by hand, in a separate root (`fdc --root <a test folder>`), with a real personal SnapTrade key and a real SimpleFIN token. `docs/connections.md` holds the checklist. It confirms:
 
 1. **The personal key works alone.** Listing accounts, positions, balances and activity succeeds with the client id and consumer key only, with no registered user id or user secret.
 2. **What an account carries.** Which fields give the institution, the account's name and its kind, and whether any field carries an account number (it must be dropped before anything is stored).
@@ -42,7 +42,7 @@ Nothing is built on an assumption about either service until it has been tried. 
 4. **SimpleFIN's answers.** That the bridge accepts `balances-only=1` and `version=2`; the shape of its `errors`; how a card's balance is signed; whether account names carry digits from the account number.
 5. **Limits.** How often each service may be asked.
 
-Findings go in Appendix A as facts about shapes and behaviour, never a value, a label or an id. **If (1) fails, the work stops and this design is revisited.**
+Findings go in Appendix A as facts about shapes and behaviour, never a value, a label or an id. If (1) fails, the SnapTrade fetcher also takes a key that has a registered user (`fdc connect snaptrade --with-user`, four values), which the owner's own key is; that hedge is built, and the personal-key promise is then revisited.
 
 ## 4. Commands
 
@@ -65,7 +65,7 @@ Findings go in Appendix A as facts about shapes and behaviour, never a value, a 
 - **Stored in the operating system's key store** through `keyring` (Windows Credential Manager; Keychain on macOS; Secret Service on Linux). New dependency: `keyring`.
 - **One entry per connection per warehouse.** `connect` makes a random reference and stores it in the `connections` table (§7); the key store entry is named by that reference, under the service name `financial-data-collector`. Two warehouses on one computer (the trial and a real one) therefore never share or overwrite a key. The database holds the reference, never the key.
 - **What is saved.** SnapTrade: the client id and consumer key. SimpleFIN: the access address, which contains its own user name and password and is treated as a secret throughout.
-- **Without a key store** (a server with no desktop session), the variables `FDC_SNAPTRADE_CLIENT_ID`, `FDC_SNAPTRADE_CONSUMER_KEY` and `FDC_SIMPLEFIN_ACCESS_URL` are read instead, from the environment or `.env`.
+- **Without a key store** (a server with no desktop session), `fdc connect` writes the key to `.env` beside `config.toml` instead, says so, and the connection's `key_ref` is `env`. The variables are `FDC_SNAPTRADE_CLIENT_ID`, `FDC_SNAPTRADE_CONSUMER_KEY`, `FDC_SNAPTRADE_USER_ID`, `FDC_SNAPTRADE_USER_SECRET` and `FDC_SIMPLEFIN_ACCESS_URL`; the environment wins over the file. A key put there by hand is a connection too: the sync step records it.
 - **Never anywhere else:** not `config.toml`, the database, a log, `sync_runs`, or an error message. Every message that leaves the fetchers passes through one `redact()` that removes the user name and password from any address and any text equal to a loaded secret.
 - The secrets already in `.env` (`SEC_USER_AGENT`, `TIINGO_API_TOKEN`) are unchanged.
 
@@ -76,7 +76,8 @@ Both fetchers take `fetch` (and `post`, `now`) as parameters, as the collectors 
 ### 6.1 SnapTrade (`connections/snaptrade.py`)
 
 - **Requests** are signed as SnapTrade's request-signing documentation describes and step zero confirms. Every request is a GET.
-- **Calls, and only these:** list accounts; per account its positions, its balances and its activity.
+- **Calls, and only these:** list accounts; list brokerage connections (to name a login that needs repair); per account its positions, its balances and its activity.
+- **An account with no balance row** gets one of 0, so the day is still a full statement of it and a sold-out account shows as empty rather than keeping yesterday's holdings.
 - **Activity window:** from seven days before the newest activity already stored for that account; on the first fetch, as far back as the service gives. The existing `dedupe_key` makes the overlap harmless.
 - **Mapped to** the existing `Snapshot` (`source = "snaptrade"`, `as_of_date` the fetch's UTC date, `fetched_at` its time) and `TransactionRow`, with the activity-type map the folder adapter already uses (moved to one shared place). A money-market sweep position counts as cash, as it does there.
 - **Not fetched:** open orders, option positions.
@@ -129,11 +130,12 @@ No existing view changes shape. The schema version becomes 6; kestrel's reader a
   | `saving` | `savings` |
   | `money market` | `money_market` |
   | `credit`, `card`, `visa`, `mastercard`, `amex`, `discover` | `credit_card` |
+  | `crypto` | `crypto` |
   | `roth` | `roth_ira` |
   | `ira`, `rollover` | `traditional_ira` |
   | `401` | `401k` |
   | `brokerage`, `invest`, `individual`, `joint` | `brokerage` |
-  | nothing above | `credit_card` when the balance is below zero, else `other` |
+  | nothing above | a SnapTrade account is `brokerage`; a SimpleFIN account is `credit_card` when its balance is below zero, else `other` |
 
   Checking and savings come before the card words, so `Debit Card Checking` is a checking account. A kind taken from SnapTrade's own text is stored as confirmed; one taken from a name, or from the last row, is a guess, stored with `kind_confirmed = 0`.
 - **What the person sets wins.** `fdc accounts set` stores the kind with `kind_confirmed = 1`. A later sync never changes a confirmed kind, a limit or a rate. (Today's account upsert overwrites the kind on every write; for an account with an `external_key` it sets it only on insert or while the kind is still a guess.)
@@ -141,7 +143,7 @@ No existing view changes shape. The schema version becomes 6; kestrel's reader a
 
 ## 9. Sync
 
-- `STEPS = ("connections", "ingest", "prices", "sec", "derive", "export")`; `connections` joins `NETWORK_STEPS`.
+- `STEPS = ("connections", "ingest", "prices", "sec", "derive", "export")`; `connections` joins `NETWORK_STEPS`, but a `connections` step that was skipped for want of connections does not count toward the all-network-steps-failed exit status.
 - **Each connection runs on its own.** One that fails is recorded in `connections.last_error` and named in the step's message; the other still runs. The step is `skipped` with no connections, `error` when every connection failed, else `ok`.
 - **Not too often.** `[connections] min_hours = 6` in `config.toml`: a connection fetched more recently than that is skipped with `fetched 2 hours ago`.
 - **Idempotent.** A second fetch on the same day replaces that day's rows for the accounts it covers with the same values; with nothing new, no data row changes.
@@ -158,7 +160,7 @@ No existing view changes shape. The schema version becomes 6; kestrel's reader a
 | The setup token was already used | `this setup token has been used: make a new one on SimpleFIN's site` |
 | A bank needs attention | SimpleFIN's own message, redacted |
 | The service can't be reached | `<host> couldn't be reached (<reason>)`: the host only, never the address |
-| No key store on this computer | `no key store on this computer: set FDC_… in .env instead` |
+| No key store on this computer | the key is written to `.env` and `fdc connect` says `no key store on this computer: the key is in .env instead` |
 
 ## 11. Privacy and safety
 

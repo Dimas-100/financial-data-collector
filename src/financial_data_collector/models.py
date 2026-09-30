@@ -14,6 +14,10 @@ class AccountRef:
     slug: str = "other"
     institution: str = "unknown"
     account_type: str = "other"
+    external_key: str | None = None  # set for an account from a connection: its identity, never its label
+    origin: str = "file"             # file | snaptrade | simplefin
+    kind_confirmed: bool = True      # False while account_type is a guess the person hasn't confirmed
+    flows: str = "transactions"      # balance: no transactions explain its changes, so every change is money moved
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,7 @@ class CashRow:
     account: AccountRef
     amount: float
     currency: str = "USD"
+    available: float | None = None   # a card's remaining credit, when the service reports it
 
 
 @dataclass(frozen=True)

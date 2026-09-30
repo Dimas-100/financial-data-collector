@@ -16,7 +16,7 @@ from .models import (
 COUNT_TABLES = (
     "accounts", "securities", "position_snapshots", "cash_balances", "transactions",
     "prices", "sec_facts", "financial_line_items", "sync_runs", "ingested_files",
-    "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily",
+    "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily", "connections",
 )
 
 
