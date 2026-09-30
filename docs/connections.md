@@ -41,7 +41,9 @@ connection too.
 
 **Sync.** `connections` is the first step of `fdc sync`. A connection is asked at most every `[connections]
 min_hours` (6 by default). One failing connection never stops the other; what happened is in `fdc connections`
-and in `sync_runs`.
+and in `sync_runs`. The first sync after `fdc connect snaptrade` fetches every account's whole activity history
+and can take several minutes; later syncs ask for the last week only. A card's limit usually isn't reported
+by the bank: set it with `fdc accounts set "<card>" --limit <amount>`.
 
 ## When something fails
 

@@ -208,4 +208,12 @@ Its Reserves page then fills from the collector alone, and its connector guide s
 
 ## Appendix A: what the trial found
 
-Written by step zero (§3): for each of its five questions, what was confirmed and anything this design must change because of it. Shapes and behaviour only.
+Run on 2026-09-30 in a separate root, with the owner's own keys, against the branch's `fdc`. Shapes and behaviour only.
+
+1. **The personal key works alone.** A key made on SnapTrade's API Key page, two values, was accepted with no user id or user secret: `fdc connect snaptrade` listed four accounts across two brokerages, and `fdc sync` fetched positions, balances and activity for all of them. The `--with-user` form was not needed.
+2. **What an account carries.** Three of the four accounts came with a kind in SnapTrade's own text (they showed as confirmed); one had none and was guessed `brokerage` from its name. Institution names arrived as plain words. No label showed a digit, and `fdc accounts` never showed a number. The first fetch of activity with no start date returned the full history (456 rows back to mid-2024, one page per account) and took over five minutes for four accounts; later syncs ask for the last week and are quick. `docs/connections.md` now says so.
+3. **A broken brokerage login** did not occur during the trial; the branch's handling of a disabled authorization stays as designed and untested against the service.
+4. **SimpleFIN's answers.** The bridge accepted `balances-only=1` and `version=2`, and its `connections` list named both institutions, so labels read `<Institution> <account name>`. Five accounts arrived: two cards, two checking, one savings, every kind guessed right from the name. A card's balance is below zero, as designed. `available-balance` was above zero for one checking account and zero for both cards, so a card's limit is not inferable from this bridge: the person sets it with `fdc accounts set --limit`, and part 2's wizard should ask for it. Balance dates were the previous day.
+5. **Limits.** Neither service refused a request during the trial. A second sync ten minutes after the first was throttled by `min_hours`, as designed.
+
+Nothing in the design changed because of the trial. Two notes for later parts: the wizard needs a "what is this card's limit?" step (4), and the first sync's length deserves a progress line per account (2).
