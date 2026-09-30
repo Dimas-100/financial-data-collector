@@ -77,7 +77,7 @@ def test_signature_is_the_documented_one():
 
 def test_every_request_is_a_signed_get_to_a_read_path_with_no_user_for_a_personal_key():
     calls = []
-    st.fetch_all(KEYS, fetch=_fetch(calls), now=NOW)
+    st.fetch_all(KEYS, fetch=_fetch(calls), now=NOW, clock=lambda: NOW.timestamp())
     assert calls, "no requests were made"
     for path, query, headers in calls:
         assert path.startswith(st.API)
@@ -178,3 +178,12 @@ def test_a_disabled_login_is_named():
         return _fetch([])(url, headers)
     out = st.fetch_all(KEYS, fetch=fetch, now=NOW)
     assert "Example Brokerage needs reconnecting on SnapTrade's site" in out.notes
+
+
+def test_the_signature_timestamp_follows_the_clock_not_the_syncs_start():
+    calls = []
+    ticks = iter([1767225600, 1767225601, 1767225602, 1767225603, 1767225604, 1767225605, 1767225606, 1767225607])
+    st.fetch_all(KEYS, fetch=_fetch(calls), now=NOW, clock=lambda: next(ticks))
+    stamps = [q["timestamp"][0] for _, q, _ in calls]
+    assert stamps == sorted(stamps) and len(set(stamps)) == len(stamps)
+    assert st.fetch_all(KEYS, fetch=_fetch([]), now=NOW).snapshots[0].as_of_date == "2026-01-01"

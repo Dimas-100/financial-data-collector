@@ -21,6 +21,10 @@ COUNT_TABLES = (
 )
 
 
+class RouteConflict(ValueError):
+    """A file names an account that already comes from a connection. Each account has one route."""
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -69,13 +73,19 @@ class Store:
     def _account_id(self, ref: AccountRef, first_seen: str) -> int:
         if ref.external_key:
             return self._connected_account_id(ref, first_seen)
+        taken = self.conn.execute("SELECT external_key FROM accounts WHERE label = ?", (ref.label,)).fetchone()
+        if taken is not None and taken[0]:
+            raise RouteConflict(f"an account called {ref.label!r} comes from a connection; "
+                                "use one route per account, a file or a connection")
+        # a file account keeps a kind once it has one ('other' is no kind): what the person set, or what the
+        # first file said, survives every later import
         self.conn.execute(
             """INSERT INTO accounts (label, slug, institution, account_type, first_seen)
                VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(label) DO UPDATE SET
-                 slug = excluded.slug,
+                 slug = CASE WHEN accounts.account_type = 'other' THEN excluded.slug ELSE accounts.slug END,
                  institution = CASE WHEN excluded.institution != 'unknown' THEN excluded.institution ELSE accounts.institution END,
-                 account_type = CASE WHEN excluded.account_type != 'other' THEN excluded.account_type ELSE accounts.account_type END,
+                 account_type = CASE WHEN accounts.account_type = 'other' THEN excluded.account_type ELSE accounts.account_type END,
                  first_seen = MIN(accounts.first_seen, excluded.first_seen)""",
             (ref.label, ref.slug, ref.institution, ref.account_type, first_seen),
         )
@@ -281,7 +291,7 @@ class Store:
             self.conn.execute(
                 """INSERT INTO connections (name, key_ref, created_at) VALUES (?,?,?)
                    ON CONFLICT(name) DO UPDATE SET key_ref = excluded.key_ref, created_at = excluded.created_at,
-                     removed_at = NULL, last_error = ''""",
+                     removed_at = NULL, last_error = '', last_fetch_at = NULL, last_ok_at = NULL""",
                 (name, key_ref, when),
             )
 

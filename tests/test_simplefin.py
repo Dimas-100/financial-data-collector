@@ -150,3 +150,14 @@ def test_refused_lapsed_unreachable_and_not_json():
     with pytest.raises(ConnectionFailed) as e:
         sf.fetch_all(KEY, fetch=lambda url, headers: b"<html>", now=NOW)
     assert str(e.value) == "SimpleFIN sent something that isn't JSON"
+
+
+def test_an_unusable_balance_date_falls_back_on_today():
+    answer = {"accounts": [
+        {"id": "A", "conn_id": "C", "name": "Savings", "currency": "USD", "balance": "5", "balance-date": 1767355200000},
+        {"id": "B", "conn_id": "C", "name": "Checking", "currency": "USD", "balance": "6", "balance-date": 1e20},
+        {"id": "D", "conn_id": "C", "name": "Card", "currency": "USD", "balance": "-7", "balance-date": 1767528000},
+    ], "connections": [{"conn_id": "C", "name": "Example Bank"}], "errlist": []}
+    out = sf.fetch_all(KEY, fetch=_fetch([], answer), now=NOW)
+    assert [s.as_of_date for s in out.snapshots] == ["2026-01-03"]      # milliseconds, absurd and future all read as today
+    assert len(out.snapshots[0].cash) == 3

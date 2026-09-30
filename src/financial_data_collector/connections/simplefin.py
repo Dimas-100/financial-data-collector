@@ -74,13 +74,16 @@ def _failure(host: str, e: HttpError) -> ConnectionFailed:
 
 
 def _day(stamp: Any, now: datetime) -> str:
+    """The balance date's UTC day. A missing, absurd or future stamp (milliseconds where seconds were expected,
+    a clock ahead of ours) reads as today rather than failing the whole fetch."""
+    today = now.astimezone(timezone.utc)
     seconds = num(stamp)
-    if not seconds or seconds <= 0:
-        return now.astimezone(timezone.utc).strftime("%Y-%m-%d")
-    when = datetime.fromtimestamp(seconds, tz=timezone.utc)
-    if when > now.astimezone(timezone.utc):
-        when = now.astimezone(timezone.utc)
-    return when.strftime("%Y-%m-%d")
+    if not seconds or seconds <= 0 or seconds > today.timestamp():
+        return today.strftime("%Y-%m-%d")
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        return today.strftime("%Y-%m-%d")
 
 
 def _notes(payload: dict, connections: dict[str, str]) -> list[str]:

@@ -138,7 +138,8 @@ No existing view changes shape. The schema version becomes 6; kestrel's reader a
   | nothing above | a SnapTrade account is `brokerage`; a SimpleFIN account is `credit_card` when its balance is below zero, else `other` |
 
   Checking and savings come before the card words, so `Debit Card Checking` is a checking account. A kind taken from SnapTrade's own text is stored as confirmed; one taken from a name, or from the last row, is a guess, stored with `kind_confirmed = 0`.
-- **What the person sets wins.** `fdc accounts set` stores the kind with `kind_confirmed = 1`. A later sync never changes a confirmed kind, a limit or a rate. (Today's account upsert overwrites the kind on every write; for an account with an `external_key` it sets it only on insert or while the kind is still a guess.)
+- **What the person sets wins.** `fdc accounts set` stores the kind with `kind_confirmed = 1`. A later sync never changes a confirmed kind, a limit or a rate. For an account with an `external_key` the upsert sets the kind only on insert or while it is still a guess; for a file account it sets the kind only on insert or while the stored kind is `other`, so what the person set, or what the first file said, survives every later import.
+- **One route per account.** A file that names an account which came through a connection is refused (`RouteConflict`), and the import reports it as skipped; the connected account and what the person set about it are untouched.
 - **`flows`.** `balance` for every SimpleFIN account, `transactions` for the rest. It tells a reader that the account has no transactions to explain its changes, so every change in its balance is money moved in or out, never growth. Interest on such an account is therefore not shown as growth in this version.
 
 ## 9. Sync

@@ -17,6 +17,7 @@ from .connections import service, simplefin
 from .connections.base import ConnectionFailed
 from .connections.keys import ENV_REF, KeyHome, SnapTradeKeys
 from .connections.names import KINDS
+from .connections.redact import redact
 from .ingest import ingest_file
 from .readonly import UnsafeSql, run_readonly
 from .store import Store
@@ -260,8 +261,11 @@ def cmd_connect(root: Path, args) -> int:
                 ui.error("a setup token is needed")
                 return 2
             found, notes = service.connect_simplefin(store, home, token, post=http.post, fetch=http.fetch, now=now)
-        if store.connection(args.service)["key_ref"] == ENV_REF:
+        row = store.connection(args.service)
+        if row["key_ref"] == ENV_REF:
             ui.hint("no key store on this computer: the key is in .env instead")
+        saved = home.load(args.service, row["key_ref"])
+        secrets = saved.secrets() if saved else []
     except ConnectionFailed as e:
         ui.error(str(e))
         return 1
@@ -271,8 +275,8 @@ def cmd_connect(root: Path, args) -> int:
         ui.console.print(_accounts_table(found))
     else:
         ui.console.print(Text("connected, but no accounts yet: add them on the service's site", style="yellow"))
-    for note in notes:
-        ui.hint(note)
+    for note in notes:   # a service's own words could repeat the address it was asked at
+        ui.hint(redact(note, secrets))
     ui.hint("run fdc sync to fetch balances, holdings and activity")
     return 0
 

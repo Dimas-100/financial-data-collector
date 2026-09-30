@@ -205,3 +205,16 @@ def test_connect_with_user_asks_for_four_values(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.http, "fetch", _fetch([]))
     assert cli.main(["--root", root, "connect", "snaptrade", "--with-user", "--no-browser"]) == 0
     assert len(asked) == 4
+
+
+def test_connect_redacts_a_services_own_words(tmp_path, monkeypatch, capsys):
+    from tests.test_simplefin import ACCESS, ANSWER
+    root = _root(tmp_path, monkeypatch)
+    token = base64.b64encode(b"https://bridge.example.org/simplefin/claim/abc").decode()
+    monkeypatch.setattr(cli, "_ask", lambda prompt: token)
+    monkeypatch.setattr(cli.http, "post", lambda url, headers: (200, ACCESS.encode()))
+    leaky = dict(ANSWER, errlist=[{"code": "gen.", "msg": f"see {ACCESS} for details"}])
+    monkeypatch.setattr(cli.http, "fetch", lambda url, headers: json.dumps(leaky).encode())
+    assert cli.main(["--root", root, "connect", "simplefin"]) == 0
+    out = capsys.readouterr().out
+    assert "p%40ss" not in out and "user%40x" not in out and "for details" in out

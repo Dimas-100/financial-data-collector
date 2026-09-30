@@ -10,8 +10,9 @@ import base64
 import hashlib
 import hmac
 import json
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlencode
 
 from ..adapters.snaptrade import ACTIVITY_TYPES
@@ -49,10 +50,15 @@ def _failure(e: HttpError) -> ConnectionFailed:
     return ConnectionFailed(f"SnapTrade answered {e.status}")
 
 
-def _get(keys: SnapTradeKeys, path: str, params: Mapping[str, str], *, fetch: Fetch, now: datetime) -> Any:
+Clock = Callable[[], float]
+
+
+def _get(keys: SnapTradeKeys, path: str, params: Mapping[str, str], *, fetch: Fetch, clock: Clock) -> Any:
+    """One signed GET. The timestamp is the wall clock at the request, not the sync's start: a long backfill
+    must not drift past what SnapTrade accepts."""
     query = dict(params)
     query["clientId"] = keys.client_id
-    query["timestamp"] = str(int(now.timestamp()))
+    query["timestamp"] = str(int(clock()))
     if keys.user_id and keys.user_secret:
         query["userId"] = keys.user_id
         query["userSecret"] = keys.user_secret
@@ -148,7 +154,7 @@ def _activity(ref: AccountRef, a: dict) -> TransactionRow | None:
 
 
 def _activities(keys: SnapTradeKeys, ref: AccountRef, service_id: str, start: str | None, *, fetch: Fetch,
-                now: datetime) -> list[TransactionRow]:
+                clock: Clock) -> list[TransactionRow]:
     """`service_id` is already quoted for a path."""
     rows: list[TransactionRow] = []
     params = {"limit": str(PAGE)}
@@ -156,7 +162,7 @@ def _activities(keys: SnapTradeKeys, ref: AccountRef, service_id: str, start: st
         params["startDate"] = start
     for page in range(MAX_PAGES):
         payload = _get(keys, f"/accounts/{service_id}/activities", {**params, "offset": str(page * PAGE)},
-                       fetch=fetch, now=now)
+                       fetch=fetch, clock=clock)
         items = _list(payload)
         rows += [r for r in (_activity(ref, a) for a in items) if r]
         if len(items) < PAGE:
@@ -164,9 +170,9 @@ def _activities(keys: SnapTradeKeys, ref: AccountRef, service_id: str, start: st
     return rows
 
 
-def _broken_logins(keys: SnapTradeKeys, *, fetch: Fetch, now: datetime) -> list[str]:
+def _broken_logins(keys: SnapTradeKeys, *, fetch: Fetch, clock: Clock) -> list[str]:
     try:
-        auths = _list(_get(keys, "/authorizations", {}, fetch=fetch, now=now))
+        auths = _list(_get(keys, "/authorizations", {}, fetch=fetch, clock=clock))
     except ConnectionFailed:
         return []   # the accounts still tell the story; this call only names a login to repair
     notes = []
@@ -178,19 +184,20 @@ def _broken_logins(keys: SnapTradeKeys, *, fetch: Fetch, now: datetime) -> list[
     return notes
 
 
-def fetch_accounts(keys: SnapTradeKeys, *, fetch: Fetch, now: datetime) -> list[AccountRef]:
-    """The accounts the key can see. This is how a key is checked."""
-    return [ref for ref in (account_ref(raw) for raw in _list(_get(keys, "/accounts", {}, fetch=fetch, now=now)))
+def fetch_accounts(keys: SnapTradeKeys, *, fetch: Fetch, now: datetime, clock: Clock = time.time) -> list[AccountRef]:
+    """The accounts the key can see. This is how a key is checked. `now` is kept for symmetry with fetch_all;
+    the request is stamped with `clock`."""
+    return [ref for ref in (account_ref(raw) for raw in _list(_get(keys, "/accounts", {}, fetch=fetch, clock=clock)))
             if ref is not None]
 
 
-def fetch_all(keys: SnapTradeKeys, *, fetch: Fetch, now: datetime,
-              since: Mapping[str, str] | None = None) -> Fetched:
+def fetch_all(keys: SnapTradeKeys, *, fetch: Fetch, now: datetime, since: Mapping[str, str] | None = None,
+              clock: Clock = time.time) -> Fetched:
     """Everything for one sync. `since` is the newest stored activity date per external key; activity is fetched
     from OVERLAP_DAYS before it, and from the beginning for an account with none."""
     out = Fetched()
-    raw_accounts = _list(_get(keys, "/accounts", {}, fetch=fetch, now=now))
-    out.notes += _broken_logins(keys, fetch=fetch, now=now)
+    raw_accounts = _list(_get(keys, "/accounts", {}, fetch=fetch, clock=clock))
+    out.notes += _broken_logins(keys, fetch=fetch, clock=clock)
     positions: list[PositionRow] = []
     cash: list[CashRow] = []
     for raw in raw_accounts:
@@ -200,8 +207,8 @@ def fetch_all(keys: SnapTradeKeys, *, fetch: Fetch, now: datetime,
         out.accounts.append(ref)
         service_id = quote(str(raw["id"]), safe="")
         try:
-            held = _list(_get(keys, f"/accounts/{service_id}/positions", {}, fetch=fetch, now=now))
-            balances = _list(_get(keys, f"/accounts/{service_id}/balances", {}, fetch=fetch, now=now))
+            held = _list(_get(keys, f"/accounts/{service_id}/positions", {}, fetch=fetch, clock=clock))
+            balances = _list(_get(keys, f"/accounts/{service_id}/balances", {}, fetch=fetch, clock=clock))
         except ConnectionFailed as e:
             out.notes.append(f"{ref.label}: {e}; skipped")
             continue
@@ -210,7 +217,7 @@ def fetch_all(keys: SnapTradeKeys, *, fetch: Fetch, now: datetime,
         newest = (since or {}).get(ref.external_key)
         start = (datetime.fromisoformat(newest) - timedelta(days=OVERLAP_DAYS)).strftime("%Y-%m-%d") if newest else None
         try:
-            out.transactions += _activities(keys, ref, service_id, start, fetch=fetch, now=now)
+            out.transactions += _activities(keys, ref, service_id, start, fetch=fetch, clock=clock)
         except ConnectionFailed as e:
             out.notes.append(f"{ref.label}: activity: {e}")
     stamp = now.astimezone(timezone.utc)

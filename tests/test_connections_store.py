@@ -111,3 +111,35 @@ def test_positions_of_a_connected_account(store: Store):
                     fetched_at="2026-01-02T05:00:00Z")
     assert store.write_snapshot(snap) == 2
     assert store.query("SELECT account, quantity FROM positions_latest")[0][1] == 3.0
+
+
+def test_a_file_account_cannot_take_a_connected_accounts_label(store: Store):
+    from financial_data_collector import ingest
+    from financial_data_collector.store import RouteConflict
+    connected = AccountRef("Sample Brokerage", "brokerage", "example_broker", "roth_ira", external_key="k1",
+                           origin="snaptrade", kind_confirmed=True)
+    store.upsert_account(connected, "2026-01-02")
+    from_file = AccountRef("Sample Brokerage", "brokerage", "fidelity", "brokerage")
+    with pytest.raises(RouteConflict) as e:
+        store.write_snapshot(Snapshot("2026-01-03", "fidelity_csv", [], [CashRow(from_file, 1.0)]))
+    assert "Sample Brokerage" in str(e.value) and "connection" in str(e.value)
+    row = store.query("SELECT account_type, kind_confirmed, origin FROM accounts")[0]
+    assert (row[0], row[1], row[2]) == ("roth_ira", 1, "snaptrade")
+    assert store.query("SELECT COUNT(*) FROM accounts")[0][0] == 1
+    from tests.conftest import FIXTURES
+    result = ingest.ingest_file(store, FIXTURES / "History_SampleBrokerage_2026.csv", account="Sample Brokerage")
+    assert result.skipped and "connection" in result.skipped
+    assert store.query("SELECT COUNT(*) FROM transactions")[0][0] == 0
+
+
+def test_a_kind_the_person_set_on_a_file_account_survives_an_import(store: Store):
+    from_file = AccountRef("My Brokerage", "brokerage", "fidelity", "brokerage")
+    store.upsert_account(from_file, "2026-01-02")
+    assert store.set_account("My Brokerage", kind="traditional_ira")
+    store.upsert_account(from_file, "2026-01-03")
+    assert store.query("SELECT account_type FROM accounts")[0][0] == "traditional_ira"
+    # an account first seen as 'other' still takes a better kind from a later file
+    vague = AccountRef("Vague", "other", "unknown", "other")
+    store.upsert_account(vague, "2026-01-02")
+    store.upsert_account(AccountRef("Vague", "roth", "fidelity", "roth_ira"), "2026-01-03")
+    assert store.query("SELECT account_type FROM accounts WHERE label = 'Vague'")[0][0] == "roth_ira"

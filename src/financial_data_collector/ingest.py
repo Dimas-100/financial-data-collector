@@ -12,7 +12,7 @@ from pathlib import Path
 from .adapters import fidelity_history, fidelity_positions, snaptrade
 from .adapters.base import read_text_lines, sha256_file
 from .config import Config
-from .store import Store
+from .store import RouteConflict, Store
 
 
 @dataclass
@@ -57,15 +57,15 @@ def ingest_file(store: Store, path: Path, *, account: str | None = None, move_to
     if kind is None:
         return IngestResult(str(path), None, skipped="unrecognized file; expected a Fidelity positions or history export")
     warnings: list[str] = []
-    if kind == "fidelity_positions":
-        snap = fidelity_positions.parse(path)
-        rows = store.write_snapshot(snap)
-        warnings = list(snap.warnings)
-    else:
-        try:
+    try:
+        if kind == "fidelity_positions":
+            snap = fidelity_positions.parse(path)
+            rows = store.write_snapshot(snap)
+            warnings = list(snap.warnings)
+        else:
             rows = store.write_transactions(fidelity_history.parse(path, account=account))
-        except fidelity_history.AccountUnknown as e:
-            return IngestResult(str(path), kind, skipped=str(e))
+    except (fidelity_history.AccountUnknown, RouteConflict) as e:
+        return IngestResult(str(path), kind, skipped=str(e))
     store.record_file(sha, str(path), kind, rows)
     if move_to is not None:
         move_to.mkdir(parents=True, exist_ok=True)

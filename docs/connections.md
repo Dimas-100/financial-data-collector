@@ -13,7 +13,8 @@ message.
 | `fdc accounts` | Every account with its kind (marked *guessed* until you confirm it), credit limit and rate. |
 | `fdc accounts set "Example Bank Visa" --kind credit_card --limit 5000 --rate 24.9` | Confirms or corrects a kind, sets a card's limit or a yearly rate. A sync never changes what you set. |
 
-Use one route per account: an account you import from a CSV and also connect is counted twice.
+Use one route per account. A file that names an account you have connected is skipped with a note; an account
+that reaches the warehouse under two names, one from a CSV and one from a connection, is counted twice.
 
 ## What is fetched and stored
 

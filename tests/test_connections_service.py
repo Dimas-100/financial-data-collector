@@ -181,3 +181,28 @@ def test_overview(store: Store, home: K.KeyHome):
     service.connect_snaptrade(store, home, K.SnapTradeKeys("c", "k"), fetch=_both, now=NOW)
     ov = service.overview(store)
     assert [o.name for o in ov] == ["snaptrade"] and ov[0].accounts == 2 and ov[0].last_ok_at is None
+
+
+def test_reconnecting_after_a_failure_fetches_on_the_next_sync(store: Store, home: K.KeyHome):
+    service.connect_snaptrade(store, home, K.SnapTradeKeys("c", "k"), fetch=_both, now=NOW)
+
+    def refused(url, headers):
+        raise HttpError(401, url)
+    _, message, status = service.run(store, home, min_hours=6, fetch=refused, now=NOW)
+    assert status == "error" and "refused the key" in message
+    # a failed fetch is retried on the next sync, not throttled for min_hours
+    calls = []
+    def counting(url, headers):
+        calls.append(url)
+        return _both(url, headers)
+    _, message, status = service.run(store, home, min_hours=6, fetch=counting, now=NOW + timedelta(minutes=5))
+    assert status == "ok" and calls and "fetched" not in message
+    # and a new key is a fresh connection: fetched right away even after a recent success
+    service.connect_snaptrade(store, home, K.SnapTradeKeys("c2", "k2"), fetch=_both, now=NOW + timedelta(minutes=6))
+    calls.clear()
+    _, message, status = service.run(store, home, min_hours=6, fetch=counting, now=NOW + timedelta(minutes=7))
+    assert status == "ok" and calls and "fetched" not in message
+    # a recent success still throttles
+    calls.clear()
+    _, message, status = service.run(store, home, min_hours=6, fetch=counting, now=NOW + timedelta(minutes=8))
+    assert status == "ok" and not calls and "fetched 1 minute ago" in message

@@ -125,8 +125,10 @@ def run(store: Store, home: KeyHome, *, min_hours: float, fetch: Fetch, now: dat
     rows, messages, ran, failed = 0, [], 0, 0
     for row in active:
         name = row["name"]
-        if row["last_fetch_at"] and now - _parse(row["last_fetch_at"]) < timedelta(hours=min_hours):
-            messages.append(f"{name}: fetched {_ago(row['last_fetch_at'], now)}")
+        # only a fetch that worked is worth waiting on: a failed one is tried again next time, and a new key
+        # (save_connection clears both stamps) right away
+        if row["last_ok_at"] and now - _parse(row["last_ok_at"]) < timedelta(hours=min_hours):
+            messages.append(f"{name}: fetched {_ago(row['last_ok_at'], now)}")
             continue
         ran += 1
         progress(name)
