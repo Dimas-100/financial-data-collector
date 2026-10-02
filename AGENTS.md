@@ -35,7 +35,7 @@ src/financial_data_collector/
   cli.py            fdc init | sync | import | status | query | export | mcp | connect | connections | disconnect | accounts
   sync.py           runs steps connections -> ingest -> prices -> sec -> derive -> export, logs sync_runs, exit codes
   connections/      names.py (labels, kinds, external keys), keys.py (key store / .env), snaptrade.py + simplefin.py (read-only fetchers -> models), service.py (connect / disconnect / run), redact.py
-  derive/           history.py (replay -> holdings_daily, cash_daily, lots, realized_gains, reconciliation), valuation.py (valuation_daily)
+  derive/           history.py (replay -> holdings_daily, cash_daily, lots, realized_gains, reconciliation, unexplained_daily), valuation.py (valuation_daily)
   export/cockpit.py prices.json / dividends.json / fundamentals.json for the investing cockpit
   ingest.py         inbox routing by file signature; SnapTrade folder walk; hash-based idempotency
   adapters/         fidelity_positions.py, fidelity_history.py, snaptrade.py -> models.Snapshot / TransactionRow
@@ -43,7 +43,7 @@ src/financial_data_collector/
   statements.py     facts + concept_map -> financial_line_items (annual, quarter, YTD differencing, derived Q4)
   store.py          Store: every write; migrate.py: migrations, seed, generated wide views
   readonly.py       SQL guard + mode=ro connection; mcp_server.py: schema/query/status tools
-  migrations/*.sql  0001 tables, 0002 views, 0003 derived tables + TTM/history views, 0006 connections;  seeds/concept_map.csv
+  migrations/*.sql  0001 tables, 0002 views, 0003 derived tables + TTM/history views, 0006 connections, 0007 unexplained_daily;  seeds/concept_map.csv
 ```
 
 ## Tables and views (start here when querying)
@@ -54,6 +54,7 @@ src/financial_data_collector/
 - `financials_annual`, `financials_quarterly`, `financials_ttm` (one wide row per company per period; `has_derived_items` marks rows with computed values, `financial_line_items.is_derived` says which)
 - `valuation_daily` / `valuation_latest` (market cap, P/E, P/S, P/FCF, dividend yield per price date, using only filings available that day)
 - `holdings_daily`, `cash_daily`, `portfolio_daily_full` (replayed from transactions back to the first trade, re-anchored on snapshots; `basis` says which), `lots`, `realized_gains`, `reconciliation`
+- `unexplained_daily` (per account and day, the change no transaction or split explains, at least a dollar and not cancelled within a week: `cash`, `holdings` at the day's close, `amount`; most often a deposit the balance shows before the activity feed posts it. A consumer counts `amount` as money moved, not growth)
 - `sec_facts` (raw XBRL, every filing's value for every period), `financial_line_items` (shaped), `concept_map`
 - `sync_status` / `sync_runs`, `ingested_files`, `securities`, `accounts` (with `external_key`, `origin`, `kind_confirmed`, `credit_limit`, `rate_pct`, `flows` for a connected account), `connections`
 

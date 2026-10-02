@@ -22,6 +22,7 @@ LOT_COLUMNS = ("account_id", "symbol", "open_date", "units_open", "units_left", 
 GAIN_COLUMNS = ("account_id", "symbol", "sell_date", "units", "proceeds", "cost_basis", "gain", "first_lot_date",
                 "holding_days", "cost_known", "source_tx_id")
 RECON_COLUMNS = ("as_of_date", "account_id", "symbol", "projected_units", "snapshot_units", "diff")
+UNEXPLAINED_COLUMNS = ("as_of_date", "account_id", "cash", "holdings", "amount")
 
 
 @dataclass
@@ -31,6 +32,7 @@ class ReplayResult:
     lots: list[tuple] = field(default_factory=list)
     gains: list[tuple] = field(default_factory=list)
     recon: list[tuple] = field(default_factory=list)
+    unexplained: list[tuple] = field(default_factory=list)
 
 
 @dataclass(eq=False)
@@ -116,27 +118,85 @@ def _held_today(rows: list[_Row], want: float, by_clock: bool) -> int:
     return min(fits, key=lambda k: (abs(k - guess), -k)) if fits else guess
 
 
-def _landed(rows: list[_Row], unexplained: float, guess: list[bool]) -> list[bool]:
-    """Which cash-only rows the statement's cash already holds: the subset that explains the cash change, closest
-    to the clock's guess (earlier rows land first on a tie); the clock's guess when no subset does. A deposit is
-    dated when it is sent, but a broker's balance can show it a day or two later, or before that day's trades."""
+def _fit(rows: list[_Row], unexplained: float, guess: list[bool], share: float = 0.0) -> list[bool] | None:
+    """The subset of cash-only rows that explains `unexplained` (to CASH_TOLERANCE, or `share` of it when that is
+    more), closest to the clock's guess (earlier rows land first on a tie); None when no subset does, or when there
+    are too many rows to try."""
     n = len(rows)
     if n > MAX_TRANSIT:
-        return guess
+        return None
+    tolerance = max(CASH_TOLERANCE, share * abs(unexplained))
     best: tuple | None = None
     for mask in range(1 << n):
         held = [bool(mask >> i & 1) for i in range(n)]
-        if abs(sum(r.cash for r, h in zip(rows, held) if h) - unexplained) > CASH_TOLERANCE:
+        if abs(sum(r.cash for r, h in zip(rows, held) if h) - unexplained) > tolerance:
             continue
         key = (sum(h != g for h, g in zip(held, guess)), [not h for h in held])
         if best is None or key < best[0]:
             best = (key, held)
-    return best[1] if best else guess
+    return best[1] if best else None
+
+
+PAIR_SHARE = 0.01             # a deposit claiming cash a statement showed earlier may differ by 1% (income beside it)
+MIN_UNEXPLAINED = 1.0         # dollars: less is rounding or a fill's gap to the close, and stays growth
+REVERSAL_SHARE = 0.01         # a spike "reverses" when the days after cancel it to a dollar, or 1% of its size
+
+
+def _without_reversals(found: list[tuple]) -> list[tuple]:
+    """Leave out unexplained changes that undo each other within TRANSIT_DAYS: a value that was wrong for a day or
+    two (a money-market sweep counted twice) and then right again moved no money. `found` rows are (day, cash,
+    holdings, amount, posting) in day order; a posting (the day a transaction records money a statement showed
+    earlier) is real money and never closes a spike."""
+    drop: set[int] = set()
+    # runs still open to the days after: (members, total, size, last day). A run that reversed stays open as one,
+    # so a remainder a statement shows a day or two late (a reinvestment) can still join it
+    open_: list[tuple[list[int], float, float, str]] = []
+    for i, (day, _, _, amount, posting) in enumerate(found):
+        if posting:
+            continue
+        cutoff = (date.fromisoformat(day) - timedelta(days=TRANSIT_DAYS)).isoformat()
+        open_ = [run for run in open_ if run[3] >= cutoff]
+        for k in range(len(open_)):
+            members = [j for run in open_[k:] for j in run[0]] + [i]
+            total = sum(run[1] for run in open_[k:]) + amount
+            size = sum(run[2] for run in open_[k:]) + abs(amount)
+            if abs(total) <= max(MIN_UNEXPLAINED, REVERSAL_SHARE * size):
+                drop.update(members)
+                open_ = [*open_[:k], (members, total, size, day)]
+                break
+        else:
+            open_.append(([i], amount, abs(amount), day))
+    return [f for i, f in enumerate(found) if i not in drop]
+
+
+SPLIT_DAYS = 7                # a split's new shares filed as a transaction land within a week of the ex-date
+
+
+def _split_recorded(txs: list[dict], symbol: str, ex_date: str, new_shares: float) -> bool:
+    """Whether the records carry a split's new shares as a row of their own (Fidelity files them as a
+    distribution), dated within SPLIT_DAYS of the ex-date."""
+    ex = date.fromisoformat(ex_date)
+    for t in txs:
+        units = _signed_units(t)
+        if (t.get("symbol") == symbol and t["type"] in UNIT_TYPES and units is not None
+                and abs((date.fromisoformat(t["trade_date"]) - ex).days) <= SPLIT_DAYS
+                and abs(units - new_shares) <= max(1e-6, 1e-4 * abs(new_shares))):
+            return True
+    return False
+
+
+def _landed(rows: list[_Row], unexplained: float, guess: list[bool]) -> list[bool]:
+    """Which cash-only rows the statement's cash already holds: the subset that explains the cash change; the
+    clock's guess when no subset does. A deposit is dated when it is sent, but a broker's balance can show it a day
+    or two later, or before that day's trades."""
+    held = _fit(rows, unexplained, guess)
+    return guess if held is None else held
 
 
 def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, float]],
            cash_snapshots: dict[tuple[str, int], float], closes: dict[str, list[tuple[str, float]]],
-           calendar: list[str], fetch_times: dict[tuple[str, int], str | None] | None = None) -> ReplayResult:
+           calendar: list[str], fetch_times: dict[tuple[str, int], str | None] | None = None,
+           splits: dict[str, list[tuple[str, float]]] | None = None) -> ReplayResult:
     # Within a day, rows that add units come before rows that remove them: both Fidelity
     # downloads and the SnapTrade feed are newest-first, so a same-day round trip would
     # otherwise replay sell-before-buy and look like a short sale plus an open lot.
@@ -158,6 +218,14 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
         i = bisect_right(dates, d) - 1
         return close_vals[sym][i] if i >= 0 else None
 
+    def split_since(sym: str, after: str, through: str) -> float:
+        """How many shares one share became from the day after `after` through `through`."""
+        factor = 1.0
+        for d, f in (splits or {}).get(sym, []):
+            if after < d <= through:
+                factor *= f
+        return factor
+
     out = ReplayResult()
     for acct in sorted(accounts):
         mine = [t for t in txs if t["account_id"] == acct]
@@ -166,6 +234,12 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
         confirmed: dict[str, float] = {}
         confirmed_cash = 0.0
         pending: list[_Row] = []
+        applied: list[_Row] = []      # the rows the current day applied
+        # cash a statement showed that no row explained, (day, amount): a deposit the feed dates after the balance
+        # shows it is that money, not more in transit on top of it
+        unclaimed: list[tuple[str, float]] = []
+        prev: tuple[str, float, dict[str, float]] | None = None   # the last emitted day, its cash and its units
+        found: list[tuple] = []       # each day's unexplained change, before spikes that reverse are left out
         open_lots: dict[str, list[_Lot]] = {}
         closed_lots: dict[str, list[_Lot]] = {}
 
@@ -173,8 +247,10 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
             sym = t.get("symbol")
             su = _signed_units(t)
             moves = bool(sym) and su is not None and t["type"] in UNIT_TYPES
-            pending.append(_Row(t["trade_date"], sym if moves else None, su if moves else 0.0,
-                                t["amount"] if t.get("amount") is not None else 0.0))
+            row = _Row(t["trade_date"], sym if moves else None, su if moves else 0.0,
+                       t["amount"] if t.get("amount") is not None else 0.0)
+            pending.append(row)
+            applied.append(row)
             if moves:
                 book = open_lots.setdefault(sym, [])
                 if su > 0:
@@ -202,6 +278,7 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
             if d < first[acct]:
                 continue
             key = (d, acct)
+            applied.clear()
             apply_through(d)
             basis = cbasis = "reconstructed"
             if key in snapshots or key in cash_snapshots:
@@ -242,7 +319,16 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
                     recent = [r for r in others if r.date >= cutoff]
                     unexplained = (cash_snapshots[key] - confirmed_cash
                                    - sum(r.cash for r in pending if id(r) in held))
-                    landed = _landed(recent, unexplained, [r.date < d or by_clock for r in recent])
+                    guess = [r.date < d or by_clock for r in recent]
+                    unclaimed = [(day, amount) for day, amount in unclaimed if day >= cutoff]
+                    claimed = unexplained + sum(a for _, a in unclaimed)
+                    paired = _fit(recent, claimed, guess, PAIR_SHARE) if unclaimed else None
+                    landed = paired if paired is not None else _landed(recent, unexplained, guess)
+                    left = unexplained - sum(r.cash for r, h in zip(recent, landed) if h)
+                    if paired is not None:
+                        unclaimed = []
+                    elif abs(left) > CASH_TOLERANCE:
+                        unclaimed.append((d, left))
                     held |= {id(r) for r, h in zip(recent, landed) if h}
                     confirmed_cash = cash_snapshots[key]
                     cbasis = "snapshot"
@@ -261,6 +347,30 @@ def replay(transactions: list[dict], snapshots: dict[tuple[str, int], dict[str, 
                 c = close_on(sym, d)
                 out.holdings.append((d, acct, sym, u, c, (u * c) if c is not None else None, basis))
             out.cash.append((d, acct, cash, cbasis))
+            if prev is not None:
+                # what changed since the last day that the rows applied today (and any split) don't explain, valued
+                # the way the account's value is: at the day's close, nothing for a share without one
+                day_before, cash_before, units_before = prev
+                moved_cash = cash - cash_before - sum(r.cash for r in applied)
+                moved_holdings = 0.0
+                for sym in set(units) | set(units_before):
+                    before = units_before.get(sym, 0.0)
+                    factor = split_since(sym, day_before, d)
+                    if factor != 1.0 and _split_recorded(mine, sym, d, before * (factor - 1)):
+                        factor = 1.0      # the records carry the new shares themselves; that row explains them
+                    expected = before * factor + sum(r.units for r in applied if r.symbol == sym)
+                    extra = units.get(sym, 0.0) - expected
+                    if abs(extra) > 1e-6:
+                        moved_holdings += extra * (close_on(sym, d) or 0.0)
+                amount = round(moved_cash + moved_holdings, 2)
+                if amount != 0:
+                    # the day a transaction records money a statement already showed: the change undoes it exactly
+                    recorded = sum(r.cash for r in applied if not r.symbol)
+                    posting = recorded != 0 and abs(amount + recorded) <= max(CASH_TOLERANCE, PAIR_SHARE * abs(recorded))
+                    found.append((d, round(moved_cash, 2), round(moved_holdings, 2), amount, posting))
+            prev = (d, cash, units)
+        out.unexplained.extend((d, acct, c, h, a) for d, c, h, a, _ in _without_reversals(found)
+                               if abs(a) >= MIN_UNEXPLAINED)
         # trades dated after the last calendar day (today, before its bar exists) still shape lots and gains
         while ptr < len(mine):
             apply(mine[ptr])
@@ -283,11 +393,13 @@ def rebuild(store: Store) -> dict[str, int]:
             t = dict(t, symbol=None)
         txs.append(t)
     result = replay(txs, store.snapshot_units(), store.snapshot_cash(),
-                    store.closes_by_symbol(), store.trading_calendar(), fetch_times=store.snapshot_fetch_times())
+                    store.closes_by_symbol(), store.trading_calendar(), fetch_times=store.snapshot_fetch_times(),
+                    splits=store.splits_by_symbol())
     return {
         "holdings_daily": store.replace_rows("holdings_daily", HOLDINGS_COLUMNS, result.holdings),
         "cash_daily": store.replace_rows("cash_daily", CASH_COLUMNS, result.cash),
         "lots": store.replace_rows("lots", LOT_COLUMNS, result.lots),
         "realized_gains": store.replace_rows("realized_gains", GAIN_COLUMNS, result.gains),
         "reconciliation": store.replace_rows("reconciliation", RECON_COLUMNS, result.recon),
+        "unexplained_daily": store.replace_rows("unexplained_daily", UNEXPLAINED_COLUMNS, result.unexplained),
     }

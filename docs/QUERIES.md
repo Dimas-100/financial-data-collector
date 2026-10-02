@@ -92,6 +92,11 @@ WHERE l.units_left > 0 ORDER BY l.symbol, l.open_date;
 
 -- where the replay disagrees with a real snapshot (splits, missing transactions)
 SELECT * FROM reconciliation ORDER BY as_of_date;
+
+-- money moved that the records don't explain yet (a deposit the activity feed hasn't posted), last 30 days
+SELECT u.as_of_date, a.label, u.cash, u.holdings, u.amount
+FROM unexplained_daily u JOIN accounts a ON a.id = u.account_id
+WHERE u.as_of_date >= date('now', '-30 days') AND ABS(u.amount) >= 1 ORDER BY u.as_of_date;
 ```
 
 Note: `adj_close` is adjusted as of each fetch and is not re-adjusted retroactively; recompute total return from
