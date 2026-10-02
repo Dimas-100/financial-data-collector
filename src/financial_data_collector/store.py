@@ -18,6 +18,7 @@ COUNT_TABLES = (
     "accounts", "securities", "position_snapshots", "cash_balances", "transactions",
     "prices", "sec_facts", "financial_line_items", "sync_runs", "ingested_files",
     "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily", "connections",
+    "unexplained_daily",
 )
 
 
@@ -518,6 +519,14 @@ class Store:
     def quarterly_statement_rows(self, cik: str, limit: int) -> list[dict]:
         rows = self.query("SELECT * FROM financials_quarterly WHERE cik = ? ORDER BY period_end DESC LIMIT ?", (cik, limit))
         return [dict(r) for r in reversed(rows)]
+
+    def splits_by_symbol(self) -> dict[str, list[tuple[str, float]]]:
+        """Each symbol's splits, (ex-date, new shares per old share), oldest first."""
+        out: dict[str, list[tuple[str, float]]] = {}
+        for r in self.query("SELECT symbol, date, split_factor FROM prices "
+                            "WHERE split_factor IS NOT NULL AND split_factor NOT IN (0, 1) ORDER BY symbol, date"):
+            out.setdefault(r[0], []).append((r[1], r[2]))
+        return out
 
     def closes_by_symbol(self) -> dict[str, list[tuple[str, float]]]:
         out: dict[str, list[tuple[str, float]]] = {}

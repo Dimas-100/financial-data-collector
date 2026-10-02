@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `derive` writes `unexplained_daily` (migration 0007): for each account and day, the change in the replay that
+  no transaction or split explains, as its cash part, its shares part at the day's close, and their sum. Most often
+  this is a deposit the broker's balance shows before its activity feed posts it. A consumer that took money moved
+  only from `transactions` read such a deposit as growth. An ordinary day has no row, nor does a change under a
+  dollar. Changes that cancel within a week (a value wrong for a day or two, such as a money-market sweep counted
+  twice) moved no money and have no row either. When the feed dates a deposit
+  after the balance showed it, the replay now pairs it with that earlier cash instead of adding it again as money in
+  transit. A split the records carry as a transaction (Fidelity's share distribution) isn't counted twice.
+  `Store.splits_by_symbol()` feeds the replay its splits.
 - Connections: `fdc connect snaptrade` (brokerages, a personal key) and `fdc connect simplefin` (banks, cards
   and loans, balances only), `fdc connections`, `fdc disconnect`, `fdc accounts` and `fdc accounts set`. Keys
   live in the operating system's key store, or in `.env` on a computer without one. `fdc sync` gains a first

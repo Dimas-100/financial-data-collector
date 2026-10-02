@@ -11,7 +11,7 @@ def _v5(tmp_path: Path) -> Path:
     older = tmp_path / "migrations"
     older.mkdir()
     for p in migrate.MIGRATIONS_DIR.glob("*.sql"):
-        if not p.name.startswith("0006"):
+        if int(p.name[:4]) < 6:
             shutil.copy(p, older)
     db = tmp_path / "w.db"
     conn = sqlite3.connect(db)
@@ -30,7 +30,7 @@ def test_v5_becomes_v6_with_rows_intact(tmp_path: Path):
     db = _v5(tmp_path)
     s = Store.open(db)
     try:
-        assert s.query("SELECT MAX(version) FROM schema_version")[0][0] == 6
+        assert 6 in {r[0] for r in s.query("SELECT version FROM schema_version")}
         acct = s.query("SELECT * FROM accounts")[0]
         assert acct["label"] == "Sample Brokerage" and acct["external_key"] is None
         assert acct["origin"] == "file" and acct["kind_confirmed"] == 1 and acct["flows"] == "transactions"
