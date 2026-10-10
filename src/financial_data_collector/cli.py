@@ -76,6 +76,10 @@ def _parser() -> argparse.ArgumentParser:
     s2.add_argument("--kind", choices=KINDS)
     s2.add_argument("--limit", type=float, help="a card's or line's credit limit")
     s2.add_argument("--rate", type=float, help="yearly rate in percent: what cash earns or debt costs")
+    k = sub.add_parser("console", help="a live screen: what runs, where its data comes from, when it ran; "
+                                       "run a step from it")
+    k.add_argument("--once", action="store_true",
+                   help="print the screen's content once and exit (what a pipe or a log gets)")
     return p
 
 
@@ -343,6 +347,29 @@ def cmd_accounts(root: Path, args) -> int:
     return 0
 
 
+def cmd_console(root: Path, args) -> int:
+    from .console import schedule as schedule_mod
+    from .console.model import load_overview
+    from .console.report import render_once
+
+    cfg = load_config(root)
+    if not cfg.db_path.exists():
+        ui.error("no database yet")
+        ui.hint("run: fdc init")
+        return 2
+    Store.open(cfg.db_path, backup_dir=cfg.backup_dir).close()   # pending migrations, as every command applies them
+    if args.once or not ui.console.is_terminal:
+        sched = schedule_mod.read_schedule(cfg.root)
+        ov = load_overview(cfg, schedule=sched.schedule, schedule_reason=sched.reason)
+        for r in render_once(ov):
+            ui.console.print(r)
+        return 0
+    from .console.app import ConsoleApp
+
+    ConsoleApp(cfg).run()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = Path(args.root).resolve()
@@ -369,6 +396,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_disconnect(root, args)
         if args.cmd == "accounts":
             return cmd_accounts(root, args)
+        if args.cmd == "console":
+            return cmd_console(root, args)
     except ConfigError as e:
         ui.error(str(e))
         ui.hint("run: fdc init" if "not found" in str(e) else "check config.toml for the line reported above")
