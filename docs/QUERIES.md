@@ -107,4 +107,8 @@ Note: `adj_close` is adjusted as of each fetch and is not re-adjusted retroactiv
 ```sql
 SELECT * FROM sync_status;
 SELECT * FROM sync_runs ORDER BY id DESC LIMIT 20;
+
+-- runs per day and who started them
+SELECT substr(started_at, 1, 10) AS day, origin, COUNT(DISTINCT run_id) AS runs
+FROM sync_runs GROUP BY 1, 2 ORDER BY 1 DESC, 2;
 ```

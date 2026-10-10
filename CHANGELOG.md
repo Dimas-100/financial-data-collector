@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `fdc console`: a live terminal screen (Textual) with three tabs: each step's last result and staleness plus
+  the scheduled task's registration (Windows), every source and output with its last activity, and the history
+  of runs with who started them and each step's message. `r` runs the sync, `s` one step, `ctrl+p` the
+  palette; `fdc console --once` prints the same content once. The console only reads; a run it starts is an
+  `fdc sync` subprocess that carries on after quitting.
+- A running sync keeps a heartbeat (`data/sync.heartbeat.json`: run, step, progress line, pid, origin) and
+  removes it when it ends; a sync that finds another alive waits its turn (up to 30 minutes). Every run records
+  its `origin` (migration 0008: `scheduled`, `manual`, `console`; older rows read `unknown`), and
+  `scripts/run_sync.ps1` passes `--origin scheduled`.
 - `derive` writes `unexplained_daily` (migration 0007): for each account and day, the change in the replay that
   no transaction or split explains, as its cash part, its shares part at the day's close, and their sum. Most often
   this is a deposit the broker's balance shows before its activity feed posts it. A consumer that took money moved
