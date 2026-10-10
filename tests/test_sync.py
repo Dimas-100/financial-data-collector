@@ -226,3 +226,38 @@ def test_run_origin_is_logged(project, fixtures: Path):
         s.close()
     assert sync.ORIGINS == ("scheduled", "manual", "console")
     assert sync.STALE_HOURS["sec"] == 336
+
+
+def test_heartbeat_lives_during_the_run_and_not_after(project, fixtures: Path):
+    from financial_data_collector import heartbeat as H
+    seen: list[tuple[str, str, list[str]]] = []
+
+    def progress(step: str, detail: str) -> None:
+        hb = H.read(project.heartbeat_path)
+        assert hb is not None, "the heartbeat exists while a step reports progress"
+        seen.append((hb.step, hb.detail, list(hb.steps_done)))
+
+    rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None,
+                        only=["ingest", "derive"], origin="console", progress=progress)
+    assert [s.status for s in rep.steps] == ["ok", "ok"]
+    assert not project.heartbeat_path.exists()
+    assert seen[0][0] == "ingest" and seen[0][2] == []
+    assert any(step == "derive" and done == ["ingest"] for step, _, done in seen)
+
+
+def test_dry_run_writes_no_heartbeat(project):
+    rep = sync.run_sync(project, dry_run=True)
+    assert rep.dry_run and not project.heartbeat_path.exists()
+
+
+def test_sync_waits_for_another_live_sync(project, fixtures: Path, monkeypatch):
+    from financial_data_collector import heartbeat as H
+    other = H.Heartbeat("r0", 999999, "scheduled", "2026-03-01T11:59:00Z", "2026-03-01T11:59:50Z", "prices", "3/5")
+    project.heartbeat_path.write_text(other.to_json(), encoding="utf-8")
+    slept: list[float] = []
+    monkeypatch.setattr(H, "pid_alive", lambda pid: pid == 999999 and len(slept) < 2)
+    rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=slept.append,
+                        only=["ingest"])
+    assert slept == [5.0, 5.0]
+    assert rep.steps[0].message.startswith("waited 10 s for another sync; ")
+    assert not project.heartbeat_path.exists()

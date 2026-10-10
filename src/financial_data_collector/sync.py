@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from . import http, statements
+from . import heartbeat, http, statements
 from .collectors import prices as prices_mod
 from .collectors.sec_facts import collect_sec
 from .config import Config, ConfigError
@@ -179,12 +179,16 @@ def run_sync(
     if dry_run:
         report.steps = [StepResult(s, "dry-run") for s in steps]
         return report
+    waited = heartbeat.wait_for_turn(cfg.heartbeat_path, now=now, sleep=sleep)
+    beat = heartbeat.Writer(cfg.heartbeat_path, run_id, origin)
+    beat.start()
     store = Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
     try:
         for step in steps:
             started = utcnow()
 
             def report_progress(detail: str, _step: str = step) -> None:
+                beat.update(_step, detail)
                 if progress:
                     progress(_step, detail)
 
@@ -197,9 +201,12 @@ def run_sync(
             except Exception as e:  # isolate: log and continue with the next step
                 tb = traceback.format_exc().strip().splitlines()
                 rows, message, status = 0, f"{type(e).__name__}: {e} | " + " | ".join(tb[-3:]), "error"
+            if waited and not report.steps:
+                message = f"waited {waited:.0f} s for another sync; {message}"
             finished = utcnow()
             store.log_run(run_id, step, status, rows, message, started, finished, origin)
             report.steps.append(StepResult(step, status, rows, message, started, finished))
     finally:
         store.close()
+        beat.finish()
     return report
