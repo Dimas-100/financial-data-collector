@@ -74,14 +74,24 @@ def parse_positions(path: Path) -> Snapshot:
 def parse_activity(path: Path) -> list[TransactionRow]:
     data = json.loads(path.read_text(encoding="utf-8"))
     rows: list[TransactionRow] = []
+    seen: set[tuple] = set()
     for a in data.get("activities", []):
-        trade = (a.get("tradeDate") or "")[:10]
+        stamp = str(a.get("tradeDate") or "")
+        trade = stamp[:10]
         label = a.get("accountLabel") or ""
         if len(trade) < 10 or not label:
             continue
         raw_type = (a.get("type") or "").upper()
         settle = (a.get("settlementDate") or "")[:10] or None
         raw_symbol = a.get("symbol") or ""
+        # SnapTrade sends a Webull deposit twice, stamped to the same second once without fractional seconds and
+        # once with: that pair is one deposit. Two records with the very same stamp stay two (Fidelity stamps a
+        # day's buys all at midnight), as do two in different seconds.
+        fractional = len(stamp) > 19 and stamp[19] == "."
+        mark = (label, raw_type, raw_symbol, a.get("units"), a.get("amount"), stamp[:19])
+        if mark + (not fractional,) in seen:
+            continue
+        seen.add(mark + (fractional,))
         rows.append(TransactionRow(
             account=_account(label),
             trade_date=trade,

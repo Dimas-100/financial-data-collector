@@ -256,16 +256,18 @@ class Store:
         # identical rows in one batch are separate transactions (three $100 deposits in a day): the second and
         # third get "#2", "#3"; the first keeps the plain key, so rows stored before this rule still match
         repeats: Counter[str] = Counter()
+        sources: dict[str, str] = {}
         with self.conn:
             for r in rows:
                 aid = self._account_id(r.account, r.trade_date)
                 if r.symbol:
                     self._ensure_security(r.symbol, None, None, r.trade_date)
                 label = self._label_of(aid) if r.account.external_key else r.account.label
-                key = dedupe_key(label, r.trade_date, r.type, r.symbol, r.units, r.amount)
-                repeats[key] += 1
-                if repeats[key] > 1:
-                    key = f"{key}#{repeats[key]}"
+                base = key = dedupe_key(label, r.trade_date, r.type, r.symbol, r.units, r.amount)
+                repeats[base] += 1
+                sources.setdefault(base, r.source)
+                if repeats[base] > 1:
+                    key = f"{base}#{repeats[base]}"
                 if self._seen_from_other_source(aid, r):
                     continue
                 cur = self.conn.execute(
@@ -277,6 +279,14 @@ class Store:
                      r.fee, r.description, r.source, key),
                 )
                 n += cur.rowcount
+            # a file holds every transaction of the days it spans, so a repeat it no longer sends (SnapTrade once
+            # sent a Webull deposit twice) loses its surplus "#n" rows — this source's only
+            for base, count in repeats.items():
+                self.conn.execute(
+                    """DELETE FROM transactions
+                       WHERE source = ? AND dedupe_key LIKE ? AND CAST(substr(dedupe_key, ?) AS INTEGER) > ?""",
+                    (sources[base], f"{base}#%", len(base) + 2, count),
+                )
         return n
 
     # ---- connections --------------------------------------------------------

@@ -192,8 +192,22 @@ def test_identical_rows_in_one_batch_are_separate_transactions(store: Store):
     deposit = TransactionRow(ACCT, "2026-01-05", "contribution", None, None, None, 100.0, None, "CONTRIBUTION", "snaptrade")
     assert store.write_transactions([deposit, deposit, deposit]) == 3   # three $100 deposits the same day
     assert store.write_transactions([deposit, deposit, deposit]) == 0   # the same file again changes nothing
-    assert store.write_transactions([deposit]) == 0                      # the first keeps the old key, so rows stored earlier still match
     assert store.query("SELECT SUM(amount) FROM transactions")[0][0] == 300.0
+
+
+def test_a_repeat_the_feed_no_longer_sends_is_removed(store: Store):
+    # A file covers every transaction of the days it spans, so when it sends a deposit once that it once sent twice
+    # (SnapTrade did, for Webull), the surplus "#2" row goes. The first row keeps the plain key, so rows stored before
+    # the "#n" rule still match; another source's rows are never touched.
+    deposit = TransactionRow(ACCT, "2026-01-05", "contribution", None, None, None, 100.0, None, "CONTRIBUTION", "snaptrade")
+    csv_row = TransactionRow(ACCT, "2026-01-05", "dividend", "AAPL", None, None, 9.0, None, "DIVIDEND", "fidelity_csv")
+    assert store.write_transactions([deposit, deposit]) == 2
+    assert store.write_transactions([csv_row]) == 1
+    assert store.write_transactions([deposit]) == 0
+    assert [tuple(r) for r in store.query("SELECT type, amount FROM transactions ORDER BY type")] == \
+        [("contribution", 100.0), ("dividend", 9.0)]
+    assert store.write_transactions([deposit, deposit, deposit]) == 2    # three real deposits later: all kept
+    assert store.query("SELECT COUNT(*) FROM transactions WHERE type = 'contribution'")[0][0] == 3
 
 
 def test_sync_status_and_recent_runs(store: Store):

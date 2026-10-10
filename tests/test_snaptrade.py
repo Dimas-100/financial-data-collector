@@ -45,6 +45,38 @@ def test_parse_activity(fixtures: Path):
     assert sell.symbol == "BRK.B" and sell.account.institution == "webull"
 
 
+def _activity(tmp_path: Path, records: list[tuple[str, str, float, str | None]]) -> Path:
+    p = tmp_path / "live-activity.json"
+    p.write_text(json.dumps({"fetchedAt": "2026-10-10T16:00:00.000Z", "activities": [
+        {"tradeDate": stamp, "settlementDate": stamp, "type": kind, "symbol": symbol, "units": 0.39 if symbol else 0,
+         "price": 0, "amount": amount, "fee": 0, "accountLabel": "Webull Sample Cash"}
+        for stamp, kind, amount, symbol in records]}))
+    return p
+
+
+def test_a_deposit_snaptrade_sends_twice_is_one_row(tmp_path: Path):
+    # SnapTrade re-emits a Webull deposit with the same stamp to the second: once without fractional seconds, once
+    # with. Nobody makes two deposits in one second, so that pair is one deposit.
+    rows = st.parse_activity(_activity(tmp_path, [
+        ("2026-10-07T12:15:02Z", "CONTRIBUTION", 100.0, None),
+        ("2026-10-07T12:15:02.324000Z", "CONTRIBUTION", 100.0, None),
+    ]))
+    assert [(r.trade_date, r.type, r.amount) for r in rows] == [("2026-10-07", "contribution", 100.0)]
+
+
+def test_repeats_at_different_seconds_or_with_the_same_stamp_stay_separate(tmp_path: Path):
+    # Three $100 deposits at different times are three deposits; two buys the broker stamps identically (Fidelity's
+    # midnight stamps) can't be told apart here and both stay, as before.
+    rows = st.parse_activity(_activity(tmp_path, [
+        ("2026-08-13T19:55:04.623000Z", "CONTRIBUTION", 100.0, None),
+        ("2026-08-13T18:00:02.668000Z", "CONTRIBUTION", 100.0, None),
+        ("2026-08-13T16:20:01.999000Z", "CONTRIBUTION", 100.0, None),
+        ("2026-06-24T04:00:00Z", "BUY", -100.0, "FXAIX"),
+        ("2026-06-24T04:00:00Z", "BUY", -100.0, "FXAIX"),
+    ]))
+    assert [(r.trade_date, r.type) for r in rows] == [("2026-08-13", "contribution")] * 3 + [("2026-06-24", "buy")] * 2
+
+
 def test_find_snapshot_files(fixtures: Path):
     files = st.find_snapshot_files(fixtures / "snaptrade")
     assert [f.name for f in files] == ["live-positions-2026-01-10.json", "live-positions.json"]
