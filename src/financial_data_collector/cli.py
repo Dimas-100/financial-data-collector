@@ -21,9 +21,8 @@ from .connections.redact import redact
 from .ingest import ingest_file
 from .readonly import UnsafeSql, run_readonly
 from .store import Store
-from .sync import STEPS, run_sync
+from .sync import ORIGINS, STALE_HOURS, STEPS, run_sync
 
-STALE_HOURS = {"ingest": 48, "prices": 48, "sec": 336, "derive": 48, "export": 48}
 SNAPTRADE_SITE = "https://dashboard.snaptrade.com/"
 SNAPTRADE_STEPS = (
     "1. Sign in at SnapTrade (free for personal use) and connect each brokerage there.\n"
@@ -49,6 +48,8 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--only", help=f"comma list of steps to run ({', '.join(STEPS)})")
     s.add_argument("--skip", help="comma list of steps to skip")
     s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--origin", choices=ORIGINS, default="manual",
+                   help="who started this run: the scheduled task passes scheduled, fdc console passes console")
     i = sub.add_parser("import", help="ingest one export file or a folder of them (files are not moved)")
     i.add_argument("path")
     i.add_argument("--account", help="account label for history files that carry none")
@@ -75,6 +76,10 @@ def _parser() -> argparse.ArgumentParser:
     s2.add_argument("--kind", choices=KINDS)
     s2.add_argument("--limit", type=float, help="a card's or line's credit limit")
     s2.add_argument("--rate", type=float, help="yearly rate in percent: what cash earns or debt costs")
+    k = sub.add_parser("console", help="a live screen: what runs, where its data comes from, when it ran; "
+                                       "run a step from it")
+    k.add_argument("--once", action="store_true",
+                   help="print the screen's content once and exit (what a pipe or a log gets)")
     return p
 
 
@@ -115,10 +120,10 @@ def cmd_sync(root: Path, args) -> int:
     only, skip = _csv_list(args.only), _csv_list(args.skip)
     if ui.console.is_terminal and not args.dry_run:
         with ui.console.status("sync starting") as live:
-            report = run_sync(cfg, only=only, skip=skip, dry_run=False,
+            report = run_sync(cfg, only=only, skip=skip, dry_run=False, origin=args.origin,
                               progress=lambda step, detail: live.update(Text(f"{step} ", style="bold") + Text(detail)))
     else:
-        report = run_sync(cfg, only=only, skip=skip, dry_run=args.dry_run)
+        report = run_sync(cfg, only=only, skip=skip, dry_run=args.dry_run, origin=args.origin)
     ui.console.print(_steps_table(report))
     return report.exit_code
 
@@ -150,7 +155,7 @@ def cmd_status(root: Path) -> int:
         return 2
     store = Store.open(cfg.db_path, migrate=False)
     try:
-        runs = {r["step"]: r for r in store.query("SELECT * FROM sync_status")}
+        runs = {r["step"]: r for r in store.sync_status()}
         rows = []
         for step in STEPS:
             r = runs.get(step)
@@ -342,6 +347,29 @@ def cmd_accounts(root: Path, args) -> int:
     return 0
 
 
+def cmd_console(root: Path, args) -> int:
+    from .console import schedule as schedule_mod
+    from .console.model import load_overview
+    from .console.report import render_once
+
+    cfg = load_config(root)
+    if not cfg.db_path.exists():
+        ui.error("no database yet")
+        ui.hint("run: fdc init")
+        return 2
+    Store.open(cfg.db_path, backup_dir=cfg.backup_dir).close()   # pending migrations, as every command applies them
+    if args.once or not ui.console.is_terminal:
+        sched = schedule_mod.read_schedule(cfg.root)
+        ov = load_overview(cfg, schedule=sched.schedule, schedule_reason=sched.reason)
+        for r in render_once(ov):
+            ui.console.print(r)
+        return 0
+    from .console.app import ConsoleApp
+
+    ConsoleApp(cfg).run()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = Path(args.root).resolve()
@@ -368,6 +396,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_disconnect(root, args)
         if args.cmd == "accounts":
             return cmd_accounts(root, args)
+        if args.cmd == "console":
+            return cmd_console(root, args)
     except ConfigError as e:
         ui.error(str(e))
         ui.hint("run: fdc init" if "not found" in str(e) else "check config.toml for the line reported above")

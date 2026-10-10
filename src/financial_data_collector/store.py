@@ -256,16 +256,18 @@ class Store:
         # identical rows in one batch are separate transactions (three $100 deposits in a day): the second and
         # third get "#2", "#3"; the first keeps the plain key, so rows stored before this rule still match
         repeats: Counter[str] = Counter()
+        sources: dict[str, str] = {}
         with self.conn:
             for r in rows:
                 aid = self._account_id(r.account, r.trade_date)
                 if r.symbol:
                     self._ensure_security(r.symbol, None, None, r.trade_date)
                 label = self._label_of(aid) if r.account.external_key else r.account.label
-                key = dedupe_key(label, r.trade_date, r.type, r.symbol, r.units, r.amount)
-                repeats[key] += 1
-                if repeats[key] > 1:
-                    key = f"{key}#{repeats[key]}"
+                base = key = dedupe_key(label, r.trade_date, r.type, r.symbol, r.units, r.amount)
+                repeats[base] += 1
+                sources.setdefault(base, r.source)
+                if repeats[base] > 1:
+                    key = f"{base}#{repeats[base]}"
                 if self._seen_from_other_source(aid, r):
                     continue
                 cur = self.conn.execute(
@@ -277,6 +279,14 @@ class Store:
                      r.fee, r.description, r.source, key),
                 )
                 n += cur.rowcount
+            # a file holds every transaction of the days it spans, so a repeat it no longer sends (SnapTrade once
+            # sent a Webull deposit twice) loses its surplus "#n" rows — this source's only
+            for base, count in repeats.items():
+                self.conn.execute(
+                    """DELETE FROM transactions
+                       WHERE source = ? AND dedupe_key LIKE ? AND CAST(substr(dedupe_key, ?) AS INTEGER) > ?""",
+                    (sources[base], f"{base}#%", len(base) + 2, count),
+                )
         return n
 
     # ---- connections --------------------------------------------------------
@@ -426,17 +436,54 @@ class Store:
 
     def log_run(
         self, run_id: str, step: str, status: str, rows_written: int, message: str,
-        started_at: str, finished_at: str,
+        started_at: str, finished_at: str, origin: str = "manual",
     ) -> None:
         with self.conn:
             self.conn.execute(
-                "INSERT INTO sync_runs (run_id, step, started_at, finished_at, status, rows_written, message) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (run_id, step, started_at, finished_at, status, rows_written, message[:4000]),
+                "INSERT INTO sync_runs (run_id, step, started_at, finished_at, status, rows_written, message, origin) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (run_id, step, started_at, finished_at, status, rows_written, message[:4000], origin),
             )
 
     def counts(self) -> dict[str, int]:
         return {t: self.conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in COUNT_TABLES}
+
+    # ---- what the console shows -------------------------------------------
+    def sync_status(self) -> list[sqlite3.Row]:
+        """The last run of every step (the sync_status view)."""
+        return self.query("SELECT * FROM sync_status ORDER BY step")
+
+    def recent_run_rows(self, limit: int = 50) -> list[sqlite3.Row]:
+        """Every step row of the newest `limit` runs, oldest row first (the caller groups by run_id)."""
+        return self.query(
+            """SELECT * FROM sync_runs
+               WHERE run_id IN (SELECT run_id FROM (SELECT run_id, MAX(id) AS last_id FROM sync_runs
+                                                    GROUP BY run_id ORDER BY last_id DESC LIMIT ?))
+               ORDER BY id""", (limit,))
+
+    def run_steps(self, run_id: str) -> list[sqlite3.Row]:
+        return self.query("SELECT * FROM sync_runs WHERE run_id = ? ORDER BY id", (run_id,))
+
+    def source_facts(self) -> dict:
+        """Where the data came from, in one batch: ingested files per kind, price and SEC coverage, accounts per
+        origin, and the active connections."""
+        ingested = {r["kind"]: {"count": r["n"], "last": r["last"]} for r in self.query(
+            "SELECT kind, COUNT(*) AS n, MAX(ingested_at) AS last FROM ingested_files GROUP BY kind")}
+        p = self.query("SELECT COUNT(DISTINCT symbol) AS symbols, MAX(date) AS latest FROM prices")[0]
+        # asked every two seconds by the console: companies from the small securities table, the newest filing
+        # from the index on sec_facts(filed), never a scan of every fact
+        companies = self.query("SELECT COUNT(DISTINCT cik) AS n FROM securities "
+                               "WHERE cik IS NOT NULL AND last_sec_fetch IS NOT NULL")[0]["n"]
+        latest_filed = self.query("SELECT MAX(filed) AS latest FROM sec_facts")[0]["latest"]
+        by_origin = {r["origin"]: r["n"] for r in self.query(
+            "SELECT origin, COUNT(*) AS n FROM accounts GROUP BY origin")}
+        return {
+            "ingested": ingested,
+            "prices": {"symbols": p["symbols"], "latest": p["latest"]},
+            "sec": {"companies": companies, "latest_filed": latest_filed},
+            "accounts_by_origin": by_origin,
+            "connections": [dict(r) for r in self.connections(active_only=True)],
+        }
 
     # ---- derived data (rebuilt from scratch by the derive step) --------------
     def replace_rows(self, table: str, columns: tuple[str, ...], rows: Iterable[tuple]) -> int:

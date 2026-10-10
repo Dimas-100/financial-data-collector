@@ -41,6 +41,21 @@ fdc query "select * from portfolio_daily order by 1 desc limit 10"
 fdc query --csv "select * from financials_annual where symbol='AAPL'" > aapl.csv
 ```
 
+## Watch it run
+
+```bash
+fdc console            # a live screen: what runs, where its data comes from, when it ran
+fdc console --once     # the same, printed once (what a pipe or a log gets)
+```
+
+Three tabs: **Overview** (each step's last result, how stale it is, what is running right now, and the
+scheduled task's triggers and last run on Windows), **Sources** (the inbox, the broker export folder, each
+connection, the price provider, SEC EDGAR, the watchlist, the research tickers folder and the cockpit feed
+files, each with its last activity) and **Runs** (every run with who started it, how long it took and each
+step's message). Keys: `1` `2` `3` switch tabs, `r` runs the whole sync, `s` runs the step under the cursor,
+`ctrl+p` opens the command palette, `q` quits. A run started from the console carries on after you quit and
+is logged like any other. While a sync is alive, the keys wait; a sync started elsewhere waits its turn too.
+
 ## What gets stored
 
 | Table / view | What it holds |
@@ -91,6 +106,10 @@ Claude Code needs no setup: the database is a file, and `fdc query` works from t
 .\scripts\schedule_sync.ps1          # at logon (+20 min) and every 12 hours
 .\scripts\schedule_sync.ps1 -Remove
 ```
+
+The task runs on battery too. A start that arrives while a sync is running waits for it to finish, so a
+job that writes files the collector reads can end with `Start-ScheduledTask "FinancialDataCollector Sync"`
+and know a sync will read them.
 
 Logs go to `%LOCALAPPDATA%\financial-data-collector\sync.log`. On macOS/Linux use cron or launchd
 to run `fdc --root /path/to/repo sync`.

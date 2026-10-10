@@ -78,6 +78,11 @@ class Config:
     export_cockpit: bool = False
     export_dir: Path | None = None
 
+    @property
+    def heartbeat_path(self) -> Path:
+        """Where a running sync keeps its heartbeat (heartbeat.py): beside the database."""
+        return self.db_path.parent / "sync.heartbeat.json"
+
 
 def init_project(root: Path) -> list[str]:
     """Create the gitignored working layout. Never overwrites. Returns what it created."""

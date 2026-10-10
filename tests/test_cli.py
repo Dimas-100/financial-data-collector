@@ -218,3 +218,36 @@ def test_connect_redacts_a_services_own_words(tmp_path, monkeypatch, capsys):
     assert cli.main(["--root", root, "connect", "simplefin"]) == 0
     out = capsys.readouterr().out
     assert "p%40ss" not in out and "user%40x" not in out and "for details" in out
+
+
+def test_sync_origin_flag(tmp_path: Path, capsys, monkeypatch):
+    cli.main(["--root", str(tmp_path), "init"])
+    seen = {}
+
+    def fake_run_sync(cfg, **kw):
+        seen.update(kw)
+        return sync_mod.SyncReport(run_id="r", steps=[], dry_run=False)
+
+    monkeypatch.setattr(cli, "run_sync", fake_run_sync)
+    assert cli.main(["--root", str(tmp_path), "sync", "--origin", "scheduled", "--only", "ingest"]) == 0
+    assert seen["origin"] == "scheduled" and seen["only"] == ["ingest"]
+    assert cli.main(["--root", str(tmp_path), "sync", "--only", "ingest"]) == 0
+    assert seen["origin"] == "manual"
+    capsys.readouterr()
+
+
+def test_console_once_on_fresh_project(tmp_path: Path, capsys, monkeypatch):
+    from financial_data_collector.console import schedule as S
+
+    monkeypatch.setattr(S, "read_schedule", lambda root: S.ScheduleResult(None, "scheduler off in tests"))
+    assert cli.main(["--root", str(tmp_path), "console", "--once"]) == 2
+    assert "fdc init" in capsys.readouterr().err
+    cli.main(["--root", str(tmp_path), "init"])
+    capsys.readouterr()
+    assert cli.main(["--root", str(tmp_path), "console", "--once"]) == 0
+    out = capsys.readouterr().out
+    assert "IDLE  no runs yet" in out and "scheduler off in tests" in out
+    assert "inbox files" in out and "connections" in out and "runs (last 10)" in out
+    # without --once but without a terminal (pytest captures stdout), the same report prints once
+    assert cli.main(["--root", str(tmp_path), "console"]) == 0
+    assert "IDLE  no runs yet" in capsys.readouterr().out
