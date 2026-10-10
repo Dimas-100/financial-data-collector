@@ -43,14 +43,20 @@ def badges(statuses) -> Text:
     return t
 
 
+def plain(text: str) -> Text:
+    """A string from outside (a step's message, a path, a service's error) rendered as it is: Textual and rich
+    would otherwise read its brackets as markup."""
+    return Text(text)
+
+
 def step_row(s: StepState) -> list:
     status = Text(f"{s.status} STALE", style="dark_orange") if s.stale else ui.badge(s.status)
     now = {"running": Text("running", style="bold cyan"), "done": Text("done", style="green")}.get(s.now, Text(""))
-    return [s.step, status, fmt_age(s.age_hours), s.rows, now, s.message[:MESSAGE_WIDTH]]
+    return [s.step, status, fmt_age(s.age_hours), s.rows, now, plain(s.message[:MESSAGE_WIDTH])]
 
 
 def source_row(s: SourceRow) -> list:
-    return [s.name, s.where, s.last, state_text(s.state)]
+    return [plain(s.name), plain(s.where), plain(s.last), state_text(s.state)]
 
 
 def run_row(r: RunSummary, tz: tzinfo | None = None) -> list:
@@ -58,7 +64,7 @@ def run_row(r: RunSummary, tz: tzinfo | None = None) -> list:
 
 
 def run_step_row(s: RunStep) -> list:
-    return [s.step, ui.badge(s.status), fmt_duration(s.seconds), s.rows, s.message]
+    return [s.step, ui.badge(s.status), fmt_duration(s.seconds), s.rows, plain(s.message)]
 
 
 def status_text(ov: Overview, launch: LaunchState | None = None, now: datetime | None = None,

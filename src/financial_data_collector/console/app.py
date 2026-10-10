@@ -165,7 +165,7 @@ class ConsoleApp(App):
         for s in ov.sources:
             sources.add_row(*report.source_row(s))
         self.universe_line = report.universe_text(ov)
-        self.query_one("#universe", Static).update(self.universe_line)
+        self.query_one("#universe", Static).update(Text(self.universe_line))
         runs = self.query_one("#runs_table", DataTable)
         runs.clear()
         for r in ov.runs:
@@ -232,9 +232,9 @@ class ConsoleApp(App):
             return
         state = self.launcher.start(step)
         if state.kind == "failed":
-            self.notify(state.error, severity="error")
+            self.notify(state.error, severity="error", markup=False)      # an OS error may hold brackets
         else:
-            self.notify(f"started {state.what}")
+            self.notify(f"started {state.what}", markup=False)
         self._render_status()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:

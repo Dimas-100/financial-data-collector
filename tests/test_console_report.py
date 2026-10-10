@@ -78,3 +78,19 @@ def test_render_once_has_every_section():
     for needle in ("IDLE", "steps", "connections", "ok STALE", "running", "schedule: no scheduler integration",
                    "sources (following 42 symbols)", "2 files waiting", "runs (last 10)", "soooeo", "--o---"):
         assert needle in text, needle
+
+
+def test_external_strings_are_plain_text_not_markup():
+    """Messages, paths and error texts come from outside; Textual parses bare strings as markup, so every such
+    cell is a Text whose plain form is the original."""
+    from rich.text import Text
+    tricky = "[Errno 13] denied [bold]x[/] [/bogus]"
+    step = R.step_row(StepState("prices", "error", 1.0, False, 0, tricky))
+    assert isinstance(step[5], Text) and step[5].plain == tricky
+    src = R.source_row(SourceRow("inbox files", "C:/[x]/inbox", tricky, "error: " + tricky))
+    assert all(isinstance(c, Text) for c in src) and src[1].plain == "C:/[x]/inbox" and src[2].plain == tricky
+    detail = R.run_step_row(RunStep("prices", "error", 1.0, 0, tricky))
+    assert isinstance(detail[4], Text) and detail[4].plain == tricky
+    assert R.status_text(overview(Running("running", H.Heartbeat("r", 1, "console", "2026-03-01T11:58:00Z",
+                                                                  "2026-03-01T11:59:50Z", "prices", tricky), 1.0)),
+                         tz=UTC).plain.count(tricky) == 1

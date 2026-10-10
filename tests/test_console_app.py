@@ -129,3 +129,27 @@ def test_refresh_error_keeps_screen(tmp_path: Path):
             assert "refresh failed: database is locked" in app.status_text.plain
             assert app.query_one("#steps", DataTable).row_count == 6
     asyncio.run(go())
+
+
+def test_bracketed_messages_render_without_markup_errors(tmp_path: Path):
+    tricky = "[Errno 13] denied [bold]x[/] [/bogus]"
+
+    def ov_with_markup():
+        ov = overview()
+        steps = [StepState(s.step, "error", 6.0, False, 0, tricky) for s in ov.steps]
+        sources = [SourceRow("inbox files", "C:/[x]/inbox", tricky, "error: " + tricky)]
+        return Overview(ov.root, ov.now, steps, sources, 7, ov.runs, ov.running, None)
+
+    async def go():
+        app = ConsoleApp(_cfg(tmp_path), load=lambda cfg, **kw: ov_with_markup(),
+                         load_steps=lambda cfg, run_id, **kw: [RunStep("prices", "error", 4.0, 0, tricky)],
+                         launcher=FakeLauncher(), schedule_reader=lambda root: ScheduleResult(None, tricky),
+                         refresh_seconds=3600, schedule_seconds=3600, now=lambda: NOW)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app, pilot, lambda a: a.overview is not None and a.query_one("#steps", DataTable).row_count == 6)
+            await pilot.press("2")
+            await pilot.press("3")
+            await _settle(app, pilot, lambda a: a.query_one("#run_detail", DataTable).row_count == 1)
+            await pilot.pause(0.2)
+            assert app.refresh_error == "" and tricky in app.schedule_text.plain
+    asyncio.run(go())
