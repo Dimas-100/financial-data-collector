@@ -5,8 +5,10 @@
 - `fdc console`: a live terminal screen (Textual) with three tabs: each step's last result and staleness plus
   the scheduled task's registration (Windows), every source and output with its last activity, and the history
   of runs with who started them and each step's message. `r` runs the sync, `s` one step, `ctrl+p` the
-  palette; `fdc console --once` prints the same content once. The console only reads; a run it starts is an
-  `fdc sync` subprocess that carries on after quitting.
+  palette; `fdc console --once` prints the same content once. The console only reads, over a read-only
+  connection (`readonly.open_store`; the universe it counts comes from `universe.universe_symbols`, which writes
+  nothing); a run it starts is an `fdc sync` subprocess that carries on after quitting. Migration 0009 indexes
+  `sec_facts(filed)` so the Sources tab's newest-filing lookup is instant.
 - A running sync keeps a heartbeat (`data/sync.heartbeat.json`: run, step, progress line, pid, origin) and
   removes it when it ends; a sync that finds another alive waits its turn (up to 30 minutes). Every run records
   its `origin` (migration 0008: `scheduled`, `manual`, `console`; older rows read `unknown`), and

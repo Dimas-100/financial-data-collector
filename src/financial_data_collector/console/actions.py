@@ -6,11 +6,13 @@ from __future__ import annotations
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from ..heartbeat import Heartbeat
+from ..heartbeat import Heartbeat, parse_stamp
+
+LAUNCH_SLACK = timedelta(seconds=5)     # a heartbeat begun this close before our start is still ours (clock skew)
 
 LOG_NAME = "console-last-run.log"
 
@@ -88,12 +90,23 @@ class Launcher:
             return LaunchState("idle")
         code = self._process.poll()
         if code is None:
-            running = heartbeat is not None and heartbeat.pid == self._process.pid
-            return LaunchState("running" if running else "queued", self._step, self._process.pid,
+            return LaunchState("running" if self._is_ours(heartbeat) else "queued", self._step, self._process.pid,
                                started_at=self._started_at)
         if self._finished_at is None:
             self._finished_at = self._now()
         return LaunchState("finished", self._step, self._process.pid, code, self._started_at, self._finished_at)
+
+    def _is_ours(self, hb: Heartbeat | None) -> bool:
+        """The heartbeat of the run this launcher started. By pid when it matches; a venv's python.exe on Windows is
+        a launcher whose child carries another pid, so a console-origin heartbeat begun at or after this launch
+        counts too (the console starts one run at a time)."""
+        if hb is None or self._process is None:
+            return False
+        if hb.pid == self._process.pid:
+            return True
+        started = parse_stamp(hb.started_at)
+        return (hb.origin == "console" and started is not None and self._started_at is not None
+                and started >= self._started_at - LAUNCH_SLACK)
 
     def clear(self) -> None:
         """Forget a finished or failed launch (a running one stays)."""

@@ -68,3 +68,16 @@ def test_failed_start_is_reported(tmp_path: Path):
     assert "no such python" in l.log_path.read_text(encoding="utf-8")
     l.clear()
     assert l.state(None).kind == "idle"
+
+
+def test_launch_is_running_when_the_heartbeat_is_the_consoles_even_if_the_pid_differs(tmp_path: Path):
+    """A venv's python.exe on Windows is a launcher: the heartbeat carries the interpreter's pid, not Popen's."""
+    proc = FakeProcess(777)
+    l = Launcher(tmp_path, python="py", popen=lambda cmd, **kw: proc, now=lambda: NOW)
+    l.start("prices")
+    ours = Heartbeat("r", 34216, "console", "2026-03-01T12:00:01Z", "2026-03-01T12:00:02Z", "prices", "1/5")
+    assert l.state(ours).kind == "running"
+    scheduled = Heartbeat("r", 34216, "scheduled", "2026-03-01T12:00:01Z", "2026-03-01T12:00:02Z", "prices", "")
+    assert l.state(scheduled).kind == "queued"
+    older = Heartbeat("r", 34216, "console", "2026-03-01T11:59:40Z", "2026-03-01T12:00:02Z", "prices", "")
+    assert l.state(older).kind == "queued"

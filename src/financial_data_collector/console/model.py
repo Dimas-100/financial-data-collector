@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
 from .. import heartbeat as H
+from .. import readonly
 from ..config import Config
-from ..store import Store
+from ..store import Store  # noqa: F401  (the read-only opener returns one; tests spy on it here)
 from ..sync import STALE_HOURS, STEPS
-from ..universe import build_universe, read_watchlist
+from ..universe import read_watchlist, universe_symbols
 from .schedule import Schedule
 
 
@@ -186,7 +187,7 @@ def _sources(cfg: Config, facts: Mapping, status: Mapping[str, Mapping]) -> list
     rows: list[SourceRow] = []
     ing = facts["ingested"]
     if cfg.inbox.is_dir():
-        waiting = [p for p in cfg.inbox.iterdir() if p.is_file()]
+        waiting = [p for p in cfg.inbox.iterdir() if p.is_file() and not p.name.startswith(".")]  # .gitkeep is not a file to ingest
         state = f"{_count(len(waiting), 'file')} waiting" if waiting else "empty"
     else:
         state = "missing"
@@ -231,18 +232,18 @@ def _sources(cfg: Config, facts: Mapping, status: Mapping[str, Mapping]) -> list
     return rows
 
 
-def load_overview(cfg: Config, *, now: datetime | None = None, store_open: Callable = Store.open,
+def load_overview(cfg: Config, *, now: datetime | None = None, store_open: Callable = readonly.open_store,
                   heartbeat_read: Callable[[Path], H.Heartbeat | None] = H.read, alive=None,
                   schedule: Schedule | None = None, schedule_reason: str = "", runs_limit: int = 50) -> Overview:
-    """One read of everything the screen shows. Opens the store without migrating and only reads."""
+    """One read of everything the screen shows, over a read-only connection: a refresh can never write."""
     now = now or datetime.now(timezone.utc)
     running = _running(heartbeat_read(cfg.heartbeat_path), now, alive)
-    store = store_open(cfg.db_path, migrate=False)
+    store = store_open(cfg.db_path)
     try:
         status = {r["step"]: r for r in store.sync_status()}
         facts = store.source_facts()
         runs = summarize_runs(store.recent_run_rows(runs_limit))
-        universe = len(build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir))
+        universe = len(universe_symbols(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir))
         latest = store.latest_snapshot_date()
     finally:
         store.close()
@@ -254,8 +255,8 @@ def load_overview(cfg: Config, *, now: datetime | None = None, store_open: Calla
     )
 
 
-def load_run_steps(cfg: Config, run_id: str, *, store_open: Callable = Store.open) -> list[RunStep]:
-    store = store_open(cfg.db_path, migrate=False)
+def load_run_steps(cfg: Config, run_id: str, *, store_open: Callable = readonly.open_store) -> list[RunStep]:
+    store = store_open(cfg.db_path)
     try:
         rows = store.run_steps(run_id)
     finally:

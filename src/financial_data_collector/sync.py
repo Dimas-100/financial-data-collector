@@ -181,9 +181,9 @@ def run_sync(
         return report
     waited = heartbeat.wait_for_turn(cfg.heartbeat_path, now=now, sleep=sleep)
     beat = heartbeat.Writer(cfg.heartbeat_path, run_id, origin)
-    beat.start()
     store = Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
     try:
+        beat.start()                       # inside the try: a failed open leaves no heartbeat behind
         for step in steps:
             started = utcnow()
 

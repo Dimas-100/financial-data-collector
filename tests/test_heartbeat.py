@@ -155,3 +155,25 @@ def test_config_heartbeat_path(tmp_path: Path):
     C.init_project(tmp_path)
     cfg = C.load_config(tmp_path)
     assert cfg.heartbeat_path == cfg.db_path.parent / "sync.heartbeat.json"
+
+
+def test_writes_and_removal_never_raise_on_a_sharing_violation(tmp_path: Path, monkeypatch):
+    """On Windows a reader holding the file makes os.replace / unlink fail; the heartbeat is informational and
+    must never abort a sync."""
+    clock = Clock()
+    paused: list[float] = []
+    w = H.Writer(tmp_path / "hb.json", "r", "console", pid=1, now=lambda: NOW, clock=clock, pause=paused.append)
+    real_replace = H.os.replace
+
+    def denied(*a, **k):
+        raise PermissionError(5, "sharing violation")
+
+    monkeypatch.setattr(H.os, "replace", denied)
+    w.start()                                            # no exception, no file
+    assert H.read(tmp_path / "hb.json") is None and len(paused) == 2
+    monkeypatch.setattr(H.os, "replace", real_replace)
+    w.update("ingest", "inbox")
+    assert H.read(tmp_path / "hb.json").step == "ingest"
+    monkeypatch.setattr(H.Path, "unlink", lambda self, *a, **k: (_ for _ in ()).throw(PermissionError(32, "in use")))
+    w.finish()                                           # no exception either
+    assert (tmp_path / "hb.json").exists()

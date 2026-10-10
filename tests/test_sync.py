@@ -1,3 +1,4 @@
+import sqlite3
 import json
 import shutil
 from datetime import datetime, timezone
@@ -260,4 +261,14 @@ def test_sync_waits_for_another_live_sync(project, fixtures: Path, monkeypatch):
                         only=["ingest"])
     assert slept == [5.0, 5.0]
     assert rep.steps[0].message.startswith("waited 10 s for another sync; ")
+    assert not project.heartbeat_path.exists()
+
+
+def test_no_heartbeat_is_left_when_the_store_cannot_open(project, monkeypatch):
+    def boom(*a, **k):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(sync.Store, "open", boom)
+    with pytest.raises(sqlite3.OperationalError):
+        sync.run_sync(project, now=NOW, sleep=lambda s: None, only=["ingest"])
     assert not project.heartbeat_path.exists()

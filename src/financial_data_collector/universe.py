@@ -64,16 +64,30 @@ def read_watchlist(path: Path) -> list[str]:
     return out
 
 
+def universe_symbols(store: Store, watchlist_path: Path, classify: dict[str, str] | None = None,
+                     investing_dir: Path | None = None) -> list[str]:
+    """The symbols the collector follows, computed without writing: the securities on record plus the watchlist
+    and research names, [classify] overrides applied to the answer, money markets and skipped kinds left out.
+    What the console counts; works on a read-only store."""
+    kinds: dict[str, tuple[str, str | None]] = {}
+    for row in store.securities():
+        kinds[row["symbol"]] = (row["asset_type"], row["description"])
+    for sym in read_watchlist(watchlist_path) + read_investing_tickers(investing_dir):
+        kinds.setdefault(sym, ("unknown", None))
+    for sym, asset_type in (classify or {}).items():
+        sym = canonical(sym)
+        if sym in kinds:
+            kinds[sym] = (asset_type, kinds[sym][1])
+    return sorted(sym for sym, (asset_type, description) in kinds.items()
+                  if asset_type not in _SKIP_TYPES and not is_money_market(sym, description))
+
+
 def build_universe(store: Store, watchlist_path: Path, classify: dict[str, str] | None = None,
                    investing_dir: Path | None = None) -> list[str]:
+    """universe_symbols, after recording the watchlist and research names as securities and applying the
+    [classify] overrides from config.toml to the table. What a sync calls."""
     for sym in read_watchlist(watchlist_path) + read_investing_tickers(investing_dir):
         store.upsert_security(sym, first_seen=today())
-    for sym, asset_type in (classify or {}).items():  # manual [classify] overrides from config.toml
+    for sym, asset_type in (classify or {}).items():
         store.set_asset_type(canonical(sym), asset_type)
-    out: list[str] = []
-    for row in store.securities():
-        sym = row["symbol"]
-        if row["asset_type"] in _SKIP_TYPES or is_money_market(sym, row["description"]):
-            continue
-        out.append(sym)
-    return sorted(out)
+    return universe_symbols(store, watchlist_path, classify, investing_dir)

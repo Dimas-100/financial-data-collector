@@ -49,7 +49,7 @@ src/financial_data_collector/
   statements.py     facts + concept_map -> financial_line_items (annual, quarter, YTD differencing, derived Q4)
   store.py          Store: every write; migrate.py: migrations, seed, generated wide views
   readonly.py       SQL guard + mode=ro connection; mcp_server.py: schema/query/status tools
-  migrations/*.sql  0001 tables, 0002 views, 0003 derived tables + TTM/history views, 0006 connections, 0007 unexplained_daily, 0008 sync_runs.origin;  seeds/concept_map.csv
+  migrations/*.sql  0001 tables, 0002 views, 0003 derived tables + TTM/history views, 0006 connections, 0007 unexplained_daily, 0008 sync_runs.origin, 0009 sec_facts(filed) index;  seeds/concept_map.csv
 ```
 
 ## Tables and views (start here when querying)

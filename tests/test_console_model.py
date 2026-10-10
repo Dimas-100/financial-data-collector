@@ -131,3 +131,36 @@ def test_sources_inbox_missing_and_connections(project):
     assert by["inbox files"].state == "missing"
     assert by["connection: simplefin"].state == "error: HTTP 503" and by["connection: simplefin"].where == "0 accounts"
     assert ov.schedule.triggers == ("daily 08:30",)
+
+
+def test_inbox_dotfiles_are_not_waiting(project):
+    for p in project.inbox.iterdir():
+        if p.is_file():
+            p.unlink()
+    (project.inbox / ".gitkeep").write_text("")
+    ov = M.load_overview(project, now=NOW, heartbeat_read=lambda p: None)
+    assert {s.name: s.state for s in ov.sources}["inbox files"] == "empty"
+
+
+def test_overview_never_writes(project):
+    """A refresh is a read: a watchlist name is counted in the universe but not written to securities, and the
+    store the model opens refuses writes."""
+    project.watchlist.write_text("VTI\n", encoding="utf-8")
+    before = Store.open(project.db_path, migrate=False).query("SELECT COUNT(*) FROM securities")[0][0]
+    ov = M.load_overview(project, now=NOW, heartbeat_read=lambda p: None)
+    assert ov.universe_size == 1
+    s = Store.open(project.db_path, migrate=False)
+    try:
+        assert s.query("SELECT COUNT(*) FROM securities")[0][0] == before
+        assert s.query("SELECT COUNT(*) FROM securities WHERE symbol = 'VTI'")[0][0] == 0
+    finally:
+        s.close()
+    opened = []
+
+    def spy_open(path):
+        st = M.Store.open(path, migrate=False)
+        opened.append(st)
+        return st
+
+    M.load_overview(project, now=NOW, heartbeat_read=lambda p: None, store_open=spy_open)
+    assert len(opened) == 1 and opened[0].conn is not None

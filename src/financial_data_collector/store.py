@@ -470,13 +470,17 @@ class Store:
         ingested = {r["kind"]: {"count": r["n"], "last": r["last"]} for r in self.query(
             "SELECT kind, COUNT(*) AS n, MAX(ingested_at) AS last FROM ingested_files GROUP BY kind")}
         p = self.query("SELECT COUNT(DISTINCT symbol) AS symbols, MAX(date) AS latest FROM prices")[0]
-        s = self.query("SELECT COUNT(DISTINCT cik) AS companies, MAX(filed) AS latest_filed FROM sec_facts")[0]
+        # asked every two seconds by the console: companies from the small securities table, the newest filing
+        # from the index on sec_facts(filed), never a scan of every fact
+        companies = self.query("SELECT COUNT(DISTINCT cik) AS n FROM securities "
+                               "WHERE cik IS NOT NULL AND last_sec_fetch IS NOT NULL")[0]["n"]
+        latest_filed = self.query("SELECT MAX(filed) AS latest FROM sec_facts")[0]["latest"]
         by_origin = {r["origin"]: r["n"] for r in self.query(
             "SELECT origin, COUNT(*) AS n FROM accounts GROUP BY origin")}
         return {
             "ingested": ingested,
             "prices": {"symbols": p["symbols"], "latest": p["latest"]},
-            "sec": {"companies": s["companies"], "latest_filed": s["latest_filed"]},
+            "sec": {"companies": companies, "latest_filed": latest_filed},
             "accounts_by_origin": by_origin,
             "connections": [dict(r) for r in self.connections(active_only=True)],
         }

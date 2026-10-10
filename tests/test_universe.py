@@ -50,3 +50,20 @@ def test_read_investing_tickers_includes_scan_promoted_names(fixtures: Path):
     # data/scan-history.json names seen at least `promote_count` times join the universe
     assert U.read_investing_tickers(fixtures / "investing", promote_count=3) == ["AAPL", "BRK.B", "GEV", "KO", "VTI"]
     assert U.read_investing_tickers(fixtures / "investing", promote_count=99) == ["AAPL", "BRK.B", "KO", "VTI"]
+
+
+def test_universe_symbols_is_pure(tmp_path: Path):
+    """The same answer as build_universe, without the writes: a watchlist name counts but gets no row, a
+    [classify] override applies to the answer but not to the table."""
+    s = Store.open(tmp_path / "w.db")
+    s.upsert_security("AAPL", asset_type="stock", first_seen="2026-01-01")
+    s.upsert_security("SPAXX", asset_type="money_market", first_seen="2026-01-01")
+    s.upsert_security("BTC", first_seen="2026-01-01")
+    wl = tmp_path / "watchlist.txt"
+    wl.write_text("VTI\nFDRXX\n")
+    assert U.universe_symbols(s, wl, classify={"BTC": "crypto"}) == ["AAPL", "VTI"]
+    assert s.query("SELECT COUNT(*) FROM securities")[0][0] == 3
+    assert s.query("SELECT asset_type FROM securities WHERE symbol = 'BTC'")[0][0] == "unknown"
+    assert U.build_universe(s, wl, classify={"BTC": "crypto"}) == ["AAPL", "VTI"]
+    assert s.query("SELECT COUNT(*) FROM securities")[0][0] == 5
+    s.close()

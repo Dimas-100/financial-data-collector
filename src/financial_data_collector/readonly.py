@@ -46,3 +46,15 @@ def run_readonly(db_path: Path, sql: str, limit: int = 500) -> tuple[list[str], 
         return cols, [list(r) for r in rows[:limit]], truncated
     finally:
         conn.close()
+
+
+def open_store(db_path: Path | str):
+    """A Store over a read-only connection (mode=ro, query_only): every Store read method works and any write
+    raises. For the console and any other consumer that must never change the warehouse. No migrations run."""
+    from .store import Store
+
+    conn = sqlite3.connect(f"file:{Path(db_path).as_posix()}?mode=ro", uri=True, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=1")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return Store(conn, Path(db_path))

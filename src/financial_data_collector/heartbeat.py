@@ -15,6 +15,8 @@ from typing import Callable
 FILENAME = "sync.heartbeat.json"
 MAX_AGE = timedelta(hours=3)          # the scheduled task's own execution limit is two
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
+ATTEMPTS = 3                          # a reader holding the file for a moment (Windows sharing violation) gets retried
+RETRY_PAUSE = 0.05
 
 
 def stamp(dt: datetime) -> str:
@@ -108,12 +110,13 @@ class Writer:
 
     def __init__(self, path: Path, run_id: str, origin: str, *, pid: int | None = None,
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                 clock: Callable[[], float] = time.monotonic, min_interval: float = 1.0):
+                 clock: Callable[[], float] = time.monotonic, min_interval: float = 1.0,
+                 pause: Callable[[float], None] = time.sleep):
         self.path = Path(path)
         first = stamp(now())
         self.hb = Heartbeat(run_id=run_id, pid=pid if pid is not None else os.getpid(), origin=origin,
                             started_at=first, updated_at=first)
-        self._now, self._clock, self._min = now, clock, min_interval
+        self._now, self._clock, self._min, self._pause = now, clock, min_interval, pause
         self._last_write: float | None = None
 
     def start(self) -> None:
@@ -128,22 +131,40 @@ class Writer:
             self._write()
 
     def finish(self) -> None:
-        """Remove the file, unless another run has taken it over in the meantime."""
+        """Remove the file, unless another run has taken it over in the meantime. Never raises: the heartbeat is
+        informational and must not turn a finished sync into a failure."""
         current = read(self.path)
         if current is not None and current.pid != self.hb.pid:
             return
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+        for attempt in range(ATTEMPTS):
+            try:
+                self.path.unlink()
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                if attempt < ATTEMPTS - 1:
+                    self._pause(RETRY_PAUSE)
 
     def _write(self) -> None:
+        """Atomic: temp file then replace. On Windows a reader holding the file for a moment makes the replace
+        fail (sharing violation); after ATTEMPTS the write is dropped, never raised into the sync."""
         self.hb.updated_at = stamp(self._now())
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(f"{self.path.name}.{self.hb.pid}.tmp")
-        tmp.write_text(self.hb.to_json(), encoding="utf-8")
-        os.replace(tmp, self.path)
-        self._last_write = self._clock()
+        for attempt in range(ATTEMPTS):
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                tmp.write_text(self.hb.to_json(), encoding="utf-8")
+                os.replace(tmp, self.path)
+                self._last_write = self._clock()
+                return
+            except OSError:
+                if attempt < ATTEMPTS - 1:
+                    self._pause(RETRY_PAUSE)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def wait_for_turn(path: Path, *, now: datetime, sleep: Callable[[float], None],
