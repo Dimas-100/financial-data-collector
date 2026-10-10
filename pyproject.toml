@@ -16,6 +16,7 @@ dependencies = [
   "mcp>=2.0",
   "rich>=13",
   "keyring>=25",
+  "textual>=8",
 ]
 
 [project.optional-dependencies]
