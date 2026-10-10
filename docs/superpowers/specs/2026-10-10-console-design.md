@@ -154,8 +154,10 @@ Rows written before the migration read `unknown`. `Store.log_run` gains `origin`
 
 ### Store methods
 
-- `recent_runs(limit=50)`: one row per `run_id`, newest first: `run_id, origin, started_at (min),
-  finished_at (max), steps (count), errors (count of status='error'), skipped (count), rows (sum)`.
+- `sync_status()`: the `sync_status` view (the last run of every step); `cmd_status` uses it too.
+- `recent_run_rows(limit=50)`: every `sync_runs` row of the newest `limit` runs, oldest first; the model
+  groups them into one summary per run (origin, first start, last finish, duration, a status per step with
+  blanks for steps the run did not include, rows, errors).
 - `run_steps(run_id)`: the run's `sync_runs` rows in order.
 - `source_facts()`: one query batch for the Sources tab: last ingested time and count per
   `ingested_files.kind`, symbol count and max date in `prices`, companies with `sec_facts` and their
