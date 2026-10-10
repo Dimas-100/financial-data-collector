@@ -438,6 +438,39 @@ class Store:
     def counts(self) -> dict[str, int]:
         return {t: self.conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in COUNT_TABLES}
 
+    # ---- what the console shows -------------------------------------------
+    def sync_status(self) -> list[sqlite3.Row]:
+        """The last run of every step (the sync_status view)."""
+        return self.query("SELECT * FROM sync_status ORDER BY step")
+
+    def recent_run_rows(self, limit: int = 50) -> list[sqlite3.Row]:
+        """Every step row of the newest `limit` runs, oldest row first (the caller groups by run_id)."""
+        return self.query(
+            """SELECT * FROM sync_runs
+               WHERE run_id IN (SELECT run_id FROM (SELECT run_id, MAX(id) AS last_id FROM sync_runs
+                                                    GROUP BY run_id ORDER BY last_id DESC LIMIT ?))
+               ORDER BY id""", (limit,))
+
+    def run_steps(self, run_id: str) -> list[sqlite3.Row]:
+        return self.query("SELECT * FROM sync_runs WHERE run_id = ? ORDER BY id", (run_id,))
+
+    def source_facts(self) -> dict:
+        """Where the data came from, in one batch: ingested files per kind, price and SEC coverage, accounts per
+        origin, and the active connections."""
+        ingested = {r["kind"]: {"count": r["n"], "last": r["last"]} for r in self.query(
+            "SELECT kind, COUNT(*) AS n, MAX(ingested_at) AS last FROM ingested_files GROUP BY kind")}
+        p = self.query("SELECT COUNT(DISTINCT symbol) AS symbols, MAX(date) AS latest FROM prices")[0]
+        s = self.query("SELECT COUNT(DISTINCT cik) AS companies, MAX(filed) AS latest_filed FROM sec_facts")[0]
+        by_origin = {r["origin"]: r["n"] for r in self.query(
+            "SELECT origin, COUNT(*) AS n FROM accounts GROUP BY origin")}
+        return {
+            "ingested": ingested,
+            "prices": {"symbols": p["symbols"], "latest": p["latest"]},
+            "sec": {"companies": s["companies"], "latest_filed": s["latest_filed"]},
+            "accounts_by_origin": by_origin,
+            "connections": [dict(r) for r in self.connections(active_only=True)],
+        }
+
     # ---- derived data (rebuilt from scratch by the derive step) --------------
     def replace_rows(self, table: str, columns: tuple[str, ...], rows: Iterable[tuple]) -> int:
         rows = list(rows)

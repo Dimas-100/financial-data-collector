@@ -151,7 +151,7 @@ def cmd_status(root: Path) -> int:
         return 2
     store = Store.open(cfg.db_path, migrate=False)
     try:
-        runs = {r["step"]: r for r in store.query("SELECT * FROM sync_status")}
+        runs = {r["step"]: r for r in store.sync_status()}
         rows = []
         for step in STEPS:
             r = runs.get(step)

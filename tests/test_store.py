@@ -194,3 +194,39 @@ def test_identical_rows_in_one_batch_are_separate_transactions(store: Store):
     assert store.write_transactions([deposit, deposit, deposit]) == 0   # the same file again changes nothing
     assert store.write_transactions([deposit]) == 0                      # the first keeps the old key, so rows stored earlier still match
     assert store.query("SELECT SUM(amount) FROM transactions")[0][0] == 300.0
+
+
+def test_sync_status_and_recent_runs(store: Store):
+    store.log_run("r1", "prices", "error", 0, "boom", "2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z", origin="scheduled")
+    store.log_run("r2", "ingest", "ok", 2, "", "2026-01-02T00:00:00Z", "2026-01-02T00:00:01Z", origin="console")
+    store.log_run("r2", "prices", "ok", 3, "", "2026-01-02T00:00:01Z", "2026-01-02T00:00:04Z", origin="console")
+    store.log_run("r3", "prices", "skipped", 0, "", "2026-01-03T00:00:00Z", "2026-01-03T00:00:01Z")
+    status = {r["step"]: r for r in store.sync_status()}
+    assert status["prices"]["status"] == "skipped" and status["ingest"]["rows_written"] == 2
+    rows = store.recent_run_rows(limit=2)
+    assert [(r["run_id"], r["step"]) for r in rows] == [("r2", "ingest"), ("r2", "prices"), ("r3", "prices")]
+    assert rows[0]["origin"] == "console"
+    assert [r["step"] for r in store.run_steps("r2")] == ["ingest", "prices"]
+    assert store.run_steps("nope") == []
+    assert [r["run_id"] for r in store.recent_run_rows(limit=1)] == ["r3"]
+
+
+def test_source_facts_shapes(store: Store):
+    facts = store.source_facts()
+    assert facts["ingested"] == {} and facts["prices"] == {"symbols": 0, "latest": None}
+    assert facts["sec"] == {"companies": 0, "latest_filed": None}
+    assert facts["accounts_by_origin"] == {} and facts["connections"] == []
+    store.record_file("a" * 64, "inbox/positions.csv", "fidelity_positions", 3)
+    store.record_file("b" * 64, "snap/live-positions.json", "snaptrade_positions", 4)
+    store.record_file("c" * 64, "inbox/history.csv", "fidelity_history", 7)
+    store.write_snapshot(_snap("2026-01-02"))
+    store.write_prices("AAPL", [PriceBar("2026-01-02", 100.0, 100.0)], "tiingo")
+    store.write_prices("KO", [PriceBar("2026-01-03", 50.0, 50.0)], "tiingo")
+    store.save_connection("simplefin", "fdc-simplefin", "2026-01-01T00:00:00Z")
+    facts = store.source_facts()
+    assert facts["ingested"]["fidelity_positions"]["count"] == 1
+    assert facts["ingested"]["fidelity_history"]["last"] >= facts["ingested"]["fidelity_positions"]["last"]
+    assert facts["prices"] == {"symbols": 2, "latest": "2026-01-03"}
+    assert facts["accounts_by_origin"] == {"file": 1}
+    assert [c["name"] for c in facts["connections"]] == ["simplefin"]
+    assert facts["connections"][0]["last_ok_at"] is None and facts["connections"][0]["last_error"] == ""
