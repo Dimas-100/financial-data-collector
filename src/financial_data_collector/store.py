@@ -426,13 +426,13 @@ class Store:
 
     def log_run(
         self, run_id: str, step: str, status: str, rows_written: int, message: str,
-        started_at: str, finished_at: str,
+        started_at: str, finished_at: str, origin: str = "manual",
     ) -> None:
         with self.conn:
             self.conn.execute(
-                "INSERT INTO sync_runs (run_id, step, started_at, finished_at, status, rows_written, message) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (run_id, step, started_at, finished_at, status, rows_written, message[:4000]),
+                "INSERT INTO sync_runs (run_id, step, started_at, finished_at, status, rows_written, message, origin) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (run_id, step, started_at, finished_at, status, rows_written, message[:4000], origin),
             )
 
     def counts(self) -> dict[str, int]:

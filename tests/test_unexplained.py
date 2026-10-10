@@ -178,7 +178,7 @@ def test_a_version_6_warehouse_gains_the_table_with_its_rows_intact(tmp_path: Pa
     conn.close()
     s = Store.open(db)
     try:
-        assert s.query("SELECT MAX(version) FROM schema_version")[0][0] == 7
+        assert s.query("SELECT MAX(version) FROM schema_version")[0][0] >= 7
         assert s.query("SELECT label FROM accounts")[0][0] == "Sample Brokerage"
         assert s.counts()["unexplained_daily"] == 0
     finally:

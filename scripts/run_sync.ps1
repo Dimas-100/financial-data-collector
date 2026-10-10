@@ -8,7 +8,7 @@ $python = Join-Path $root ".venv\Scripts\python.exe"
 $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
 Add-Content -Path $log -Value "[$stamp] sync start"
 Set-Location $root
-& $python -m financial_data_collector --root $root sync 2>&1 | ForEach-Object { Add-Content -Path $log -Value "  $_" }
+& $python -m financial_data_collector --root $root sync --origin scheduled 2>&1 | ForEach-Object { Add-Content -Path $log -Value "  $_" }
 $code = $LASTEXITCODE
 $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
 Add-Content -Path $log -Value "[$stamp] sync end (exit $code)"

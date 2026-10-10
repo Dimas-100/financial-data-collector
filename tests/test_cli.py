@@ -218,3 +218,19 @@ def test_connect_redacts_a_services_own_words(tmp_path, monkeypatch, capsys):
     assert cli.main(["--root", root, "connect", "simplefin"]) == 0
     out = capsys.readouterr().out
     assert "p%40ss" not in out and "user%40x" not in out and "for details" in out
+
+
+def test_sync_origin_flag(tmp_path: Path, capsys, monkeypatch):
+    cli.main(["--root", str(tmp_path), "init"])
+    seen = {}
+
+    def fake_run_sync(cfg, **kw):
+        seen.update(kw)
+        return sync_mod.SyncReport(run_id="r", steps=[], dry_run=False)
+
+    monkeypatch.setattr(cli, "run_sync", fake_run_sync)
+    assert cli.main(["--root", str(tmp_path), "sync", "--origin", "scheduled", "--only", "ingest"]) == 0
+    assert seen["origin"] == "scheduled" and seen["only"] == ["ingest"]
+    assert cli.main(["--root", str(tmp_path), "sync", "--only", "ingest"]) == 0
+    assert seen["origin"] == "manual"
+    capsys.readouterr()

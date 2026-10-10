@@ -22,6 +22,8 @@ from .universe import build_universe
 
 STEPS = ("connections", "ingest", "prices", "sec", "derive", "export")
 NETWORK_STEPS = {"connections", "prices", "sec"}
+ORIGINS = ("scheduled", "manual", "console")       # who started a run: the task, a hand, fdc console
+STALE_HOURS = {"ingest": 48, "prices": 48, "sec": 336, "derive": 48, "export": 48}
 
 
 @dataclass
@@ -165,9 +167,11 @@ def run_sync(
     sleep: Callable[[float], None] = time.sleep,
     progress: Callable[[str, str], None] | None = None,
     keys: KeyHome | None = None,
+    origin: str = "manual",
 ) -> SyncReport:
     """Run the selected steps. `progress(step, detail)` is called as work advances (for a live display). `keys`
-    is where the connections step finds its keys; by default the key store, or .env, beside config.toml."""
+    is where the connections step finds its keys; by default the key store, or .env, beside config.toml.
+    `origin` says who started the run: `scheduled`, `manual` or `console`."""
     now = now or datetime.now(timezone.utc)
     run_id = now.strftime("%Y%m%dT%H%M%SZ")
     steps = _select_steps(only, skip)
@@ -194,7 +198,7 @@ def run_sync(
                 tb = traceback.format_exc().strip().splitlines()
                 rows, message, status = 0, f"{type(e).__name__}: {e} | " + " | ".join(tb[-3:]), "error"
             finished = utcnow()
-            store.log_run(run_id, step, status, rows, message, started, finished)
+            store.log_run(run_id, step, status, rows, message, started, finished, origin)
             report.steps.append(StepResult(step, status, rows, message, started, finished))
     finally:
         store.close()

@@ -213,3 +213,16 @@ def test_a_skipped_connections_step_leaves_the_exit_code_to_the_other_network_st
     rep = sync.run_sync(project, fetch=down, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     by = {s.step: s for s in rep.steps}
     assert by["connections"].status == "skipped" and rep.exit_code == 1
+
+
+def test_run_origin_is_logged(project, fixtures: Path):
+    sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None,
+                  only=["ingest"], origin="console")
+    sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None, only=["ingest"])
+    s = Store.open(project.db_path, migrate=False)
+    try:
+        assert [r[0] for r in s.query("SELECT origin FROM sync_runs ORDER BY id")] == ["console", "manual"]
+    finally:
+        s.close()
+    assert sync.ORIGINS == ("scheduled", "manual", "console")
+    assert sync.STALE_HOURS["sec"] == 336
