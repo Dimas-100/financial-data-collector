@@ -48,6 +48,9 @@ fdc console            # a live screen: what runs, where its data comes from, wh
 fdc console --once     # the same, printed once (what a pipe or a log gets)
 ```
 
+`scripts\open_console.ps1` opens the live screen in a window of its own and returns at once, so a shortcut,
+another program or an assistant can launch it for you.
+
 Three tabs: **Overview** (each step's last result, how stale it is, what is running right now, and the
 scheduled task's triggers, last and next run on Windows), **Sources** (the inbox, the broker export folder, each
 connection, the price provider, SEC EDGAR, the watchlist, the research tickers folder and the cockpit feed

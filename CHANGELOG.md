@@ -15,6 +15,8 @@
   state and shows short paths, Runs covers the last seven days with the date once per day and dims `unknown`
   origins, the schedule sits in its own panel, `left`/`right` switch tabs, `tab` moves between a table and
   its strip, and `?` opens a help screen.
+- `scripts\open_console.ps1` opens the live screen in a PowerShell window of its own and returns, so a shortcut or
+  another program can launch the console; the window stays open with the exit code if the console fails.
 - A running sync keeps a heartbeat (`data/sync.heartbeat.json`: run, step, progress line, pid, origin) and
   removes it when it ends; a sync that finds another alive waits its turn (up to 30 minutes). Every run records
   its `origin` (migration 0008: `scheduled`, `manual`, `console`; older rows read `unknown`), and
