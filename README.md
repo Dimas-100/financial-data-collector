@@ -49,12 +49,17 @@ fdc console --once     # the same, printed once (what a pipe or a log gets)
 ```
 
 Three tabs: **Overview** (each step's last result, how stale it is, what is running right now, and the
-scheduled task's triggers and last run on Windows), **Sources** (the inbox, the broker export folder, each
+scheduled task's triggers, last and next run on Windows), **Sources** (the inbox, the broker export folder, each
 connection, the price provider, SEC EDGAR, the watchlist, the research tickers folder and the cockpit feed
-files, each with its last activity) and **Runs** (every run with who started it, how long it took and each
-step's message). Keys: `1` `2` `3` switch tabs, `r` runs the whole sync, `s` runs the step under the cursor,
-`ctrl+p` opens the command palette, `q` quits. A run started from the console carries on after you quit and
-is logged like any other. While a sync is alive, the keys wait; a sync started elsewhere waits its turn too.
+files, each with its state and last activity) and **Runs** (the last seven days of runs with who started
+each, how long it took and each step's message). Every tab is a table with a detail strip under it: `up` and
+`down` move the highlight and the strip shows the whole row, so long messages and full paths live there. The
+band at the top is green when idle, cyan while a sync runs, yellow when your own run is queued and red when a
+run did not finish, and it names the next scheduled run. Keys: `1` `2` `3` or `left` `right` switch tabs,
+`tab` moves between a table and its strip, `r` runs the whole sync, `s` runs the step under the cursor,
+`?` shows every key, `ctrl+p` opens the command palette, `q` quits. A run started from the console carries
+on after you quit and is logged like any other. While a sync is alive, the keys wait; a sync started elsewhere
+waits its turn too. Older history: `fdc query "select * from sync_runs order by id desc"`.
 
 ## What gets stored
 

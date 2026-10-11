@@ -1,5 +1,6 @@
-"""The live screen, driven headless: tabs, tables filled from a fixture model, actions refused while a sync
-is alive, and a failing refresh that keeps the last good screen."""
+"""The live screen, driven headless: tabs, tables filled from a fixture model, detail strips that follow the
+highlight, arrow keys and the help overlay, actions refused while a sync is alive, and a failing refresh that
+keeps the last good screen."""
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +10,7 @@ from textual.widgets import DataTable, TabbedContent
 from financial_data_collector import config as C
 from financial_data_collector import heartbeat as H
 from financial_data_collector.console.actions import LaunchState
-from financial_data_collector.console.app import ConsoleApp
+from financial_data_collector.console.app import ConsoleApp, HelpScreen
 from financial_data_collector.console.model import Overview, RunStep, RunSummary, Running, SourceRow, StepState
 from financial_data_collector.console.schedule import Schedule, ScheduleResult
 
@@ -18,8 +19,8 @@ STEP_NAMES = ("connections", "ingest", "prices", "sec", "derive", "export")
 
 
 def overview(running=Running("idle")):
-    steps = [StepState(s, "ok", 6.0, False, 1, "") for s in STEP_NAMES]
-    sources = [SourceRow("inbox files", "x", "never", "empty"), SourceRow("prices", "yfinance", "", "ok")]
+    steps = [StepState(s, "ok", 6.0, False, 1, f"message of {s} " + "y" * 120) for s in STEP_NAMES]
+    sources = [SourceRow("inbox files", "C:/x/inbox", "never", "empty"), SourceRow("prices", "yfinance", "", "ok")]
     runs = [RunSummary("b", "scheduled", "2026-03-01T11:00:00Z", "2026-03-01T11:03:05Z", 185.0, ("ok",) * 6, 4, 0),
             RunSummary("a", "console", "2026-03-01T10:00:00Z", "2026-03-01T10:00:30Z", 30.0,
                        ("", "", "ok", "", "", ""), 3, 0)]
@@ -61,29 +62,56 @@ def _app(cfg, ov=None, load=None, launcher=None):
         cfg, load=load or (lambda cfg, **kw: ov),
         load_steps=lambda cfg, run_id, **kw: [RunStep("prices", "ok", 4.0, 5, f"steps of {run_id}")],
         launcher=launcher or FakeLauncher(),
-        schedule_reader=lambda root: ScheduleResult(Schedule("T", "Ready", None, None, None, ("daily 08:30",), None), ""),
+        schedule_reader=lambda root: ScheduleResult(
+            Schedule("T", "Ready", None, None, "2026-03-01T20:30:00", ("daily 08:30",), None), ""),
         refresh_seconds=3600, schedule_seconds=3600, now=lambda: NOW)
 
 
-def test_tabs_tables_and_detail(tmp_path: Path):
+def test_tabs_tables_and_detail_strips(tmp_path: Path):
     async def go():
         app = _app(_cfg(tmp_path))
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app, pilot, lambda a: a.overview is not None and a.query_one("#steps", DataTable).row_count == 6)
-            assert app.status_text.plain.startswith("IDLE")
-            await _settle(app, pilot, lambda a: "task T" in a.schedule_text.plain)
+            assert app.status_text.plain.startswith("IDLE") and "next" in app.status_text.plain
+            assert app.query_one("#status").has_class("idle")
+            await _settle(app, pilot, lambda a: "T   Ready" in a.schedule_text.plain)
+            assert "message of connections" in app.step_detail_text.plain      # the strip follows the highlight
+            await pilot.press("down")
+            await _settle(app, pilot, lambda a: "message of ingest" in a.step_detail_text.plain)
+            assert "y" * 120 in app.step_detail_text.plain                        # whole, where the table cut it
             await pilot.press("2")
             assert app.query_one(TabbedContent).active == "sources"
             assert app.query_one("#sources_table", DataTable).row_count == 2
-            assert app.universe_line == "following 7 symbols"
+            assert "following 7 symbols" in app.query_one("#sources_table", DataTable).border_title
+            await _settle(app, pilot, lambda a: "C:/x/inbox" in a.source_detail_text.plain)
             await pilot.press("3")
             assert app.query_one(TabbedContent).active == "runs"
             assert app.query_one("#runs_table", DataTable).row_count == 2
-            await _settle(app, pilot, lambda a: a.selected_run == "b" and a.query_one("#run_detail", DataTable).row_count == 1)
+            await _settle(app, pilot, lambda a: a.selected_run == "b" and "steps of b" in a.run_detail_text.plain)
             await pilot.press("down")
-            await _settle(app, pilot, lambda a: a.selected_run == "a")
+            await _settle(app, pilot, lambda a: a.selected_run == "a" and "steps of a" in a.run_detail_text.plain)
             await pilot.press("1")
             assert app.query_one(TabbedContent).active == "overview"
+    asyncio.run(go())
+
+
+def test_arrow_keys_cycle_tabs_and_help_overlay(tmp_path: Path):
+    async def go():
+        app = _app(_cfg(tmp_path))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app, pilot, lambda a: a.overview is not None)
+            await pilot.press("right")
+            assert app.query_one(TabbedContent).active == "sources"
+            await pilot.press("right")
+            assert app.query_one(TabbedContent).active == "runs"
+            await pilot.press("right")
+            assert app.query_one(TabbedContent).active == "overview"           # wraps around
+            await pilot.press("left")
+            assert app.query_one(TabbedContent).active == "runs"
+            await pilot.press("question_mark")
+            await _settle(app, pilot, lambda a: isinstance(a.screen, HelpScreen))
+            await pilot.press("escape")
+            await _settle(app, pilot, lambda a: not isinstance(a.screen, HelpScreen))
     asyncio.run(go())
 
 
@@ -99,7 +127,7 @@ def test_run_keys_call_the_launcher_and_are_refused_while_running(tmp_path: Path
             app.query_one("#steps", DataTable).move_cursor(row=2)
             await pilot.press("s")
             assert fake.started == ["prices"]
-            assert "queued" in app.status_text.plain
+            assert "queued" in app.status_text.plain and app.query_one("#status").has_class("queued")
         hb = H.Heartbeat("r", 1, "scheduled", "2026-03-01T11:58:00Z", "2026-03-01T11:59:50Z", "sec", "")
         fake2 = FakeLauncher()
         app2 = _app(_cfg(tmp_path / "two"), ov=overview(Running("running", hb, 120.0)), launcher=fake2)
@@ -107,7 +135,7 @@ def test_run_keys_call_the_launcher_and_are_refused_while_running(tmp_path: Path
             await _settle(app2, pilot, lambda a: a.overview is not None)
             await pilot.press("r")
             assert fake2.started == []
-            assert app2.status_text.plain.startswith("RUNNING")
+            assert app2.status_text.plain.startswith("RUNNING") and app2.query_one("#status").has_class("running")
     asyncio.run(go())
 
 
@@ -147,9 +175,11 @@ def test_bracketed_messages_render_without_markup_errors(tmp_path: Path):
                          refresh_seconds=3600, schedule_seconds=3600, now=lambda: NOW)
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(app, pilot, lambda a: a.overview is not None and a.query_one("#steps", DataTable).row_count == 6)
+            assert tricky in app.step_detail_text.plain
             await pilot.press("2")
+            await _settle(app, pilot, lambda a: tricky in a.source_detail_text.plain)
             await pilot.press("3")
-            await _settle(app, pilot, lambda a: a.query_one("#run_detail", DataTable).row_count == 1)
+            await _settle(app, pilot, lambda a: tricky in a.run_detail_text.plain)
             await pilot.pause(0.2)
             assert app.refresh_error == "" and tricky in app.schedule_text.plain
     asyncio.run(go())

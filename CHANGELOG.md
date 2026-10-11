@@ -9,6 +9,12 @@
   connection (`readonly.open_store`; the universe it counts comes from `universe.universe_symbols`, which writes
   nothing); a run it starts is an `fdc sync` subprocess that carries on after quitting. Migration 0009 indexes
   `sec_facts(filed)` so the Sources tab's newest-filing lookup is instant.
+- The console is easier to read and move around in: every tab is a table with a detail strip under it that
+  shows the whole highlighted row (full messages, full paths), tables show short text and numbers with
+  separators, the status band is colored by state and names the next scheduled run, Sources leads with the
+  state and shows short paths, Runs covers the last seven days with the date once per day and dims `unknown`
+  origins, the schedule sits in its own panel, `left`/`right` switch tabs, `tab` moves between a table and
+  its strip, and `?` opens a help screen.
 - A running sync keeps a heartbeat (`data/sync.heartbeat.json`: run, step, progress line, pid, origin) and
   removes it when it ends; a sync that finds another alive waits its turn (up to 30 minutes). Every run records
   its `origin` (migration 0008: `scheduled`, `manual`, `console`; older rows read `unknown`), and

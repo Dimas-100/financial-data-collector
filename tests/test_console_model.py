@@ -164,3 +164,18 @@ def test_overview_never_writes(project):
 
     M.load_overview(project, now=NOW, heartbeat_read=lambda p: None, store_open=spy_open)
     assert len(opened) == 1 and opened[0].conn is not None
+
+
+def test_runs_window_keeps_the_last_days_but_never_fewer_than_the_minimum():
+    def run(day: int, hour: int = 8) -> M.RunSummary:
+        start = f"2026-02-{day:02d}T{hour:02d}:00:00Z"
+        return M.RunSummary(start, "scheduled", start, start, 0.0, ("ok",) * 6, 1, 0)
+
+    recent = [run(28), run(27), run(26), run(25), run(24), run(23), run(22, 13), run(22, 11), run(21), run(20),
+              run(19), run(18), run(10), run(1)]
+    kept = M.recent_window(recent, NOW, days=7, minimum=5)        # seven runs inside the week: the window rules
+    assert [r.started_at[8:10] for r in kept] == ["28", "27", "26", "25", "24", "23", "22"]
+    assert [r.started_at[8:10] for r in M.recent_window(recent, NOW, days=1, minimum=10)][:10] == \
+        ["28", "27", "26", "25", "24", "23", "22", "22", "21", "20"]
+    assert M.recent_window([], NOW) == []
+    assert M.RUNS_DAYS == 7 and M.RUNS_MIN == 10
