@@ -3,7 +3,7 @@ and the one-shot report render these dataclasses; neither touches the database o
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
@@ -122,6 +122,23 @@ def local_time(iso: str | None, tz: tzinfo | None = None) -> str:
 
 
 # ---- assembling ---------------------------------------------------------------------------------------
+RUNS_DAYS = 7        # the Runs tab shows this many days back...
+RUNS_MIN = 10        # ...but never fewer runs than this
+
+
+def recent_window(runs: list[RunSummary], now: datetime, days: int = RUNS_DAYS, minimum: int = RUNS_MIN) -> list[RunSummary]:
+    """The runs (newest first) that started within `days`, extended to `minimum` runs when the window holds fewer."""
+    cutoff = now - timedelta(days=days)
+    out: list[RunSummary] = []
+    for i, r in enumerate(runs):
+        started = parse_iso(r.started_at)
+        if i < minimum or (started is not None and started >= cutoff):
+            out.append(r)
+        else:
+            break
+    return out
+
+
 def summarize_runs(rows: Iterable[Mapping]) -> list[RunSummary]:
     """Group step rows (oldest first) into runs, newest run first."""
     by_run: dict[str, list[Mapping]] = {}
@@ -242,7 +259,7 @@ def load_overview(cfg: Config, *, now: datetime | None = None, store_open: Calla
     try:
         status = {r["step"]: r for r in store.sync_status()}
         facts = store.source_facts()
-        runs = summarize_runs(store.recent_run_rows(runs_limit))
+        runs = recent_window(summarize_runs(store.recent_run_rows(runs_limit)), now)
         universe = len(universe_symbols(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir))
         latest = store.latest_snapshot_date()
     finally:
