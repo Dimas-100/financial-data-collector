@@ -74,4 +74,5 @@ fdc sync --dry-run                        # list steps
 fdc sync --only prices                    # one step
 fdc query "select * from sync_status"
 fdc console --once                        # the screen's content, printed once
+scripts\open_console.ps1                   # the live screen in its own window
 ```
