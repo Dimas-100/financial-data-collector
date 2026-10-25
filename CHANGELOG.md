@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `macro` step (after `prices`): FRED economic numbers into `macro_observations` (CPI, core CPI, the Fed's target range, the 10-year yield, unemployment) with a free `FRED_API_KEY` in `.env`; skipped without it. Migration 0010.
 - `fdc console`: a live terminal screen (Textual) with three tabs: each step's last result and staleness plus
   the scheduled task's registration (Windows), every source and output with its last activity, and the history
   of runs with who started them and each step's message. `r` runs the sync, `s` one step, `ctrl+p` the

@@ -76,6 +76,13 @@ class PriceBar:
 
 
 @dataclass(frozen=True)
+class MacroObservation:
+    series_id: str
+    obs_date: str
+    value: float
+
+
+@dataclass(frozen=True)
 class Fact:
     taxonomy: str
     concept: str

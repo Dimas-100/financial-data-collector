@@ -11,14 +11,14 @@ from . import migrate as _migrate
 from .adapters.base import dedupe_key
 from .connections.names import slug_for
 from .models import (
-    AccountRef, ConceptRule, Fact, LineItem, PriceBar, Snapshot, TransactionRow,
+    AccountRef, ConceptRule, Fact, LineItem, MacroObservation, PriceBar, Snapshot, TransactionRow,
 )
 
 COUNT_TABLES = (
     "accounts", "securities", "position_snapshots", "cash_balances", "transactions",
     "prices", "sec_facts", "financial_line_items", "sync_runs", "ingested_files",
     "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily", "connections",
-    "unexplained_daily",
+    "unexplained_daily", "macro_observations",
 )
 
 
@@ -374,6 +374,25 @@ class Store:
             if bars:
                 self.conn.execute("UPDATE securities SET price_source = ? WHERE symbol = ?", (source, symbol))
         return len(bars)
+
+    # ---- macro (FRED) -----------------------------------------------------
+    def macro_has_rows(self) -> bool:
+        return self.conn.execute("SELECT 1 FROM macro_observations LIMIT 1").fetchone() is not None
+
+    def write_macro(self, obs: Iterable[MacroObservation], fetched_at: str) -> int:
+        """Upsert; a revision overwrites its row. A row whose value did not change is left alone (fetched_at
+        included), so a run with nothing new changes nothing. Returns the rows inserted or revised."""
+        obs = list(obs)
+        before = self.conn.total_changes
+        with self.conn:
+            self.conn.executemany(
+                """INSERT INTO macro_observations (series_id, obs_date, value, fetched_at) VALUES (?,?,?,?)
+                   ON CONFLICT(series_id, obs_date) DO UPDATE SET
+                     value = excluded.value, fetched_at = excluded.fetched_at
+                   WHERE macro_observations.value IS NOT excluded.value""",
+                [(o.series_id, o.obs_date, o.value, fetched_at) for o in obs],
+            )
+        return self.conn.total_changes - before
 
     # ---- SEC --------------------------------------------------------------
     def write_sec_facts(self, cik: str, facts: Iterable[Fact]) -> int:

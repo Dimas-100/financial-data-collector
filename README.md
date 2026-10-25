@@ -27,6 +27,8 @@ Then:
 
 1. Open `.env` and set `SEC_USER_AGENT=Your Name you@example.com` (SEC requires it). Optionally
    add a free Tiingo token; without one, prices come from yfinance.
+   Economic numbers: get a free key at fred.stlouisfed.org (My Account, API Keys), put
+   `FRED_API_KEY=` in `.env`. Without it the `macro` step is skipped.
 2. Connect a brokerage (`fdc connect snaptrade`) or a bank (`fdc connect simplefin`) with your own key:
    see [docs/connections.md](docs/connections.md). Or, on fidelity.com: Accounts, Positions, Download, and
    save the CSV into `inbox/`. Optional: Accounts, Activity and Orders, Download, for transaction history;
@@ -71,6 +73,7 @@ waits its turn too. Older history: `fdc query "select * from sync_runs order by 
 | `position_snapshots`, `cash_balances` | one row per day, account and symbol; cash separately |
 | `transactions` | buys, sells, dividends, reinvestments, contributions, withdrawals, fees; de-duplicated across re-imports |
 | `prices` | daily close, adjusted close, dividends and splits per symbol |
+| `macro_observations` | FRED economic numbers in FRED's own units: `CPIAUCSL`, `CPILFESL` (inflation indexes), `DFEDTARL`, `DFEDTARU` (the Fed's target range), `DGS10` (10-year yield), `UNRATE`; one row per series and date, a revision overwrites its row |
 | `sec_facts` | every XBRL fact each held company ever filed (all forms, all periods) |
 | `financial_line_items` | those facts shaped into income statement, balance sheet and cash-flow line items, annual and quarterly |
 | `financials_annual`, `financials_quarterly` | one wide row per company per period, with margins and free cash flow |

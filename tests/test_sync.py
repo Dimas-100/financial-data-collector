@@ -49,30 +49,30 @@ def _counts(cfg):
 
 def test_full_sync_then_noop(project, fixtures: Path):
     rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "sec", "derive", "export"]
-    assert [s.status for s in rep.steps] == ["skipped", "ok", "ok", "ok", "ok", "skipped"], rep.steps   # no connections; export disabled by default
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "derive", "export"]
+    assert [s.status for s in rep.steps] == ["skipped", "ok", "ok", "skipped", "ok", "ok", "skipped"], rep.steps   # no connections, no FRED key; export disabled by default
     assert rep.exit_code == 0
     c1 = _counts(project)
     assert c1["position_snapshots"] > 0 and c1["prices"] > 0 and c1["sec_facts"] == 35
-    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 6
+    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 7
     assert "without data" in rep.steps[2].message          # KO, VTI, BRK.B had no bars
     rep2 = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert rep2.steps[1].rows == 0
     c2 = _counts(project)
     assert {k: v for k, v in c2.items() if k != "sync_runs"} == {k: v for k, v in c1.items() if k != "sync_runs"}
-    assert rep2.steps[3].message.startswith("0 fetched")
+    assert rep2.steps[4].message.startswith("0 fetched")
 
 
 def test_only_and_skip(project, fixtures: Path):
     rep = sync.run_sync(project, only=["prices"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert [s.step for s in rep.steps] == ["prices"]
     rep = sync.run_sync(project, skip=["sec"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "derive", "export"]
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "derive", "export"]
 
 
 def test_dry_run_touches_nothing(project):
     rep = sync.run_sync(project, dry_run=True)
-    assert rep.dry_run and [s.step for s in rep.steps] == ["connections", "ingest", "prices", "sec", "derive", "export"]
+    assert rep.dry_run and [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "derive", "export"]
     assert not project.db_path.exists()
 
 

@@ -45,6 +45,9 @@ ENV_EXAMPLE = """# Copy to .env (gitignored). Values are never logged.
 SEC_USER_AGENT=Your Name you@example.com
 # Optional: Tiingo token for prices (free at tiingo.com). Without it, yfinance is used.
 TIINGO_API_TOKEN=
+# Optional: FRED key for economic numbers (inflation, the Fed's rate, the 10-year, unemployment). Free at
+# fred.stlouisfed.org (My Account, API Keys). Without it the macro step is skipped.
+FRED_API_KEY=
 # A connection (fdc connect) keeps its key in your computer's key store. Only on a computer without one
 # does fdc connect write it here instead (never paste a key here yourself unless there is no key store):
 # FDC_SNAPTRADE_CLIENT_ID=
@@ -73,6 +76,7 @@ class Config:
     snaptrade_dir: Path | None = None
     classify: dict[str, str] = field(default_factory=dict)
     tiingo_token: str | None = None
+    fred_api_key: str | None = None
     sec_user_agent: str | None = None
     investing_dir: Path | None = None
     export_cockpit: bool = False
@@ -150,6 +154,7 @@ def load_config(root: Path) -> Config:
         snaptrade_dir=(root / snap_dir).resolve() if snap_dir else None,
         classify={str(k).upper(): str(v) for k, v in raw.get("classify", {}).items()},
         tiingo_token=_secret("TIINGO_API_TOKEN", dotenv),
+        fred_api_key=_secret("FRED_API_KEY", dotenv),
         sec_user_agent=_secret("SEC_USER_AGENT", dotenv),
         investing_dir=(root / investing_dir).resolve() if investing_dir else None,
         export_cockpit=bool(export.get("enabled", False)),

@@ -1,6 +1,7 @@
 """fdc sync: run each step independently, log each to sync_runs, never let one failure stop the rest."""
 from __future__ import annotations
 
+import json
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ from typing import Callable
 
 from . import heartbeat, http, statements
 from .collectors import prices as prices_mod
+from .collectors.macro import MacroError, collect_macro, start_date as macro_start
 from .collectors.sec_facts import collect_sec
 from .config import Config, ConfigError
 from .connections.keys import KeyHome
@@ -20,10 +22,10 @@ from .models import PriceBar
 from .store import Store, utcnow
 from .universe import build_universe
 
-STEPS = ("connections", "ingest", "prices", "sec", "derive", "export")
-NETWORK_STEPS = {"connections", "prices", "sec"}
+STEPS = ("connections", "ingest", "prices", "macro", "sec", "derive", "export")
+NETWORK_STEPS = {"connections", "prices", "macro", "sec"}
 ORIGINS = ("scheduled", "manual", "console")       # who started a run: the task, a hand, fdc console
-STALE_HOURS = {"ingest": 48, "prices": 48, "sec": 336, "derive": 48, "export": 48}
+STALE_HOURS = {"ingest": 48, "prices": 48, "macro": 48, "sec": 336, "derive": 48, "export": 48}
 
 
 @dataclass
@@ -45,7 +47,7 @@ class SyncReport:
     @property
     def exit_code(self) -> int:
         network = [s for s in self.steps if s.step in NETWORK_STEPS
-                   and not (s.step == "connections" and s.status == "skipped")]
+                   and not (s.step in ("connections", "macro") and s.status == "skipped")]
         if network and all(s.status == "error" for s in network):
             return 1
         return 0
@@ -96,6 +98,24 @@ def _step_prices(store: Store, cfg: Config, *, fetch, now, yf, sleep, progress: 
     # ("no new bars") and unknown tickers ("no bars from any provider") are informational.
     status = "error" if results and all(r.failed for r in results) else "ok"
     return sum(r.rows for r in results), msg, status
+
+
+def _step_macro(store: Store, cfg: Config, *, fetch, now, progress: Progress, **_) -> tuple[int, str, str]:
+    key = cfg.fred_api_key
+    if not key:
+        raise ConfigError("FRED_API_KEY is not set; get a free key at fred.stlouisfed.org and put it in .env")
+    progress("FRED series")
+    start = macro_start(now.date(), store.macro_has_rows())
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        obs = collect_macro(key, lambda url: json.loads(fetch(url, None)), start)
+        failed = ""
+    except MacroError as e:       # the message is already scrubbed; what arrived is still kept
+        obs, failed = e.observations, str(e)
+    rows = store.write_macro(obs, stamp)
+    if failed:
+        return rows, failed, "ok" if obs else "error"
+    return rows, f"{rows} observations new or revised", "ok"
 
 
 def _step_sec(store: Store, cfg: Config, *, fetch, now, sleep, progress: Progress, **_) -> tuple[int, str, str]:
@@ -150,7 +170,7 @@ def _step_export(store: Store, cfg: Config, *, now, progress: Progress, **_) -> 
 
 
 _RUNNERS: dict[str, Callable] = {
-    "connections": _step_connections, "ingest": _step_ingest, "prices": _step_prices, "sec": _step_sec,
+    "connections": _step_connections, "ingest": _step_ingest, "prices": _step_prices, "macro": _step_macro, "sec": _step_sec,
     "derive": _step_derive, "export": _step_export,
 }
 

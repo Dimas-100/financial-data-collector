@@ -37,7 +37,7 @@ projects consume the database; this one owns collection and storage. Design spec
 ```
 src/financial_data_collector/
   cli.py            fdc init | sync | import | status | query | export | mcp | connect | connections | disconnect | accounts | console
-  sync.py           runs steps connections -> ingest -> prices -> sec -> derive -> export, logs sync_runs (with origin), keeps the heartbeat, exit codes
+  sync.py           runs steps connections -> ingest -> prices -> macro -> sec -> derive -> export, logs sync_runs (with origin), keeps the heartbeat, exit codes
   heartbeat.py      data/sync.heartbeat.json: the running sync's step, progress line, pid and origin; wait_for_turn() for a second sync
   console/          model.py (read-only Overview), schedule.py (Windows Task Scheduler reader), actions.py (one fdc sync subprocess), report.py (rich, --once), app.py (Textual screen)
   connections/      names.py (labels, kinds, external keys), keys.py (key store / .env), snaptrade.py + simplefin.py (read-only fetchers -> models), service.py (connect / disconnect / run), redact.py
@@ -45,17 +45,18 @@ src/financial_data_collector/
   export/cockpit.py prices.json / dividends.json / fundamentals.json for the investing cockpit
   ingest.py         inbox routing by file signature; SnapTrade folder walk; hash-based idempotency
   adapters/         fidelity_positions.py, fidelity_history.py, snaptrade.py -> models.Snapshot / TransactionRow
-  collectors/       prices.py (Tiingo|yfinance), sec_cik.py, sec_facts.py (EDGAR company facts)
+  collectors/       prices.py (Tiingo|yfinance), macro.py (FRED: CPI, core CPI, the Fed range, 10-year, unemployment; needs FRED_API_KEY), sec_cik.py, sec_facts.py (EDGAR company facts)
   statements.py     facts + concept_map -> financial_line_items (annual, quarter, YTD differencing, derived Q4)
   store.py          Store: every write; migrate.py: migrations, seed, generated wide views
   readonly.py       SQL guard + mode=ro connection; mcp_server.py: schema/query/status tools
-  migrations/*.sql  0001 tables, 0002 views, 0003 derived tables + TTM/history views, 0006 connections, 0007 unexplained_daily, 0008 sync_runs.origin, 0009 sec_facts(filed) index;  seeds/concept_map.csv
+  migrations/*.sql  0001 tables, 0002 views, 0003 derived tables + TTM/history views, 0006 connections, 0007 unexplained_daily, 0008 sync_runs.origin, 0009 sec_facts(filed) index, 0010 macro_observations;  seeds/concept_map.csv
 ```
 
 ## Tables and views (start here when querying)
 
 - `positions_latest`, `holdings_history`, `account_values_daily`, `portfolio_daily` (household total plus `fidelity_total`)
 - `prices` (symbol, date, close, adj_close, dividend, split_factor)
+- `macro_observations` (series_id, obs_date, value, fetched_at; FRED's own units; series `CPIAUCSL`, `CPILFESL`, `DFEDTARL`, `DFEDTARU`, `DGS10`, `UNRATE`; a revision overwrites the row, "." values are not stored; Claude OS reads it, so keep the names)
 - `transactions` (typed: buy, sell, dividend, reinvest, contribution, withdrawal, interest, fee, transfer, other)
 - `financials_annual`, `financials_quarterly`, `financials_ttm` (one wide row per company per period; `has_derived_items` marks rows with computed values, `financial_line_items.is_derived` says which)
 - `valuation_daily` / `valuation_latest` (market cap, P/E, P/S, P/FCF, dividend yield per price date, using only filings available that day)
