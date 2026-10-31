@@ -90,6 +90,7 @@ waits its turn too. Older history: `fdc query "select * from sync_runs order by 
 | `check_runs`, `check_findings` | the checker's runs and what it found; open `hold` findings blank the matching fields of `valuation_latest` (see "Checker") |
 | `valuation_scores`, `valuation_scores_raw` | the valuation engine's scores: one row per symbol and metric at the symbol's newest final close, with its status, what it was built from (`inputs`, `sources`) and when the checker covered the data (`checked_at`); read the view, which also applies holds opened since (see "Valuation engine") |
 | `price_moves` | drops of a final close in the last year (a day down 4%, a week down 8%, or a day 2.5 of its own standard deviations below the market) with their causes, each from a sourced fact (earnings, an 8-K, the market, the sector, headlines) or "no cause found" (see "Drops and their causes") |
+| `allocation_proposals`, `allocation_lines` (views over `allocation_proposals_raw`, `allocation_lines_raw`) | the weekly split's proposals, a record kept as written: how the cash waiting in one account was split across its holdings, in whole dollars, with each line's band, reasons and sources (see "The weekly split"); the views apply the checker's holds. Never an order |
 | `sync_runs`, `sync_status` | what ran, when, and whether it worked |
 
 Quarterly cash-flow items are computed from year-to-date filings where companies only report
@@ -156,10 +157,18 @@ thresholds are in `[check]` of `config.toml`. What it looks at:
   findings name the field `score:<metric>`, which the `valuation_scores` view blanks. A row it cannot read is a finding,
   never an error, and a row whose metric the engine does not know is one warning on `*` (it would otherwise be an error that keeps the engine from building). The `engine` step runs this check again alone right after it writes (its message ends "; checks: N holds,
   N warnings, N errors"); that partial run never stamps `checked_at`, and `fdc status` and the console show the last full run, not that one.
+- **split**: an open weekly-split proposal (`allocation_proposals_raw`) that breaks a rule is held: its lines add up to more
+  than the cash, a line is not a whole number of dollars of at least 1, a line goes to a name your targets file marks
+  `hold` in that account (or whose `rebalance` is not `trades`, `contributions` or `hold`) or that the account has no
+  entry for, the cash is not a number, or it has no sources. One finding per open proposal with every fault in its
+  message, field `proposal:<id>`, symbol the account's targets-file name; a closed proposal gets none. A missing or
+  unreadable targets file is a warning ("cannot check hold names") while a proposal is open. It reads the targets file
+  with its own code. The `engine` step runs it alone right after the split writes ("; split checks: N holds, N
+  warnings, N errors").
 
 It records into two tables. `check_runs` has one row per run (when, how many checks, how many holds and warnings it
 found, and any check that raised). `check_findings` has one row per problem: `check_name`, `symbol`, `field` (a
-`valuation_daily` column, `*` for every value column, or `score:<metric>` for one valuation score), the days it covers (`date_from`, `date_to`), `severity`
+`valuation_daily` column, `*` for every value column, `score:<metric>` for one valuation score, or `proposal:<id>` for one weekly-split proposal), the days it covers (`date_from`, `date_to`), `severity`
 (`hold`, `warn` or `info`), a plain-words `message`, `evidence` as JSON, and `first_seen` / `last_seen` / `cleared_at`.
 A finding the checks stop finding is cleared (never deleted); one that returns is reopened.
 
@@ -190,7 +199,7 @@ those as `NULL` too.
 
 ## Valuation engine
 
-The sync's last step, `engine`, turns the warehouse into scores: no network, no AI, only stored data. It runs after
+The sync's last step, `engine`, turns the warehouse into scores and then proposes the weekly split (below): no network, no AI, only stored data. It runs after
 the checker on purpose: it builds only from a derive that a full, error-free check run has covered (the newest ok
 `derive` and a `check_runs` row with that `derive_run_id` and no error). Until one has, it writes nothing, leaves the
 scores it had, and the step is `skipped` with "waiting for a check run to cover derive <id>".
@@ -337,13 +346,15 @@ run, so until then a move may rest on a close that is now held.
 
 ### The weekly split (proposals, never an order)
 
-After the scores and their re-check, the same step proposes how to split cash waiting in an account (its money market, which the
-adapters turn into cash) across that account's holdings, from your own targets file. It is a proposal written to the
-database, never an order: nothing here can trade, sell, or move money between accounts, and it never proposes more
-than the waiting cash. It runs only under the engine's gate, so a sync whose check failed opens, replaces and closes
-nothing. The checker looks at what it writes at once (the `split` check): a proposal whose lines add up to more than the
-cash, are not whole dollars, go to a name your targets file marks `hold` or has no entry for in that account, or carry no
-sources is held, and `allocation_proposals` then shows it `held` with its dollars blank until the finding clears. Set it up in `config.toml`:
+After the scores and their re-check, the same step proposes how to split cash waiting in an account (its money market,
+which the adapters turn into cash) across that account's holdings, from your own targets file. It is a proposal written
+to the database, never an order: nothing here can trade, sell, or move money between accounts, and it never proposes
+more than the waiting cash. It runs only under the engine's gate, so a sync whose check failed (or whose score re-check
+had errors) opens, replaces and closes nothing; the step's message says why (`; split: score re-check failed`,
+`; split: no targets file`). The checker looks at what it writes at once (the `split` check, see "Checker"): a proposal
+whose lines add up to more than the cash, are not whole dollars, go to a name your targets file marks `hold` or has no
+entry for in that account, or carry no sources is held, and `allocation_proposals` then shows it `held` with its dollars
+blank until the finding clears. Set it up in `config.toml`:
 
 ```toml
 [allocation]
@@ -359,7 +370,21 @@ brokerage = "Sample Brokerage"
 roth = "Sample Roth"
 ```
 
-For each account named there, the waiting cash is the account's newest USD cash row, and:
+Neither path is set in code: without a `targets` line there is no split, so a database never reads a file it was not
+pointed at. A proposal's `account_key` is the targets-file name (`brokerage`), never the label.
+
+**The targets file** is one JSON object. Each key that holds a list (other than `sleeves`, `caps`, `planned` and keys
+starting with `_`) is an account, named as in `[allocation.accounts]`, and each entry is `{ticker, target, type, min,
+max, rebalance}`: `target`, `min` and `max` in percent as written (15 is 15%); `type` is `pct_of_account` (the
+default), `pct_of_brokerage` (measured on, and paid to, the account mapped as `brokerage`, wherever it is filed) or
+`direct_passive_ratio` (a plain ratio, below); with no `min`/`max` the band is 0.75x to 1.25x of the target; `rebalance`
+is `trades` (the default), `contributions` or `hold`. `sleeves` (`{account, label, members, min, max, rebalance}`) and
+`caps` (`{ticker, max}`, a ceiling in percent of the household) limit; `last_revised` is quoted in the sources. What the
+reader cannot use (an entry with no ticker or target) is skipped and said in the proposal's notes. The optional
+`fund_holdings` folder holds one `<FUND>.csv` per fund (columns `ticker`, `name`, `weight_pct`), which lets a fund count
+toward the names it holds.
+
+For each account named in `[allocation.accounts]`, the waiting cash is the account's newest USD cash row, and:
 
 - the first proposal is made once the cash is at least `min_new`;
 - with a proposal open, cash `min_new` or more above its cash makes a new proposal for all of the cash, which
@@ -370,22 +395,43 @@ For each account named there, the waiting cash is the account's newest USD cash 
 - an account with no entries in the targets file ("no targets for <name>"), with no cash row, with a cash row older
   than its newest positions (it may not show what you just placed; an account with no positions counts any row), or
   named twice on one account gets no proposal; one it already has stays open, as does one whose name left
-  `[allocation.accounts]`, and the step's notes say so by the targets-file name (the notes are part of the step's message in `sync_runs`:
-  `split: 1 new, 0 replaced, 0 spent (notes: ...)`).
+  `[allocation.accounts]`, and the step's notes say so by the targets-file name (the notes are part of the step's
+  message in `sync_runs`: `split: 1 new, 0 replaced, 0 spent (notes: ...)`).
 
-Caps and the direct/via-funds ratio are measured on the household: every investment account (one with positions)
-whose newest positions are within `household_days` of the newest of any account, with its cash when its cash row
-is that fresh too. A bank or card account with only cash is not part of it.
+**How a holding's band is decided.** Each holding gets one band, `cheap`, `usual` or `premium`, from its own primary
+valuation scores (the `valuation_scores` view, so a hold opened since still counts): for a company `pe`, `p_fcf`,
+`ev_ebit` and `ps`, for a fund `pe` and `dividend_yield`, each counted only when it is `ok` with a band. The lean is
+careful: with fewer than two counted it is `usual` (a line says `one_metric` or `no_metrics`); more than half `premium`
+makes it `premium`; `cheap` needs no `premium` at all and more than half `cheap`, and a company whose free-cash-flow and
+operating margin changes are both known and both falling is held at `usual` (`quality_falling`; when either is not
+known `cheap` stands and says `quality_unknown`); anything else is `usual` (`disagree`). The tilt then weights the
+share: `cheap` 1.5, `usual` 1.0, `premium` 0.5. A line's `reasons` lists the primary metrics that did not count
+(`held:`, `unsupported:`, `no_history:`, `missing:`) and the verdict (`cheap_by:pe+p_fcf`), comma-joined.
 
-A proposal's lines share the cash by each holding's gap to its target times its band's tilt (the band from the
-holding's primary valuation scores), in whole dollars, never past a band's top, a sleeve's max or a cap; a `hold`
-name gets nothing; what fits nowhere waits for next week. Each line lists its sources: the targets entry (the file's
-name only, never its path, and the account the entry is filed under), the scores that decided its band, and the tilt; the proposal lists the cash row and the
-targets file. Its notes say why an entry got no line, what the targets file could not be read for, and how many
-accounts were left out of the household for being older than `household_days`, or had a cash row too old to
-count (counts, never a name). A re-run with
-the same cash writes nothing, and new scores alone never rewrite an open proposal. Read them in
-`allocation_proposals` and `allocation_lines`.
+**How the cash is shared.** A percent target is measured on the account's value with the waiting cash in it (positions
+plus cash): a holding's gap is its target% of that, less what it holds. Money is shared by gap times tilt, and a line can
+grow past its target up to its band's top once the others are full, never past it. It never passes a sleeve's `max` (its
+members in that account) or a cap, which is measured on the household: every investment account (one with positions)
+whose newest positions are within `household_days` of the newest of any account, with its cash when its cash row is that
+fresh too; a bank or card account with only cash is not part of it. With a look-through file a fund counts toward the
+names it holds, both in a cap and in the `direct_passive_ratio` target (the gap is the target times the household's
+dollars held through funds, less its direct dollars; a name no fund on file holds gets nothing, "no look-through"); a
+fund with no file is counted at the largest weight of the name in any file, so missing look-through never makes room
+(`look_through_assumed`). A sleeve's `min` is never pushed toward: the split does not sell and does not force money in.
+A `hold` name or one with a misspelled rule gets nothing, and neither does a holding at or over its target. `trades` and
+`contributions` are treated alike, since the split only ever adds. Shares are floored to whole dollars, lines under
+`min_line` are folded into the largest line as far as its room allows, and what fits nowhere waits for next week
+(`placed` is the sum of the lines, `waits` the rest).
+
+**What a proposal says.** Each line lists its sources: the targets entry (the file's name only, never its path, its
+`last_revised`, and the account the entry is filed under), the scores that decided its band, and the tilt; the proposal
+lists the cash row and the targets file. Its notes say why an entry got no line (`duplicate`, `hold`, `unknown_rule`, `no_look_through`,
+`at_or_over_target`, `no_cash`, `under_min`, `sleeve_cut:`, `cap_cut:`, `band_top`), what the targets file could not be
+used for, and how many accounts were left out of the household for being older than `household_days`, or had a cash row
+too old to count (counts, never a name). The proposals are a record, like the checker's findings: a run only adds one or
+closes one, an open proposal's lines are never rewritten (new scores alone do not change it; only new cash makes a new
+one), and a re-run with the same cash writes nothing. Read them in `allocation_proposals` and `allocation_lines`
+(`docs/QUERIES.md` has the queries).
 
 ## Claude Desktop
 

@@ -21,7 +21,7 @@ projects consume the database; this one owns collection and storage. Design spec
 - **Schema changes are migrations.** Add `migrations/NNNN_name.sql`; never edit an applied file.
   New statement line items are seed edits in `seeds/concept_map.csv`, not code.
 - **No network in tests.** Collectors take `fetch` (and `yf`, `sleep`) as parameters.
-- **Idempotent steps.** Re-running `fdc sync` with nothing new must not change data rows. Derived tables are rebuilt from scratch by `derive` and are never a source of truth.
+- **Idempotent steps.** Re-running `fdc sync` with nothing new must not change data rows. Derived tables are rebuilt from scratch by `derive` and are never a source of truth. Records are the exception: `check_findings` and the weekly split's `allocation_*_raw` are kept as written (a run only adds or closes a row), because what they were built from is not kept.
 - **The cockpit is a consumer.** `export` writes investing's feed files in investing's shapes; never change those shapes without changing the cockpit first.
 - **New feeds live here**, not in consumer projects.
 - **A key is never in the repo, the database, a log or a message.** Connections keep keys in the key store (or `.env`);
@@ -30,7 +30,11 @@ projects consume the database; this one owns collection and storage. Design spec
 - **The checker imports nothing it checks.** `check/` reads the warehouse only through `Store.check_*` methods and
   imports nothing from `derive/`, `statements.py` or the collectors (except `http`), so it cannot share their bugs.
   Its outside questions (SEC, Yahoo, Tiingo) are read-only GETs through an injected `fetch`/`outside`; tests never
-  touch the network. A hold only ever blanks `valuation_latest`; raw tables are not changed by it.
+  touch the network. A hold only ever blanks what a view serves (`valuation_latest`, `valuation_scores`, `allocation_proposals` / `allocation_lines`); raw tables are not changed by it.
+- **The split proposes, never orders.** `derive/split.py` writes proposals of how waiting cash is shared in an account; it never
+  places or sizes an order, proposes a sale, moves money between accounts, passes the account's cash, gives a `hold` name a line, or
+  words a reason or note as a verdict on a name. It reads two optional owner files by configured path (the targets file, the
+  fund look-through folder), each ignored when missing; their names, never paths, reach a source. Fixtures are invented.
 - **The console only reads.** `fdc console` opens the store once to apply pending migrations, as every command
   does; every refresh after that is a read. The only writer it causes is the `fdc sync` subprocess it starts.
   Strings from outside (a step's message, a path, a service's error) reach the screen as `Text`, never as bare

@@ -106,6 +106,40 @@ WHERE u.as_of_date >= date('now', '-30 days') AND ABS(u.amount) >= 1 ORDER BY u.
 Note: `adj_close` is adjusted as of each fetch and is not re-adjusted retroactively; recompute total return from
 `dividend` and `split_factor` when a split has happened since the first fetch.
 
+## The weekly split
+
+Proposals only, never an order. `account_key` is the targets file's name for the account (never an fdc label); `dollars`
+is NULL on a held proposal. See "The weekly split" in the README.
+
+```sql
+-- the open proposal per account, with its lines (a held one shows status 'held' and blank dollars)
+SELECT p.account_key, p.status, p.cash_date, p.cash, p.placed, p.waits,
+       l.symbol, l.dollars, l.band, l.tilt, ROUND(l.target_gap) AS target_gap
+FROM allocation_proposals p LEFT JOIN allocation_lines l ON l.proposal_id = p.id
+WHERE p.status IN ('open', 'held') ORDER BY p.account_key, l.dollars DESC;
+
+-- why a line got its band: the reason codes, then what each source says
+SELECT l.symbol, l.band, l.reasons, json_extract(s.value, '$.kind') AS kind,
+       json_extract(s.value, '$.label') AS label, json_extract(s.value, '$.date') AS date,
+       json_extract(s.value, '$.ref') AS ref
+FROM allocation_lines l JOIN allocation_proposals p ON p.id = l.proposal_id,
+     json_each(l.sources) s
+WHERE p.status IN ('open', 'held') AND l.symbol = 'VOO';
+
+-- the proposal's own notes (why an entry got no line, what the targets file could not be used for)
+SELECT p.account_key, json_extract(n.value, '$.symbol') AS symbol, json_extract(n.value, '$.reason') AS reason
+FROM allocation_proposals p, json_each(p.notes) n WHERE p.status IN ('open', 'held');
+
+-- history: each account's proposals, newest first, and how each ended
+SELECT account_key, id, created_at, cash, placed, status, closed_at, closed_cash
+FROM allocation_proposals ORDER BY account_key, id DESC;
+
+-- open split holds (a proposal the checker stopped; clears when the fault does)
+SELECT f.id, f.symbol AS account_key, f.field, f.date_from AS cash_date, f.message
+FROM check_findings f
+WHERE f.check_name = 'split' AND f.severity = 'hold' AND f.cleared_at IS NULL ORDER BY f.id;
+```
+
 ## Health
 
 ```sql
