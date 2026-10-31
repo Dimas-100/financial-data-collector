@@ -84,11 +84,14 @@ def test_next_morning_8k_is_one_event_not_two():
     assert (e.time_source, e.eps_source) == (None, "yahoo")
 
 
-def test_the_match_window_is_the_yahoo_day_up_to_three_days_later():
-    assert earnings.merge("SMPL", [("2026-08-02", A1)], [_y((2026, 7, 30), 16)], [], TODAY)[0].eps_reported == 2.02
-    late = earnings.merge("SMPL", [("2026-08-03", A1)], [_y((2026, 7, 30), 16)], [], TODAY)
+def test_the_match_window_is_the_yahoo_day_up_to_six_days_later():
+    assert earnings.MATCH_DAYS == 6
+    # Thursday the 30th after the close; four business days on is Wednesday Aug 5, which is still the same report
+    (e,) = earnings.merge("SMPL", [("2026-08-05", A1)], [_y((2026, 7, 30), 16)], [], TODAY)
+    assert (e.report_date, e.date_source, e.eps_reported) == ("2026-08-05", "sec", 2.02)
+    late = earnings.merge("SMPL", [("2026-08-06", A1)], [_y((2026, 7, 30), 16)], [], TODAY)
     assert [(e.report_date, e.date_source, e.eps_reported) for e in late] == \
-           [("2026-07-30", "yahoo", 2.02), ("2026-08-03", "sec", None)]
+           [("2026-07-30", "yahoo", 2.02), ("2026-08-06", "sec", None)]
     before = earnings.merge("SMPL", [("2026-07-29", A1)], [_y((2026, 7, 30), 16)], [], TODAY)
     assert [(e.report_date, e.date_source) for e in before] == [("2026-07-29", "sec"), ("2026-07-30", "yahoo")]
 
@@ -161,6 +164,32 @@ def test_a_stored_yahoo_row_is_kept_when_nothing_replaces_it():
     stored = [EarningsEvent("SMPL", "2024-04-30", "after_close", None, 1.0, 1.1, 10.0, "yahoo", "yahoo", "yahoo")]
     events = earnings.merge("SMPL", [("2026-07-30", A1)], [_y((2026, 7, 30), 16)], stored, TODAY)
     assert [e.report_date for e in events] == ["2024-04-30", "2026-07-30"] and events[0] == stored[0]
+
+
+def test_a_stored_yahoo_date_that_yahoo_has_moved_is_dropped():
+    stale = EarningsEvent("SMPL", "2026-07-14", None, None, 1.89, None, None, "yahoo", None, "yahoo")
+    events = earnings.merge("SMPL", [], [_y((2026, 7, 30), 16)], [stale], TODAY)
+    assert [(e.report_date, e.date_source) for e in events] == [("2026-07-30", "yahoo")]
+
+
+def test_a_moved_yahoo_date_is_dropped_when_the_8k_dates_the_real_report():
+    stale = EarningsEvent("SMPL", "2026-07-14", None, None, 1.89, None, None, "yahoo", None, "yahoo")
+    (e,) = earnings.merge("SMPL", [("2026-07-31", A1)], [_y((2026, 7, 30), 16)], [stale], TODAY)
+    assert (e.report_date, e.accession, e.eps_reported) == ("2026-07-31", A1, 2.02)
+
+
+def test_a_stored_yahoo_date_is_kept_while_its_8k_may_still_come_or_yahoo_said_nothing():
+    recent = EarningsEvent("SMPL", "2026-10-26", None, None, 2.1, None, None, "yahoo", None, "yahoo")   # 4 days ago
+    events = earnings.merge("SMPL", [], [_y((2026, 7, 30), 16)], [recent], TODAY)
+    assert [e.report_date for e in events] == ["2026-07-30", "2026-10-26"]
+    stale = EarningsEvent("SMPL", "2026-07-14", None, None, 1.89, None, None, "yahoo", None, "yahoo")
+    assert earnings.merge("SMPL", [], [], [stale], TODAY) == [stale]            # an empty list proves nothing
+
+
+def test_a_stored_yahoo_row_with_reported_eps_that_dropped_off_yahoos_list_is_kept():
+    old = EarningsEvent("SMPL", "2026-04-30", "after_close", None, 1.5, 1.6, 6.67, "yahoo", "yahoo", "yahoo")
+    events = earnings.merge("SMPL", [], [_y((2026, 7, 30), 16)], [old], TODAY)
+    assert events[0] == old and [e.report_date for e in events] == ["2026-04-30", "2026-07-30"]
 
 
 def test_a_yahoo_row_with_no_figures_names_no_eps_source():

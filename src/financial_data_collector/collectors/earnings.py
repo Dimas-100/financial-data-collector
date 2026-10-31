@@ -30,7 +30,9 @@ SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 ACCESSION = re.compile(r"\d{10}-\d{2}-\d{6}")      # as SEC writes it
 PAUSE_SECONDS = 1.0                    # between companies asked of SEC
 YAHOO_LIMIT = 24                       # earnings dates asked of Yahoo: six years of quarters
-MATCH_DAYS = 3                         # an 8-K filed up to this many days after Yahoo's date is the same report
+MATCH_DAYS = 6                         # an 8-K filed up to this many calendar days after Yahoo's date is the same
+                                       # report: four business days is legal, so a Thursday release may be filed the
+                                       # next Wednesday
 STOCK_TYPES = ("stock", "foreign_filer")
 NEW_YORK = ZoneInfo("America/New_York")
 OPEN, CLOSE = clock(9, 30), clock(16, 0)
@@ -90,8 +92,9 @@ def _from_yahoo(symbol: str, row: YahooEarning) -> EarningsEvent:
 
 
 def _near(sec_day: str, yahoo_day: str) -> bool:
-    """Is an 8-K filed on `sec_day` the report Yahoo dates `yahoo_day`? The same day or up to MATCH_DAYS later (a
-    release after the close is often filed the next morning)."""
+    """Is an 8-K filed on `sec_day` the report Yahoo dates `yahoo_day`? The same day or up to MATCH_DAYS calendar days
+    later (a release after the close is often filed the next morning, and may be filed up to four business days
+    on)."""
     s, y = date.fromisoformat(sec_day), date.fromisoformat(yahoo_day)
     return y <= s <= y + timedelta(days=MATCH_DAYS)
 
@@ -107,7 +110,10 @@ def merge(symbol: str, sec: list[tuple[str, str]], yahoo: list[YahooEarning], st
        of day only when they share the day. The candidates are the new Yahoo rows and the stored Yahoo-dated rows (a new
        row wins over a stored one of the same day), so a Yahoo-dated event is absorbed when its 8-K appears later. With
        no match the stored row of that accession keeps its EPS and time, else they are None.
-    4. An unused candidate with no SEC event near it is a Yahoo-dated event of its own (a stored one kept as stored)."""
+    4. An unused candidate with no SEC event near it is a Yahoo-dated event of its own (a stored one kept as stored),
+       except a stored one Yahoo has moved: when Yahoo's list this run is not empty, a stored Yahoo-dated row with no
+       reported EPS, more than MATCH_DAYS before `today` (no 8-K can still come for it) and no longer on that list is
+       dropped. One with reported EPS is history and stays, whatever Yahoo's list now holds."""
     stored_sec = {e.accession: e for e in stored if e.accession}
     dated = {accn: e.report_date for accn, e in stored_sec.items()}
     dated.update({accn: filed for filed, accn in sec})
@@ -123,6 +129,13 @@ def merge(symbol: str, sec: list[tuple[str, str]], yahoo: list[YahooEarning], st
         if event.report_date <= last:
             fresh.setdefault(event.report_date, event)
     candidates.update(fresh)
+    listed = {_new_york(row.when).date().isoformat() for row in yahoo}
+    cutoff = (today - timedelta(days=MATCH_DAYS)).isoformat()
+
+    def moved(event: EarningsEvent) -> bool:
+        """A date Yahoo once gave for a report it now dates otherwise: never a report of its own."""
+        return (bool(listed) and event.report_date not in listed and event.eps_reported is None
+                and event.report_date < cutoff)
 
     used: set[str] = set()
     out: list[EarningsEvent] = []
@@ -145,7 +158,7 @@ def merge(symbol: str, sec: list[tuple[str, str]], yahoo: list[YahooEarning], st
             out.append(EarningsEvent(symbol, day, None, accn, None, None, None, "sec", None, None))
 
     for day, event in candidates.items():
-        if day not in used and not any(_near(s, day) for s in by_day):
+        if day not in used and not any(_near(s, day) for s in by_day) and not moved(event):
             out.append(event)
     return sorted(out, key=lambda e: e.report_date)
 
