@@ -91,3 +91,36 @@ def test_config_rejects_a_bad_share_class(tmp_path: Path, entry: str):
     (tmp_path / "config.toml").write_text(f"[share_classes]\n{entry}\n")
     with pytest.raises(C.ConfigError):
         C.load_config(tmp_path)
+
+
+def test_check_settings_default_to_the_specs_values(tmp_path: Path):
+    C.init_project(tmp_path)
+    cfg = C.load_config(tmp_path)
+    assert (cfg.check.fresh_warn_months, cfg.check.fresh_hold_months) == (5, 15)
+    assert (cfg.check.recompute_tolerance, cfg.check.max_daily_move) == (0.01, 0.40)
+    (tmp_path / "config.toml").write_text("")
+    assert C.load_config(tmp_path).check == cfg.check
+
+
+def test_check_settings_can_be_set(tmp_path: Path):
+    (tmp_path / "config.toml").write_text(
+        "[check]\nfresh_warn_months = 3\nfresh_hold_months = 12\nrecompute_tolerance = 0.02\nmax_daily_move = 0.5\n")
+    c = C.load_config(tmp_path).check
+    assert (c.fresh_warn_months, c.fresh_hold_months, c.recompute_tolerance, c.max_daily_move) == (3, 12, 0.02, 0.5)
+
+
+@pytest.mark.parametrize("body", [
+    "fresh_warn_months = 0", "fresh_warn_months = 'five'", "fresh_warn_months = 2.5", "fresh_warn_months = true",
+    "fresh_warn_months = 20", "fresh_hold_months = -1", "recompute_tolerance = 0", "recompute_tolerance = 'x'",
+    "max_daily_move = -0.1", "max_daily_move = false", "typo_months = 5",
+])
+def test_a_bad_check_setting_is_a_config_error(tmp_path: Path, body):
+    (tmp_path / "config.toml").write_text(f"[check]\n{body}\n")
+    with pytest.raises(C.ConfigError, match=r"\[check\]"):
+        C.load_config(tmp_path)
+
+
+def test_check_must_be_a_table(tmp_path: Path):
+    (tmp_path / "config.toml").write_text("check = 5\n")
+    with pytest.raises(C.ConfigError, match=r"\[check\]"):
+        C.load_config(tmp_path)

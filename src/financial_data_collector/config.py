@@ -36,6 +36,12 @@ content_dir = "../investing"       # owner-only: theses/ + watchlist/ frontmatte
 enabled = false                    # write prices.json / dividends.json / fundamentals.json for the investing cockpit
 dir = "../investing/data"          # must already exist; never created
 
+[check]                            # thresholds of the independent checks (fdc check); these are the defaults
+fresh_warn_months = 5              # warn when the newest statements end more than this many months before the price
+fresh_hold_months = 15             # hold the valuation beyond this many
+recompute_tolerance = 0.01         # a stored ratio may differ from its recomputed value by this fraction
+max_daily_move = 0.40              # a one-day close move beyond this fraction (no split that day) is impossible
+
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"
 
@@ -73,6 +79,15 @@ class ShareClass:
     ratio: float
 
 
+@dataclass(frozen=True)
+class CheckSettings:
+    """Thresholds of the offline checks (config [check]); the defaults are the spec's."""
+    fresh_warn_months: int = 5
+    fresh_hold_months: int = 15
+    recompute_tolerance: float = 0.01
+    max_daily_move: float = 0.40
+
+
 @dataclass
 class Config:
     root: Path
@@ -89,6 +104,7 @@ class Config:
     snaptrade_dir: Path | None = None
     classify: dict[str, str] = field(default_factory=dict)
     share_classes: dict[str, ShareClass] = field(default_factory=dict)
+    check: CheckSettings = field(default_factory=CheckSettings)
     tiingo_token: str | None = None
     fred_api_key: str | None = None
     sec_user_agent: str | None = None
@@ -142,6 +158,29 @@ def _share_classes(raw: object, cfg_path: Path) -> dict[str, ShareClass]:
     return out
 
 
+def _check_settings(raw: object, cfg_path: Path) -> CheckSettings:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{cfg_path}: [check] must be a table")
+    defaults = CheckSettings()
+    unknown = sorted(set(raw) - set(defaults.__dataclass_fields__))
+    if unknown:
+        raise ConfigError(f"{cfg_path}: [check] has no setting {', '.join(unknown)}")
+    values: dict[str, object] = {}
+    for name in ("fresh_warn_months", "fresh_hold_months"):
+        v = raw.get(name, getattr(defaults, name))
+        if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+            raise ConfigError(f"{cfg_path}: [check] {name} must be a whole number of months, 1 or more")
+        values[name] = v
+    if values["fresh_warn_months"] > values["fresh_hold_months"]:
+        raise ConfigError(f"{cfg_path}: [check] fresh_warn_months must not be more than fresh_hold_months")
+    for name in ("recompute_tolerance", "max_daily_move"):
+        v = raw.get(name, getattr(defaults, name))
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not v > 0:
+            raise ConfigError(f"{cfg_path}: [check] {name} must be a number above 0")
+        values[name] = float(v)
+    return CheckSettings(**values)
+
+
 def load_config(root: Path) -> Config:
     root = Path(root)
     cfg_path = root / "config.toml"
@@ -183,6 +222,7 @@ def load_config(root: Path) -> Config:
         snaptrade_dir=(root / snap_dir).resolve() if snap_dir else None,
         classify={str(k).upper(): str(v) for k, v in raw.get("classify", {}).items()},
         share_classes=_share_classes(raw.get("share_classes", {}), cfg_path),
+        check=_check_settings(raw.get("check", {}), cfg_path),
         tiingo_token=_secret("TIINGO_API_TOKEN", dotenv),
         fred_api_key=_secret("FRED_API_KEY", dotenv),
         sec_user_agent=_secret("SEC_USER_AGENT", dotenv),

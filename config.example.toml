@@ -26,6 +26,12 @@ content_dir = "../investing"       # owner-only: theses/ + watchlist/ frontmatte
 enabled = false                    # write prices.json / dividends.json / fundamentals.json for the investing cockpit
 dir = "../investing/data"          # must already exist; never created
 
+[check]                            # thresholds of the independent checks (fdc check); these are the defaults
+fresh_warn_months = 5              # warn when the newest statements end more than this many months before the price
+fresh_hold_months = 15             # hold the valuation beyond this many
+recompute_tolerance = 0.01         # a stored ratio may differ from its recomputed value by this fraction
+max_daily_move = 0.40              # a one-day close move beyond this fraction (no split that day) is impossible
+
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"
 

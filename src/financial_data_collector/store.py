@@ -698,3 +698,37 @@ class Store:
         r = self.query("SELECT run_id FROM sync_runs WHERE step = 'derive' AND status = 'ok' "
                        "ORDER BY id DESC LIMIT 1")
         return r[0][0] if r else None
+
+    def check_valuation_columns(self) -> list[str]:
+        """The column names of valuation_daily: what a finding's `field` may name (besides '*')."""
+        return [r["name"] for r in self.conn.execute("PRAGMA table_info(valuation_daily)")]
+
+    def check_held_symbols(self) -> list[str]:
+        """Symbols in the latest position snapshots (positions_latest)."""
+        return [r[0] for r in self.query("SELECT DISTINCT symbol FROM positions_latest ORDER BY symbol")]
+
+    def check_newest_valuation(self) -> list[sqlite3.Row]:
+        """The newest valuation_daily row of every symbol, raw (no holds applied), with the symbol's asset type
+        (None when the symbol has no securities row)."""
+        return self.query(
+            "SELECT v.*, s.asset_type FROM valuation_daily v LEFT JOIN securities s ON s.symbol = v.symbol "
+            "WHERE v.date = (SELECT MAX(v2.date) FROM valuation_daily v2 WHERE v2.symbol = v.symbol) "
+            "ORDER BY v.symbol")
+
+    def check_asset_types(self) -> dict[str, str]:
+        return {r[0]: r[1] for r in self.query("SELECT symbol, asset_type FROM securities")}
+
+    def check_final_bars(self, symbol: str, limit: int) -> list[tuple[str, float, float]]:
+        """The last `limit` final bars as ascending (date, close, split_factor)."""
+        rows = self.query("SELECT date, close, split_factor FROM prices WHERE symbol = ? AND final = 1 "
+                          "ORDER BY date DESC LIMIT ?", (symbol, limit))
+        return [(r[0], r[1], r[2]) for r in reversed(rows)]
+
+    def check_first_price_date(self, symbol: str) -> str | None:
+        r = self.query("SELECT MIN(date) FROM prices WHERE symbol = ?", (symbol,))
+        return r[0][0] if r else None
+
+    def check_final_dates(self, symbol: str, start: str, end: str) -> set[str]:
+        """Dates with a final bar between `start` and `end`, both included."""
+        return {r[0] for r in self.query("SELECT date FROM prices WHERE symbol = ? AND final = 1 "
+                                         "AND date BETWEEN ? AND ?", (symbol, start, end))}

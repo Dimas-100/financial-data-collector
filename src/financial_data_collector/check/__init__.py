@@ -51,7 +51,8 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
               only: list[str] | None = None, store: Store | None = None) -> CheckReport:
     """Run the registered checks (or just `only`), record the run and its findings. A check that raises is
     reported in `errors` and leaves its own open findings as they were; the others still run. That covers what a
-    check returns too: anything but a list of Findings under its own name is that check's error. Pass `store` to
+    check returns too: anything but a list of Findings under its own name, each naming a valuation_daily column
+    (or "*"), is that check's error. Pass `store` to
     use a connection that is already open (the sync does); otherwise one is opened and closed here."""
     now = now or datetime.now(timezone.utc)
     names = list(CHECKS)
@@ -69,6 +70,7 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
         ctx = CheckContext(store=st, cfg=cfg, fetch=fetch, outside=outside, now=now)
         holds = warns = 0
         errors: list[str] = []
+        fields = set(st.check_valuation_columns()) | {"*"}
         for name in names:
             try:
                 found = CHECKS[name](ctx)
@@ -80,6 +82,8 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
                         raise TypeError(f"returned a {type(f).__name__}, not a Finding")
                     if f.check_name != name:
                         raise ValueError(f"returned a finding for check {f.check_name!r}")
+                    if f.field not in fields:       # a hold names a column the view can blank; anything else blanks nothing
+                        raise ValueError(f"returned a finding for {f.field!r}, which is not a valuation_daily column or '*'")
                 st.check_record(name, found, stamp)     # one transaction: an error leaves its findings as they were
             except Exception as e:      # one broken check must not hide the others; its findings stay as they were
                 errors.append(f"{name}: {type(e).__name__}: {e}")
@@ -95,3 +99,6 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
     finally:
         if own:
             st.close()
+
+
+from . import offline  # noqa: E402,F401  (registers the offline checks in CHECKS; last, because it imports from here)

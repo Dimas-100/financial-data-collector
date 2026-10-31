@@ -216,3 +216,22 @@ def test_fdc_check_prints_one_line_of_counts(cfg, capsys):
     out = capsys.readouterr().out
     assert rc == 0 and re.search(r"check: 1 holds found, 1 open, 0 warnings, 0 errors \(run \d{8}T\d{6}Z\)", out), out
     assert [r["check_name"] for r in _rows(cfg)] == ["a"]
+
+
+def test_a_finding_for_a_column_that_does_not_exist_is_that_checks_error(cfg):
+    _run(cfg, {"a": lambda ctx: [_finding("a")]})
+    rep = _run(cfg, {"a": lambda ctx: [_finding("a", field="peee")], "b": lambda ctx: [_finding("b", field="*")]},
+               when=T0 + timedelta(days=1))
+    assert len(rep.errors) == 1 and rep.errors[0].startswith("a: ValueError") and "peee" in rep.errors[0]
+    by = {r["check_name"]: r for r in _rows(cfg)}
+    assert by["a"]["cleared_at"] is None and by["a"]["field"] == "pe"       # its earlier finding stays as it was
+    assert by["b"]["field"] == "*"
+
+
+def test_every_valuation_column_and_star_are_accepted_as_a_field(cfg):
+    s = Store.open(cfg.db_path, migrate=False)
+    cols = s.check_valuation_columns()
+    s.close()
+    assert {"close", "pe", "status", "dividend_yield"} <= set(cols)
+    rep = _run(cfg, {"a": lambda ctx: [_finding("a", field=c) for c in cols + ["*"]]})
+    assert rep.errors == []
