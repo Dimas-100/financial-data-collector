@@ -286,3 +286,30 @@ def test_collect_sec_still_types_a_filer_with_no_operating_facts_as_etf(project,
     results = sec_facts.collect_sec(store, cfg, fetch=fetch, now=NOW, rebuild=lambda f, r: [], sleep=lambda s: None)
     assert store.query("SELECT asset_type FROM securities WHERE symbol='AAPL'")[0][0] == "etf"
     assert "no operating facts; classified as etf" in {r.symbol: r.message for r in results}["AAPL"]
+
+
+def test_a_classify_override_is_never_retyped_by_a_404_or_by_no_operating_facts(project, fixtures: Path):
+    cfg, store = project
+    cfg.classify = {"AAPL": "stock"}
+    store.set_asset_type("AAPL", "stock")
+    tickers = json.dumps({"0": {"cik_str": 9, "ticker": "AAPL", "title": "Sample Holdings"}}).encode()
+    no_operating = json.dumps({"cik": 9, "facts": {"dei": {"EntityCommonStockSharesOutstanding": {"units": {
+        "shares": [{"end": "2025-12-31", "val": 1, "accn": "x", "fy": 2025, "fp": "FY", "form": "10-K",
+                    "filed": "2026-01-01"}]}}}}}).encode()
+
+    def answer(body):
+        def fetch(url, headers):
+            if url == sec_cik.CIK_URL:
+                return tickers
+            if body is None:
+                raise HttpError(404, url)
+            return body
+        return fetch
+
+    results = sec_facts.collect_sec(store, cfg, fetch=answer(None), now=NOW, rebuild=lambda f, r: [],
+                                    sleep=lambda s: None)
+    assert store.query("SELECT asset_type FROM securities WHERE symbol='AAPL'")[0][0] == "stock"
+    assert "kept as stock by [classify]" in {r.symbol: r.message for r in results}["AAPL"]
+    sec_facts.collect_sec(store, cfg, fetch=answer(no_operating), now=NOW + timedelta(days=2),
+                          rebuild=lambda f, r: [], sleep=lambda s: None)
+    assert store.query("SELECT asset_type FROM securities WHERE symbol='AAPL'")[0][0] == "stock"

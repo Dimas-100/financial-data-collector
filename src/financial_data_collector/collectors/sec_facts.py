@@ -12,12 +12,13 @@ from ..config import Config, ConfigError
 from ..http import Fetch, HttpError
 from ..models import ConceptRule, Fact, LineItem
 from ..store import Store
-from ..symbols import is_money_market
+from ..symbols import canonical, is_money_market
 from .sec_cik import load_cik_map, lookup
 
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 PAUSE_SECONDS = 1.0
-_FUND_TYPES = {"etf", "mutual_fund", "money_market", "crypto", "fund", "foreign_filer"}
+FUND_TYPES = frozenset({"etf", "mutual_fund", "money_market", "crypto", "fund", "foreign_filer"})
+# the types the statements never shape: the SEC step skips them and derive clears their line items
 _FOREIGN_FORMS = {"20-F", "20-F/A", "40-F", "6-K"}
 _FUND_NAME = re.compile(r"\b(trust|fund|etf)\b", re.IGNORECASE)
 _REVENUE_ENDINGS = ("LeaseIncome", "LeaseRevenue", "RealEstateRevenueNet")
@@ -134,26 +135,27 @@ def collect_sec(
     rules = store.concept_rules()
     revenue_concepts = frozenset(r.concept for r in rules if r.line_item == "revenue" and r.taxonomy == "us-gaap")
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    forced = {canonical(s) for s in cfg.classify}   # [classify] decides these types: nothing here re-types them
     results: list[SecResult] = []
     securities = store.securities()
     for i, row in enumerate(securities, start=1):
         symbol, asset_type, cik = row["symbol"], row["asset_type"], row["cik"]
         sec_name = row["sec_name"]
-        if asset_type in _FUND_TYPES or is_money_market(symbol, row["description"]) or row["parked_reason"]:
+        if asset_type in FUND_TYPES or is_money_market(symbol, row["description"]) or row["parked_reason"]:
             continue
         if progress:
             progress(f"{i}/{len(securities)} {symbol}")
         if not cik:
             hit = lookup(cik_map, symbol)
             if hit is None:
-                if asset_type == "unknown" and _looks_like_mutual_fund(symbol):
+                if asset_type == "unknown" and _looks_like_mutual_fund(symbol) and symbol not in forced:
                     store.set_asset_type(symbol, "mutual_fund")
                 results.append(SecResult(symbol, None, message="no CIK in SEC ticker map"))
                 continue
             cik, name = hit
             sec_name = name
             store.set_security_cik(symbol, cik, name)
-            if asset_type == "unknown":
+            if asset_type == "unknown" and symbol not in forced:
                 store.set_asset_type(symbol, "stock")
         if _is_fresh(row["last_sec_fetch"], now, cfg.sec_max_age_hours):
             results.append(SecResult(symbol, cik, message="fresh"))
@@ -162,7 +164,9 @@ def collect_sec(
             data = json.loads(fetch(FACTS_URL.format(cik=cik), headers))
         except (HttpError, ValueError, json.JSONDecodeError) as e:
             store.mark_sec_fetch(symbol, stamp)
-            if isinstance(e, HttpError) and e.status == 404:
+            if isinstance(e, HttpError) and e.status == 404 and symbol in forced:
+                results.append(SecResult(symbol, cik, message=f"no company facts (404); kept as {asset_type} by [classify]"))
+            elif isinstance(e, HttpError) and e.status == 404:
                 # SEC has no XBRL facts for this CIK: a fund or trust, not an operating company
                 store.set_asset_type(symbol, "etf")
                 results.append(SecResult(symbol, cik, message="no company facts (404); classified as etf"))
@@ -171,16 +175,17 @@ def collect_sec(
             sleep(PAUSE_SECONDS)
             continue
         facts = parse_company_facts(data)
-        kind = classify_filer(facts, sec_name or data.get("entityName"), revenue_concepts)
+        kind = None if symbol in forced else classify_filer(facts, sec_name or data.get("entityName"), revenue_concepts)
         if kind:
-            # not an operating company the statements can shape: typed, its old lines cleared, never shaped again
+            # not an operating company the statements can shape: typed, its old lines cleared, skipped by this
+            # step from now on (derive clears its lines too, since its old facts stay in sec_facts)
             store.set_asset_type(symbol, kind)
             store.mark_sec_fetch(symbol, stamp)
             store.replace_line_items(cik, [])
             results.append(SecResult(symbol, cik, facts=len(facts), message=f"classified as {kind}"))
             sleep(PAUSE_SECONDS)
             continue
-        if not has_operating_facts(facts):
+        if not has_operating_facts(facts) and symbol not in forced:
             store.set_asset_type(symbol, "etf")
             store.mark_sec_fetch(symbol, stamp)
             results.append(SecResult(symbol, cik, facts=len(facts), message="no operating facts; classified as etf"))

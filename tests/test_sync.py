@@ -1,7 +1,7 @@
 import sqlite3
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -329,3 +329,73 @@ def test_sync_check_step_when_sec_has_no_submissions_is_an_info_finding_and_no_e
     rows = s.check_open_findings("filings")
     s.close()
     assert [(r["symbol"], r["severity"]) for r in rows] == [("AAPL", "info")]
+
+
+def _trust_fetch(fixtures: Path, bars=None):
+    """AAPL's CIK as a company SEC names "... Royalty Trust", whose facts have no revenue: classify_filer calls it
+    a fund unless [classify] says otherwise."""
+    facts = json.loads((fixtures / "sec" / "companyfacts_SAMPLE.json").read_text())
+    facts["facts"]["us-gaap"].pop("Revenues")
+    tickers = json.loads((fixtures / "sec" / "company_tickers.json").read_text())
+    tickers["0"]["title"] = "Sample Royalty Trust"
+    bars = bars or [{"date": "2026-02-20T00:00:00.000Z", "close": 10.0, "adjClose": 10.0, "divCash": 0, "splitFactor": 1}]
+
+    def fetch(url, headers):
+        if url == sec_cik.CIK_URL:
+            return json.dumps(tickers).encode()
+        if "companyfacts/CIK0000000001" in url:
+            return json.dumps(facts).encode()
+        if "tiingo" in url and "/AAPL/" in url:
+            return json.dumps(bars).encode()
+        raise HttpError(404, url)
+    return fetch
+
+
+def _aapl(cfg):
+    s = Store.open(cfg.db_path, migrate=False)
+    try:
+        kind = s.query("SELECT asset_type FROM securities WHERE symbol = 'AAPL'")[0][0]
+        statuses = {r[0] for r in s.query("SELECT status FROM valuation_daily WHERE symbol = 'AAPL'")}
+        items = s.query("SELECT COUNT(*) FROM financial_line_items WHERE cik = '0000000001'")[0][0]
+        return kind, statuses, items
+    finally:
+        s.close()
+
+
+def test_without_an_override_the_trust_is_typed_a_fund(project, fixtures: Path):
+    sync.run_sync(project, only=["ingest"], fetch=_trust_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    sync.run_sync(project, only=["prices", "sec", "derive"], fetch=_trust_fetch(fixtures), now=NOW,
+                  yf=lambda s, d: [], sleep=lambda s: None)
+    kind, statuses, _ = _aapl(project)
+    assert kind == "fund" and statuses == {"unsupported"}
+
+
+def test_a_classify_override_survives_every_sec_refetch(project, fixtures: Path):
+    project.classify = {"AAPL": "stock"}
+    sync.run_sync(project, only=["ingest"], fetch=_trust_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    for days in (0, 2, 4):            # the SEC answer is refetched each time (max age 24 h)
+        when = NOW + timedelta(days=days)
+        rep = sync.run_sync(project, only=["prices", "sec", "derive"], fetch=_trust_fetch(fixtures), now=when,
+                            yf=lambda s, d: [], sleep=lambda s: None)
+        assert [s.status for s in rep.steps] == ["ok", "ok", "ok"], rep.steps
+        kind, statuses, items = _aapl(project)
+        assert kind == "stock", days
+        assert statuses and "unsupported" not in statuses and items > 0
+
+
+def test_derive_does_not_reshape_a_company_the_sec_step_typed_a_foreign_filer(project, fixtures: Path):
+    sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    assert _aapl(project)[2] > 0                         # shaped as a company first
+
+    def ifrs(url, headers):                              # its next filing is IFRS: a foreign filer from now on
+        if "companyfacts/CIK0000000001" in url:
+            return (fixtures / "sec" / "companyfacts_IFRS.json").read_bytes()
+        return _fetch(fixtures)(url, headers)
+
+    later = NOW + timedelta(days=2)
+    rep = sync.run_sync(project, only=["sec", "derive"], fetch=ifrs, now=later, yf=lambda s, d: [], sleep=lambda s: None)
+    assert [s.status for s in rep.steps] == ["ok", "ok"], rep.steps
+    kind, statuses, items = _aapl(project)
+    assert kind == "foreign_filer" and items == 0        # its old us-gaap facts are still in sec_facts, but not shaped
+    rep = sync.run_sync(project, only=["derive"], fetch=ifrs, now=later, yf=lambda s, d: [], sleep=lambda s: None)
+    assert _aapl(project)[2] == 0 and "statements reshaped 0" in rep.steps[0].message

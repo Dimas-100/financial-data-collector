@@ -11,7 +11,7 @@ from typing import Callable
 from . import check as check_mod, heartbeat, http, statements
 from .collectors import prices as prices_mod
 from .collectors.macro import MacroError, collect_macro, start_date as macro_start
-from .collectors.sec_facts import collect_sec
+from .collectors.sec_facts import FUND_TYPES, collect_sec
 from .config import Config, ConfigError
 from .connections.keys import KeyHome
 from .connections.service import run as run_connections
@@ -136,17 +136,28 @@ def _step_sec(store: Store, cfg: Config, *, fetch, now, sleep, progress: Progres
 def _step_derive(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple[int, str, str]:
     # Statements are a function of the shaper and the concept map, not of the fetch:
     # reshape every company from its stored facts so a code or seed change applies everywhere.
+    # A company whose every symbol is of a type the statements never shape (a fund, a foreign filer) keeps its
+    # old facts in sec_facts but is not shaped: its line items are cleared instead, so they cannot come back.
     rules = store.concept_rules()
-    reshaped, failed = 0, []
+    reshaped, cleared, failed = 0, 0, []
+    kinds: dict[str, set[str]] = {}
+    for _symbol, cik, asset_type in store.securities_with_cik():
+        kinds.setdefault(cik, set()).add(asset_type)
     ciks = store.ciks_with_facts()
     for i, cik in enumerate(ciks, start=1):
         progress(f"statements {i}/{len(ciks)}")
+        if kinds.get(cik) and kinds[cik] <= FUND_TYPES:
+            store.replace_line_items(cik, [])
+            cleared += 1
+            continue
         try:
             store.replace_line_items(cik, statements.rebuild(store.facts_for(cik), rules))
             reshaped += 1
         except Exception as e:  # one odd filer keeps its previous rows; the rest still rebuild
             failed.append(f"{cik} ({type(e).__name__}: {e})")
     counts = {"statements reshaped": reshaped}
+    if cleared:
+        counts["statements cleared (fund or foreign filer)"] = cleared
     if failed:
         counts[f"statements {len(failed)} failed: " + "; ".join(failed)[:300]] = len(failed)
     progress("replaying history")
