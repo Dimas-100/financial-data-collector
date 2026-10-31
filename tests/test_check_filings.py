@@ -14,6 +14,7 @@ from financial_data_collector.store import Store
 NOW = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)          # 2026-10-29 in New York
 CIK = "0000999001"
 SAMPLE = json.loads((Path(__file__).parent / "fixtures" / "sec" / "submissions_SAMPLE.json").read_text())
+A = "0000999001-26-00000"                                           # a prefix: A + "1" is a well-formed accession
 UA = "Test Suite test@example.com"
 
 
@@ -82,14 +83,14 @@ def test_within_grace_days_nothing(store, cfg):
 
 def test_missing_rules_by_hand():
     recent = {"form": ["10-Q", "10-K/A", "20-F", "8-K", "10-Q", "10-K", "10-Q"],
-              "accessionNumber": ["a", "b", "c", "d", "e", "f", "g"],
+              "accessionNumber": [A + "1", A + "2", A + "3", A + "4", A + "5", A + "6", A + "7"],
               "filingDate": ["2026-10-01", "2026-09-01", "2026-08-01", "2026-10-01", "2026-10-01", "2025-09-01", "2026-10-02"],
               "isXBRL": [1, 1, 1, 1, 0, 1, 1]}
     today = date(2026, 10, 29)
-    got = filings.missing(recent, {"g"}, today)
+    got = filings.missing(recent, {A + "7"}, today)
     # a, b, c are wanted; d is an 8-K; e has no XBRL; f is 423 days old; g has facts
-    assert got == [("10-Q", "a", "2026-10-01"), ("10-K/A", "b", "2026-09-01"), ("20-F", "c", "2026-08-01")]
-    assert filings.missing(recent, {"g"}, today, window_days=500)[-1] == ("10-K", "f", "2025-09-01")
+    assert got == [("10-Q", A + "1", "2026-10-01"), ("10-K/A", A + "2", "2026-09-01"), ("20-F", A + "3", "2026-08-01")]
+    assert filings.missing(recent, {A + "7"}, today, window_days=500)[-1] == ("10-K", A + "6", "2025-09-01")
     assert filings.missing({}, set(), today) == []                      # an answer with no filings is no finding
 
 
@@ -186,3 +187,40 @@ def test_a_10k_and_its_amendment_filed_the_same_day_are_one_finding(store, cfg):
     found, _ = _run(store, cfg, {CIK: answer})
     assert [(f.date_from, f.evidence["accession"]) for f in found] == [("2026-09-01", "0000999001-26-000051")]
     store.check_record("filings", found, "2026-10-29T12:00:00Z")      # one row per (symbol, field, date_from)
+
+
+def test_a_failed_fetch_does_not_lift_the_hold_it_could_not_re_examine(store, cfg):
+    _company(store)
+    _facts(store, "0000999001-26-000030", "0000999001-26-000020")
+    found, _ = _run(store, cfg, {CIK: SAMPLE})
+    store.check_record("filings", found, "2026-10-29T12:00:00Z")
+    [before] = store.check_open_findings("filings")
+    found, _ = _run(store, cfg, {CIK: HttpError(503, "https://data.sec.gov/x", "HTTP 503")},
+                    now=datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc))
+    assert sorted(f.severity for f in found) == ["hold", "info"]
+    store.check_record("filings", found, "2026-10-30T12:00:00Z")
+    rows = {r["severity"]: r for r in store.check_open_findings("filings")}
+    assert set(rows) == {"hold", "info"}
+    h = rows["hold"]
+    assert (h["id"], h["first_seen"], h["date_from"], h["message"], h["evidence"]) == \
+        (before["id"], before["first_seen"], before["date_from"], before["message"], before["evidence"])
+
+
+def test_a_garbled_cik_or_accession_is_that_companys_info_or_nothing_never_a_stop(store, cfg):
+    _company(store, "AAAA", "not-a-cik")
+    _company(store, "SMPL")
+    bad = {"filings": {"recent": {"form": ["10-Q", "10-Q", "10-Q"], "accessionNumber": [None, "x-1", 7],
+                                  "filingDate": ["2026-09-01"] * 3, "isXBRL": [1, 1, 1]}}}
+    found, _ = _run(store, cfg, {"not-a-cik": bad, CIK: SAMPLE})
+    by = {f.symbol: f for f in found}
+    assert "AAAA" not in by                                       # no filing nameable: nothing, never a hold
+    assert by["SMPL"].severity == "hold"
+    assert filings.missing(bad["filings"]["recent"], set(), date(2026, 10, 29)) == []
+
+
+def test_a_garbled_cik_with_a_real_looking_filing_is_an_info_finding_not_a_stop(store, cfg):
+    _company(store, "AAAA", "not-a-cik")
+    _company(store, "SMPL")
+    found, _ = _run(store, cfg, {"not-a-cik": SAMPLE, CIK: SAMPLE})
+    by = {f.symbol: f for f in found}
+    assert by["AAAA"].severity == "info" and by["SMPL"].severity == "hold"

@@ -653,6 +653,11 @@ class Store:
             sql, params = sql + " AND check_name = ?", (check_name,)
         return self.query(sql + " ORDER BY last_seen DESC, id DESC", params)
 
+    def check_open_findings_of(self, check_name: str, symbol: str) -> list[sqlite3.Row]:
+        """One symbol's open hold and warn findings of one check (not info), oldest first."""
+        return self.query("SELECT * FROM check_findings WHERE cleared_at IS NULL AND check_name = ? AND symbol = ? "
+                          "AND severity IN ('hold', 'warn') ORDER BY date_from, id", (check_name, symbol))
+
     def check_open_count(self, severity: str) -> int:
         """How many findings of this severity are open now, from every check."""
         return self.query("SELECT COUNT(*) FROM check_findings WHERE cleared_at IS NULL AND severity = ?",

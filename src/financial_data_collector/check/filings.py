@@ -13,17 +13,20 @@ as SEC writes them, with dashes; `sec_facts.accn` is stored the same way.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from zoneinfo import ZoneInfo
 
 from ..connections.redact import redact
 from . import CHECKS, CheckContext, Finding
+from .findings import still_open
 
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accn}/"
 FORMS = frozenset({"10-Q", "10-K", "20-F", "10-Q/A", "10-K/A", "20-F/A"})
 GRACE_DAYS = 3
 WINDOW_DAYS = 400
+ACCESSION = re.compile(r"\d{10}-\d{2}-\d{6}")      # as SEC writes it; anything else is not a filing we can name
 PAUSE_SECONDS = 1.0                    # between companies, as the SEC collector does
 NEW_YORK = ZoneInfo("America/New_York")
 
@@ -38,7 +41,7 @@ def missing(recent: dict, have_accns: set[str], today: date, grace_days: int = G
     xbrl = recent.get("isXBRL") or []
     out: list[tuple[str, str, str]] = []
     for i, (form, accn, filed) in enumerate(zip(forms, accns, filed_on)):
-        if form not in FORMS or accn in have_accns:
+        if form not in FORMS or not isinstance(accn, str) or not ACCESSION.fullmatch(accn) or accn in have_accns:
             continue
         if xbrl_only and not (i < len(xbrl) and xbrl[i] == 1):
             continue
@@ -70,23 +73,27 @@ def filings_caught_up(ctx: CheckContext) -> list[Finding]:
     for n, (cik, symbols) in enumerate(by_cik.items()):
         if n:
             ctx.sleep(PAUSE_SECONDS)
+        found: list[Finding] = []
         try:
             data = json.loads(ctx.fetch(SUBMISSIONS_URL.format(cik=cik), _headers(user_agent)))
             lacking = missing((data.get("filings") or {}).get("recent") or {}, ctx.store.check_sec_accessions(cik), today)
-        except Exception as e:           # one company SEC will not answer must not stop the rest
+            days: set[str] = set()
+            for form, accn, filed in lacking:
+                if filed in days:        # a finding is keyed by its day: the newest-listed filing of that day speaks for it
+                    continue
+                days.add(filed)
+                url = ARCHIVE_URL.format(cik=int(cik), accn=accn.replace("-", ""))
+                found += [Finding("filings", s, "*", filed, None, "hold",
+                                  f"SEC lists {form} {accn} filed {filed}, but the warehouse has no SEC facts from it",
+                                  {"form": form, "accession": accn, "filed": filed, "url": url}) for s in symbols]
+        except Exception as e:           # one company SEC will not answer must not stop the rest, nor lift its holds
             note = redact(f"{type(e).__name__}: {e}", [user_agent])
-            out += [Finding("filings", s, "*", today.isoformat(), None, "info",
-                            f"could not ask SEC for the filings list: {note}", {"cik": cik}) for s in symbols]
-            continue
-        days: set[str] = set()
-        for form, accn, filed in lacking:
-            if filed in days:            # a finding is keyed by its day: the newest-listed filing of that day speaks for it
-                continue
-            days.add(filed)
-            url = ARCHIVE_URL.format(cik=int(cik), accn=accn.replace("-", ""))
-            out += [Finding("filings", s, "*", filed, None, "hold",
-                            f"SEC lists {form} {accn} filed {filed}, but the warehouse has no SEC facts from it",
-                            {"form": form, "accession": accn, "filed": filed, "url": url}) for s in symbols]
+            found = []
+            for s in symbols:
+                found.append(Finding("filings", s, "*", today.isoformat(), None, "info",
+                                     f"could not ask SEC for the filings list: {note}", {"cik": cik}))
+                found += still_open(ctx.store, "filings", s)      # not asked is not cleared
+        out += found
     return out
 
 

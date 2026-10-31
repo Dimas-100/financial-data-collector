@@ -294,3 +294,38 @@ def test_sync_runs_check_last_and_a_failing_check_does_not_fail_the_sync(project
 def test_check_is_not_a_network_step_and_goes_stale_in_two_days():
     assert "check" not in sync.NETWORK_STEPS and sync.STALE_HOURS["check"] == 48
     assert sync.STEPS[-1] == "check"
+
+
+def _with_submissions(fixtures: Path, answer):
+    inner = _fetch(fixtures)
+
+    def fetch(url, headers):
+        if "submissions/CIK0000000001" in url:
+            return json.dumps(answer).encode()
+        return inner(url, headers)
+    return fetch
+
+
+def test_sync_check_step_holds_a_company_for_a_filing_sec_lists_and_the_warehouse_lacks(project, fixtures: Path):
+    answer = {"filings": {"recent": {
+        "form": ["10-Q"], "accessionNumber": ["0000000001-26-000007"], "filingDate": ["2026-02-10"], "isXBRL": [1]}}}
+    rep = sync.run_sync(project, fetch=_with_submissions(fixtures, answer), now=NOW, yf=lambda s, d: [],
+                        sleep=lambda s: None)
+    last = rep.steps[-1]
+    assert last.step == "check" and last.status == "ok" and rep.exit_code == 0 and "filings:" not in last.message
+    s = Store.open(project.db_path, migrate=False)
+    rows = s.check_open_findings("filings")
+    s.close()
+    [hold] = [r for r in rows if r["severity"] == "hold"]
+    assert (hold["symbol"], hold["field"], hold["date_from"]) == ("AAPL", "*", "2026-02-10")
+    assert json.loads(hold["evidence"])["accession"] == "0000000001-26-000007"
+
+
+def test_sync_check_step_when_sec_has_no_submissions_is_an_info_finding_and_no_error(project, fixtures: Path):
+    rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    last = rep.steps[-1]
+    assert last.status == "ok" and "0 errors" in last.message
+    s = Store.open(project.db_path, migrate=False)
+    rows = s.check_open_findings("filings")
+    s.close()
+    assert [(r["symbol"], r["severity"]) for r in rows] == [("AAPL", "info")]

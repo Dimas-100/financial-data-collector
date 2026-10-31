@@ -1,6 +1,7 @@
 """What a check returns: one Finding per thing it would hold back or warn about."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 SEVERITIES = ("hold", "warn", "info")
@@ -23,3 +24,19 @@ class Finding:
     def __post_init__(self) -> None:
         if self.severity not in SEVERITIES:
             raise ValueError(f"severity must be one of {SEVERITIES}, not {self.severity!r}")
+
+
+def still_open(store, check_name: str, symbol: str) -> list[Finding]:
+    """This symbol's open hold and warn findings of one check, rebuilt unchanged. A check that could not look
+    at a symbol today (its outside source failed) returns these with whatever it did find, so that recording the
+    run does not clear what it could not re-examine: not asked is not cleared. Same keys as before, so they stay
+    open with their first_seen."""
+    out: list[Finding] = []
+    for r in store.check_open_findings_of(check_name, symbol):
+        try:
+            evidence = json.loads(r["evidence"]) if r["evidence"] else {}
+        except ValueError:
+            evidence = {}
+        out.append(Finding(r["check_name"], r["symbol"], r["field"], r["date_from"], r["date_to"], r["severity"],
+                           r["message"], evidence))
+    return out
