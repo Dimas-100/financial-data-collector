@@ -235,3 +235,36 @@ def test_every_valuation_column_and_star_are_accepted_as_a_field(cfg):
     assert {"close", "pe", "status", "dividend_yield"} <= set(cols)
     rep = _run(cfg, {"a": lambda ctx: [_finding("a", field=c) for c in cols + ["*"]]})
     assert rep.errors == []
+
+
+def _derive_ok(cfg):
+    s = Store.open(cfg.db_path, migrate=False)
+    s.log_run("20260301T100000Z", "derive", "ok", 1, "", "2026-03-01T10:00:00Z", "2026-03-01T10:01:00Z")
+    s.close()
+
+
+def test_a_full_clean_run_stamps_the_derive_it_covered(cfg):
+    _derive_ok(cfg)
+    _run(cfg, {"a": lambda ctx: [], "b": lambda ctx: []})
+    assert _rows(cfg, "SELECT derive_run_id FROM check_runs")[0][0] == "20260301T100000Z"
+
+
+def test_a_run_of_only_some_checks_does_not_stamp_the_derive(cfg):
+    _derive_ok(cfg)
+    _run(cfg, {"a": lambda ctx: [], "b": lambda ctx: []}, only=["a"])
+    assert _rows(cfg, "SELECT derive_run_id FROM check_runs")[0][0] is None
+
+
+def test_a_run_where_a_check_failed_does_not_stamp_the_derive(cfg):
+    def boom(ctx):
+        raise RuntimeError("no network")
+
+    _derive_ok(cfg)
+    _run(cfg, {"a": boom, "b": lambda ctx: []})
+    assert _rows(cfg, "SELECT derive_run_id FROM check_runs")[0][0] is None
+
+
+def test_only_naming_every_check_is_a_full_run_and_stamps_the_derive(cfg):
+    _derive_ok(cfg)
+    _run(cfg, {"a": lambda ctx: [], "b": lambda ctx: []}, only=["a", "b"])
+    assert _rows(cfg, "SELECT derive_run_id FROM check_runs")[0][0] == "20260301T100000Z"

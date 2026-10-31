@@ -288,7 +288,7 @@ def test_sync_runs_check_last_and_a_failing_check_does_not_fail_the_sync(project
     s = Store.open(project.db_path, migrate=False)
     run = s.query("SELECT * FROM check_runs")[0]
     s.close()
-    assert run["run_id"] == rep.run_id and run["derive_run_id"] == rep.run_id
+    assert run["run_id"] == rep.run_id and run["derive_run_id"] is None     # a run where a check failed covers no derive
 
 
 def test_check_is_not_a_network_step_and_goes_stale_in_two_days():
@@ -327,7 +327,9 @@ def test_sync_check_step_when_sec_has_no_submissions_is_an_info_finding_and_no_e
     assert last.status == "ok" and "0 errors" in last.message
     s = Store.open(project.db_path, migrate=False)
     rows = s.check_open_findings("filings")
+    run = s.check_last_run()
     s.close()
+    assert run["derive_run_id"] == rep.run_id                   # a clean run of every check covers the sync's derive
     assert [(r["symbol"], r["severity"]) for r in rows] == [("AAPL", "info")]
 
 

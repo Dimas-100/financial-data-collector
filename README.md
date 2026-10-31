@@ -128,7 +128,8 @@ names: the held fields (and the ratios built on them) are `NULL`; the other valu
 ones, so a `NULL` is "not known", never zero. Its `status` is `held` when an open hold covers the row (the row was
 otherwise `ok`); a row that was already `stale` or `unsupported` keeps that status. `hold_ids` lists the covering
 `check_findings` ids, `status_reason` gives the messages, and `checked_at` is when the checker last covered the newest
-derive. `valuation_daily` itself is never changed by a hold: it stays the raw record, so a cleared hold brings the
+derive: a run of every check with none failing (a run of `--only` some checks, or one where a check raised, is recorded
+with no `derive_run_id` and leaves `checked_at` where it was). `valuation_daily` itself is never changed by a hold: it stays the raw record, so a cleared hold brings the
 values straight back. Warnings and notes change nothing; they are for a person to look at.
 
 ## Claude Desktop

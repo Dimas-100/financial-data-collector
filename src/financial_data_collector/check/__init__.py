@@ -112,7 +112,10 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
             warns += sum(1 for f in found if f.severity == "warn")
         finished = (now + timedelta(seconds=time.monotonic() - t0)).strftime("%Y-%m-%dT%H:%M:%SZ")
         ran = len(names) - len(errors)
-        st.check_log_run(run_id, started_at=stamp, finished_at=finished, derive_run_id=st.check_derive_run_id(),
+        # Only a run of every check, none of which failed, has covered the derive: that is what stamps
+        # valuation_latest.checked_at. A partial or failed run is recorded with no derive.
+        covered = st.check_derive_run_id() if set(names) == set(CHECKS) and not errors else None
+        st.check_log_run(run_id, started_at=stamp, finished_at=finished, derive_run_id=covered,
                          checks_run=ran, holds=holds, warns=warns, error="; ".join(errors) or None)
         return CheckReport(run_id=run_id, holds=holds, warns=warns, errors=errors, checks_run=ran,
                            open_holds=st.check_open_count("hold"))
