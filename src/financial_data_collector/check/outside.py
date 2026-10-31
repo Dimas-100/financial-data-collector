@@ -12,6 +12,7 @@ tests pass a fake. The Tiingo side goes through `ctx.fetch` with the configured 
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Protocol
@@ -58,19 +59,24 @@ def _number(x: object) -> float | None:
 
 
 class YahooSource:
-    """Yahoo through yfinance, which is imported when first needed: tests and offline runs never load it."""
+    """Yahoo through yfinance, which is imported when first needed: tests and offline runs never load it.
+    With `auto_adjust=False` the Close is split-adjusted but not dividend-adjusted, so it equals the day's
+    printed close for the newest bar, the only one the checks ask about. yfinance logs each failed call as an
+    error of its own; those lines are silenced, since a failure comes back to the check as an exception or None."""
 
     def quote(self, symbol: str, on: str) -> Quote | None:
         import yfinance as yf
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
         end = (date.fromisoformat(on) + timedelta(days=1)).isoformat()
         hist = yf.Ticker(to_yfinance(symbol)).history(start=on, end=end, auto_adjust=False)
         if hist is None or len(hist) == 0:
             return None
         close = _number(hist["Close"].iloc[-1])
-        return None if close is None else Quote(close, str(hist.index[-1])[:10])
+        return None if close is None else Quote(close, hist.index[-1].strftime("%Y-%m-%d"))
 
     def figures(self, symbol: str) -> Figures | None:
         import yfinance as yf
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
         info = yf.Ticker(to_yfinance(symbol)).info or {}
         figs = Figures(_number(info.get("trailingEps")), _number(info.get("marketCap")),
                        _number(info.get("totalRevenue")), _number(info.get("freeCashflow")))
@@ -117,6 +123,18 @@ def _split_adjusted(ours: float, theirs: float, factor: float) -> tuple[float, f
     return ours, theirs
 
 
+def _difference(ours: float, theirs: float, factor: float, warn: float) -> tuple[float, bool]:
+    """How far apart two closes are, as a fraction of `theirs`, and whether a split explains part of it. The raw
+    closes are compared first; the split is allowed in only when the raw difference is over `warn` and the
+    split-adjusted one is smaller (a 1.05 stock dividend must not turn two equal closes into a 5% difference)."""
+    raw = abs(ours - theirs) / abs(theirs)
+    if raw <= warn or factor == 1:
+        return raw, False
+    a, b = _split_adjusted(ours, theirs, factor)
+    adjusted = abs(a - b) / abs(b)
+    return (adjusted, True) if adjusted < raw else (raw, False)
+
+
 def _tiingo_quote(ctx: CheckContext, symbol: str, on: str) -> Quote | None:
     raw = ctx.fetch(TIINGO_DAY_URL.format(sym=to_tiingo(symbol), on=on),
                     {"Authorization": f"Token {ctx.cfg.tiingo_token}", "Accept": "application/json"})
@@ -158,12 +176,12 @@ def second_price(ctx: CheckContext) -> list[Finding]:
         except Exception as e:           # one symbol an outside source will not answer must not stop the rest
             out += _failure(ctx, "prices2", symbol, "close", on, f"could not ask {other} for the close: {type(e).__name__}: {e}")
             continue
-        a, b = _split_adjusted(ours, quote.close, factor)
-        if b == 0:
+        if quote.close == 0:
+            out += _failure(ctx, "prices2", symbol, "close", on, f"not compared: {other}'s close for {on} is 0")
             continue
-        diff = abs(a - b) / abs(b)
+        diff, split_used = _difference(ours, quote.close, factor, cfg.price_warn)
         evidence = {"ours": ours, "theirs": quote.close, "source": source, "other": other.lower(), "date": on,
-                    "difference": round(diff, 6), "split_factor": factor}
+                    "difference": round(diff, 6), "split_factor": factor, "split_adjusted": split_used}
         text = f"close {_num(ours)} on {on} ({source}) is {_pct(diff)} from {other}'s {_num(quote.close)}"
         if diff > cfg.price_hold:
             out.append(Finding("prices2", symbol, "*", on, None, "hold", text + f" (more than {_pct(cfg.price_hold)})", evidence))
@@ -176,6 +194,29 @@ def second_price(ctx: CheckContext) -> list[Finding]:
 
 FIELDS = (("eps_ttm", "trailing_eps"), ("market_cap", "market_cap"), ("revenue_ttm", "revenue"),
           ("fcf_ttm", "free_cash_flow"))            # (our valuation column, the outside figure)
+DEPENDENTS = {"eps_ttm": ("pe",), "revenue_ttm": ("ps",), "market_cap": ("ps", "p_fcf")}
+# the ratios built on a figure: a hold on the figure holds them too, or they would show a number built on it.
+# fcf_ttm is warn-only, so p_fcf is held only through market_cap.
+SMALL_EPS = 0.25                # EPS this small on both sides: a few cents of rounding is a big fraction, warn only
+
+
+def _warn_only(column: str, ours: float, theirs: float) -> str | None:
+    """Why a comparison may warn but never hold, or None. Yahoo's free cash flow is a levered figure, not our
+    operating cash flow less capital spending, so the two can differ by definition alone."""
+    if column == "fcf_ttm":
+        return "Yahoo's free cash flow is defined differently from ours"
+    if column == "eps_ttm" and max(abs(ours), abs(theirs)) < SMALL_EPS:
+        return "EPS this small is mostly rounding"
+    return None
+
+
+def _not_compared(ctx: CheckContext, symbol: str, column: str, on: str, why: str) -> list[Finding]:
+    """A figure that could not be compared (Yahoo's value is 0): an info saying so, and the open findings on that
+    figure and the ratios built on it, which this run could not re-examine."""
+    mine = {column, *DEPENDENTS.get(column, ())}
+    kept = [k for k in still_open(ctx.store, "figures", symbol) if k.field in mine]
+    info = Finding("figures", symbol, column, on, None, "info", f"not compared: {why}", {})
+    return kept if any((k.field, k.date_from) == (column, on) for k in kept) else kept + [info]
 
 
 def outside_figures(ctx: CheckContext) -> list[Finding]:
@@ -210,12 +251,17 @@ def outside_figures(ctx: CheckContext) -> list[Finding]:
                                    f"{column} is not known here, but Yahoo has {_num(theirs)}", evidence))
                 continue
             if theirs == 0:
+                out += _not_compared(ctx, symbol, column, row["date"], f"Yahoo's {name} is 0")
                 continue
             diff = abs(ours - theirs) / abs(theirs)
             evidence["difference"] = round(diff, 6)
             text = f"{column} {_num(ours)} is {_pct(diff)} from Yahoo's {_num(theirs)}"
-            if diff > cfg.figure_hold:
+            warn_only = _warn_only(column, ours, theirs)
+            if diff > cfg.figure_hold and warn_only is None:
                 out.append(Finding("figures", symbol, column, row["date"], None, "hold", text + f" (more than {_pct(cfg.figure_hold)})", evidence))
+                out += [Finding("figures", symbol, dep, row["date"], None, "hold",
+                                f"built on {column}: {text} (more than {_pct(cfg.figure_hold)})", evidence)
+                        for dep in DEPENDENTS.get(column, ())]
             elif diff > cfg.figure_warn:
                 out.append(Finding("figures", symbol, column, row["date"], None, "warn", text + f" (more than {_pct(cfg.figure_warn)})", evidence))
     return out

@@ -158,6 +158,25 @@ def test_without_a_split_a_factor_of_two_is_a_hold(store, cfg):
     assert h.severity == "hold"
 
 
+def test_a_stock_dividend_factor_with_equal_closes_is_not_a_difference(store, cfg):
+    _held(store, close=100.0, split=1.05)
+    assert _prices2(store, cfg, FakeOutside({"AAA": Q(100.0, DAY)})) == []
+    [w] = _prices2(store, cfg, FakeOutside({"AAA": Q(101.0, DAY)}))        # a real gap still shows, unadjusted
+    assert (w.severity, w.evidence["split_adjusted"]) == ("warn", False)
+
+
+def test_a_two_for_one_with_one_side_pre_split_compares_equal(store, cfg):
+    _held(store, close=100.0, split=2.0)
+    assert _prices2(store, cfg, FakeOutside({"AAA": Q(200.0, DAY)})) == []         # theirs still pre-split
+    assert _prices2(store, cfg, FakeOutside({"AAA": Q(50.0, DAY)})) == []          # ours still pre-split
+
+
+def test_a_zero_close_is_not_compared_and_says_so(store, cfg):
+    _held(store, close=100.0)
+    [f] = _prices2(store, cfg, FakeOutside({"AAA": Q(0.0, DAY)}))
+    assert f.severity == "info" and f.message.startswith("not compared")
+
+
 def test_money_market_and_crypto_are_not_asked(store, cfg):
     _held(store, "SPAXX", asset_type="money_market")
     _held(store, "BTC", asset_type="crypto")
@@ -243,10 +262,47 @@ def test_figure_15pct_apart_warns_40pct_holds_on_that_field(store, cfg):
     found = _figures(store, cfg, FakeOutside(figs={"AAA": F(trailing_eps=1.0, market_cap=1000 / 0.8, revenue=1000 / 0.5,
                                                           free_cash_flow=1000.0)}))
     by = {f.field: f for f in found}
-    assert set(by) == {"market_cap", "revenue_ttm"}
+    assert set(by) == {"market_cap", "revenue_ttm", "ps"}      # ps is held with the revenue it is built on
     assert by["market_cap"].severity == "warn"           # ours is 20% below Yahoo's
     assert by["revenue_ttm"].severity == "hold"          # 50% below
     assert by["revenue_ttm"].evidence["ours"] == 1000.0 and by["revenue_ttm"].evidence["theirs"] == 2000.0
+
+
+def test_free_cash_flow_never_holds_at_any_size(store, cfg):
+    _held(store)
+    _valuation(store, fcf_ttm=1.0, p_fcf=50.0)
+    [f] = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, None, None, 1000.0)}))
+    assert (f.field, f.severity) == ("fcf_ttm", "warn")
+
+
+def test_tiny_eps_only_warns(store, cfg):
+    _held(store)
+    _valuation(store, eps_ttm=0.05, pe=2000.0)
+    [f] = _figures(store, cfg, FakeOutside(figs={"AAA": F(0.20, None, None, None)}))      # 75% apart, but cents
+    assert (f.field, f.severity) == ("eps_ttm", "warn")
+    found = _figures(store, cfg, FakeOutside(figs={"AAA": F(2.0, None, None, None)}))     # a real EPS: holds
+    assert {(f.field, f.severity) for f in found} == {("eps_ttm", "hold"), ("pe", "hold")}
+
+
+def test_a_figures_hold_holds_the_ratios_built_on_it(store, cfg):
+    _held(store)
+    _valuation(store, eps_ttm=2.0, pe=50.0, market_cap=1000.0, ps=5.0, p_fcf=20.0, revenue_ttm=200.0)
+    found = _figures(store, cfg, FakeOutside(figs={"AAA": F(5.0, 1000.0, None, None)}))
+    by = {f.field: f for f in found}
+    assert set(by) == {"eps_ttm", "pe"} and by["pe"].severity == "hold" and "built on eps_ttm" in by["pe"].message
+    assert (by["pe"].date_from, by["pe"].evidence) == (by["eps_ttm"].date_from, by["eps_ttm"].evidence)
+    store.check_record("figures", found, "2026-10-29T12:00:00Z")
+    r = store.query("SELECT eps_ttm, pe, market_cap, ps FROM valuation_latest WHERE symbol = 'AAA'")[0]
+    assert (r["eps_ttm"], r["pe"]) == (None, None) and (r["market_cap"], r["ps"]) == (1000.0, 5.0)
+    found = _figures(store, cfg, FakeOutside(figs={"AAA": F(2.0, 100.0, None, None)}))     # market_cap 10x off
+    assert {f.field for f in found} == {"market_cap", "ps", "p_fcf"}
+
+
+def test_a_zero_figure_outside_is_not_compared_and_says_so(store, cfg):
+    _held(store)
+    _valuation(store, market_cap=1000.0)
+    [f] = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, 0.0, None, None)}))
+    assert (f.field, f.severity) == ("market_cap", "info") and f.message.startswith("not compared")
 
 
 def test_figures_inside_the_warn_band_are_fine(store, cfg):
@@ -259,7 +315,9 @@ def test_figures_map_to_their_columns(store, cfg):
     _held(store)
     _valuation(store, market_cap=100.0, eps_ttm=100.0, revenue_ttm=100.0, fcf_ttm=100.0)
     found = _figures(store, cfg, FakeOutside(figs={"AAA": F(1.0, 1.0, 1.0, 1.0)}))
-    assert {f.field for f in found} == {"eps_ttm", "market_cap", "revenue_ttm", "fcf_ttm"}
+    by = {f.field: f for f in found}
+    assert {"eps_ttm", "market_cap", "revenue_ttm", "fcf_ttm"} <= set(by)
+    assert by["fcf_ttm"].severity == "warn"              # never a hold: Yahoo's free cash flow is defined differently
 
 
 def test_figures_only_for_stocks_whose_values_are_ok(store, cfg):
@@ -282,12 +340,12 @@ def test_figures_for_a_symbol_not_held_are_not_asked(store, cfg):
 def test_figures_outside_failure_is_info_and_keeps_open_holds(store, cfg, answer):
     _held(store)
     _valuation(store, market_cap=100.0)
-    [hold] = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, 1000.0, None, None)}))
-    assert hold.severity == "hold"
-    store.check_record("figures", [hold], "2026-10-28T20:00:00Z")
+    holds = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, 1000.0, None, None)}))
+    assert {f.field for f in holds} == {"market_cap", "ps", "p_fcf"} and {f.severity for f in holds} == {"hold"}
+    store.check_record("figures", holds, "2026-10-28T20:00:00Z")
     found = _figures(store, cfg, FakeOutside(figs={"AAA": answer}))
-    assert hold in found and any(f.severity == "info" for f in found)
-    assert not [f for f in found if f.severity == "hold" and f != hold]
+    assert all(h in found for h in holds) and any(f.severity == "info" for f in found)
+    assert not [f for f in found if f.severity == "hold" and f not in holds]
 
 
 def test_figure_error_texts_are_redacted(store, cfg):
@@ -302,6 +360,63 @@ def test_figure_error_texts_are_redacted(store, cfg):
 def test_the_yahoo_source_has_the_two_calls():
     src = outside.YahooSource()
     assert callable(src.quote) and callable(src.figures)
+
+
+def _fake_yfinance(monkeypatch, frame=None, info=None):
+    import logging
+    import sys
+    import types
+    calls = []
+
+    class Ticker:
+        def __init__(self, symbol):
+            calls.append(("Ticker", symbol))
+            self.info = info
+
+        def history(self, **kw):
+            calls.append(("history", kw))
+            return frame
+
+    mod = types.ModuleType("yfinance")
+    mod.Ticker = Ticker
+    monkeypatch.setitem(sys.modules, "yfinance", mod)
+    monkeypatch.setattr(logging.getLogger("yfinance"), "level", logging.NOTSET)
+    return calls
+
+
+def test_yahoo_quote_asks_for_one_day_and_reads_the_date_from_a_tz_aware_index(monkeypatch):
+    import pandas as pd
+    idx = pd.DatetimeIndex(["2026-10-28 00:00:00"], tz="America/New_York")
+    frame = pd.DataFrame({"Close": [123.45]}, index=idx)
+    calls = _fake_yfinance(monkeypatch, frame=frame)
+    assert outside.YahooSource().quote("BRK.B", "2026-10-28") == Q(123.45, "2026-10-28")
+    assert ("Ticker", "BRK-B") in calls
+    [kw] = [c[1] for c in calls if c[0] == "history"]
+    assert kw == {"start": "2026-10-28", "end": "2026-10-29", "auto_adjust": False}        # end is exclusive
+
+
+def test_yahoo_quote_with_an_empty_frame_is_none(monkeypatch):
+    import pandas as pd
+    _fake_yfinance(monkeypatch, frame=pd.DataFrame({"Close": []}, index=pd.DatetimeIndex([], tz="America/New_York")))
+    assert outside.YahooSource().quote("AAA", "2026-10-28") is None
+
+
+def test_yahoo_figures_map_the_info_keys_and_drop_junk(monkeypatch):
+    _fake_yfinance(monkeypatch, info={"trailingEps": 2.5, "marketCap": 1e9, "totalRevenue": "n/a", "freeCashflow": float("nan")})
+    assert outside.YahooSource().figures("AAA") == F(2.5, 1e9, None, None)
+    _fake_yfinance(monkeypatch, info={})
+    assert outside.YahooSource().figures("AAA") is None
+
+
+def test_yahoo_calls_silence_the_yfinance_logger(monkeypatch):
+    import logging
+    import pandas as pd
+    _fake_yfinance(monkeypatch, frame=pd.DataFrame({"Close": []}, index=pd.DatetimeIndex([], tz="UTC")), info={})
+    outside.YahooSource().quote("AAA", "2026-10-28")
+    assert logging.getLogger("yfinance").level == logging.CRITICAL
+    logging.getLogger("yfinance").setLevel(logging.NOTSET)
+    outside.YahooSource().figures("AAA")
+    assert logging.getLogger("yfinance").level == logging.CRITICAL
 
 
 def test_run_check_builds_the_default_source_only_when_a_check_asks(store, cfg, monkeypatch):
