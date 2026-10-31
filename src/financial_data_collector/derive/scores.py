@@ -41,8 +41,10 @@ INPUTS: dict[str, tuple[str, ...]] = {
     "pe": ("pe", "close"), "p_fcf": ("p_fcf", "close"), "ps": ("ps", "close"), "ev_ebit": ("market_cap", "close"),
     "dividend_yield": ("dividend_yield", "close"),
     "implied_growth": ("market_cap", "fcf_ttm", "close"), "buyback_yield": ("market_cap", "close"),
-    "fcf_growth_5y": (), "revenue_growth_5y": (), "fcf_margin_change": (), "op_margin_change": (),
-    "net_debt_ebitda": (), "last_surprise": (), "estimate_change_30d": (), "insider_net_90d": (),
+    # The margins name the valuation_daily columns the checker's `figures` check holds for their TTM figures (R11).
+    "fcf_margin_change": ("revenue_ttm", "fcf_ttm"), "op_margin_change": ("revenue_ttm",),
+    "fcf_growth_5y": (), "revenue_growth_5y": (), "net_debt_ebitda": (), "last_surprise": (),
+    "estimate_change_30d": (), "insider_net_90d": (),
 }
 NOT_COMPUTED = {                      # why an `ok` row has no value when no hold blanked it
     "pe": "earnings not positive",
@@ -212,8 +214,10 @@ IMPLIED_METHOD = "10 years of FCF growth, then terminal_growth, discounted at di
 OUT_OF_RANGE = "needs more than 100% or less than -50% a year"
 CAGR_YEARS = 5
 YEAR_EARLIER_DAYS = (350, 380)        # the TTM row a margin is compared with ends this many days earlier
-ESTIMATE_DAYS = 30
+ESTIMATE_DAYS = 30                   # the `then` snapshot is 30-45 days before `now`
+ESTIMATE_MAX_DAYS = 45
 ESTIMATE_PERIOD = "0y"
+SNAPSHOT_MAX_AGE_DAYS = 7            # a feed or snapshot older than this before the row's day is not used (R9)
 INSIDER_DAYS = 90
 INSIDER_FILE = "insider.json"
 REPORT_BETWEEN = "a report fell between the two snapshots; the year may have rolled"
@@ -292,6 +296,10 @@ def read_insider(path: Path) -> tuple[dict[str, list[dict]], str | None]:
             kept.append({"filed": filed, "accession": _text(e.get("accession")),
                          "direction": direction.lower() if direction else "other"})
     return out, as_of
+
+
+def _days_before(day: str, n: int) -> str:
+    return (date.fromisoformat(day) - timedelta(days=n)).isoformat()
 
 
 def _covers(hold: dict, day: str) -> bool:
@@ -491,19 +499,23 @@ def fundamental_scores(symbol: str, day: str, newest: dict | None, ttm: dict[str
         src.append(sources.feed("Yahoo earnings dates", None, e.report_date))
         out.append(row("last_surprise", e.surprise_pct, "ok", src=src))
 
-    # the change in this fiscal year's EPS estimate over at least 30 days
+    # the change in this fiscal year's EPS estimate over 30-45 days, the newer snapshot at most 7 days old
     snaps = [(r["date"], r["eps_avg"]) for r in estimates if r["eps_avg"] is not None and r["date"] <= day]
     label = f"Yahoo EPS estimates ({ESTIMATE_PERIOD})"
     if not snaps:
         out.append(row("estimate_change_30d", reason="no EPS estimate on record"))
     else:
         now_d, now_v = snaps[-1]
-        cutoff = (date.fromisoformat(now_d) - timedelta(days=ESTIMATE_DAYS)).isoformat()
-        older = [x for x in snaps if x[0] <= cutoff]
-        if not older:
+        now_src = (sources.feed(label, now_d, f"{now_d} {now_v}"),)
+        older = [x for x in snaps if x[0] <= _days_before(now_d, ESTIMATE_DAYS)]
+        if _days_before(day, SNAPSHOT_MAX_AGE_DAYS) > now_d:
+            out.append(row("estimate_change_30d", reason=f"newest estimate snapshot is from {now_d}", src=now_src))
+        elif not older:
             out.append(row("estimate_change_30d", status="not_enough_history",
-                           reason=f"estimate snapshots start {snaps[0][0]}",
-                           src=(sources.feed(label, now_d, f"{now_d} {now_v}"),)))
+                           reason=f"estimate snapshots start {snaps[0][0]}", src=now_src))
+        elif older[-1][0] < _days_before(now_d, ESTIMATE_MAX_DAYS):
+            out.append(row("estimate_change_30d", status="not_enough_history", src=now_src,
+                           reason=f"no estimate snapshot {ESTIMATE_DAYS}-{ESTIMATE_MAX_DAYS} days before {now_d}"))
         else:
             then_d, then_v = older[-1]
             src = (sources.feed(label, now_d, f"{then_d} {then_v} -> {now_d} {now_v}"),)
@@ -514,9 +526,16 @@ def fundamental_scores(symbol: str, day: str, newest: dict | None, ttm: dict[str
             else:
                 out.append(row("estimate_change_30d", (now_v - then_v) / abs(then_v), "ok", src=src))
 
-    # net insider buying: buys minus sells filed in the 90 days ending `day`
+    # net insider buying: buys minus sells filed in the 90 days ending `day`, from a feed at most 7 days old
+    feed_day = _iso_day(insider[1]) if insider is not None else None
     if insider is None:
         out.append(row("insider_net_90d", reason="insider feed not found"))
+    elif feed_day is None:
+        out.append(row("insider_net_90d", reason="insider feed has no date",
+                       src=(sources.feed(INSIDER_FILE, insider[1], None),)))
+    elif feed_day < _days_before(day, SNAPSHOT_MAX_AGE_DAYS):
+        out.append(row("insider_net_90d", reason=f"insider feed is from {feed_day}",
+                       src=(sources.feed(INSIDER_FILE, insider[1], None),)))
     elif insider[0] is None:
         out.append(row("insider_net_90d", reason="not in the insider feed",
                        src=(sources.feed(INSIDER_FILE, insider[1], None),)))

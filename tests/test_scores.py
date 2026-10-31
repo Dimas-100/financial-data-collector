@@ -560,7 +560,8 @@ def test_every_fundamental_gets_a_row_with_its_inputs(store, cfg):
     rows = _run(store, cfg)
     assert set(FUNDAMENTALS) <= set(rows)
     for m in FUNDAMENTALS:
-        want = {"implied_growth": ",market_cap,fcf_ttm,close,", "buyback_yield": ",market_cap,close,"}.get(m, "")
+        want = {"implied_growth": ",market_cap,fcf_ttm,close,", "buyback_yield": ",market_cap,close,",
+                "fcf_margin_change": ",revenue_ttm,fcf_ttm,", "op_margin_change": ",revenue_ttm,"}.get(m, "")
         assert rows[m]["inputs"] == want, m
         assert rows[m]["percentile_5y"] is None and rows[m]["band"] is None
 
@@ -682,6 +683,37 @@ def test_margins_compare_with_the_ttm_a_year_earlier(store, cfg):     # fcf marg
     assert derived and "2025-06-30" in derived[0]["ref"] and "2026-06-30" in derived[0]["ref"]
 
 
+def test_a_revenue_hold_on_the_newest_day_holds_both_margins(store, cfg):     # R11
+    _company(store)
+    _quarters(store, {"revenue": 100.0, "ocf": 25.0, "capex": 5.0, "operating_income": 30.0})
+    _hold(store, "figures", "AAA", "revenue_ttm", END, END, "revenue disagrees")
+    rows = _run(store, cfg)
+    for m in ("fcf_margin_change", "op_margin_change"):
+        assert (rows[m]["status"], rows[m]["value"], rows[m]["status_reason"]) == ("held", None, "revenue disagrees")
+    assert rows["net_debt_ebitda"]["status"] != "held" and rows["implied_growth"]["status"] == "ok"
+
+
+def test_an_fcf_hold_holds_the_fcf_margin_not_the_operating_margin(store, cfg):
+    _company(store)
+    _quarters(store, {"revenue": 100.0, "ocf": 25.0, "capex": 5.0, "operating_income": 30.0})
+    _hold(store, "figures", "AAA", "fcf_ttm", END, END, "free cash flow disagrees")
+    rows = _run(store, cfg)
+    assert rows["fcf_margin_change"]["status"] == "held" and rows["op_margin_change"]["status"] == "ok"
+
+
+def test_view_blanks_both_margins_under_a_revenue_hold_after_the_build(store, cfg):
+    _company(store)
+    _quarters(store, {"revenue": 100.0, "ocf": 25.0, "capex": 5.0, "operating_income": 30.0})
+    rows = _run(store, cfg)
+    assert rows["fcf_margin_change"]["inputs"] == ",revenue_ttm,fcf_ttm,"
+    assert rows["op_margin_change"]["inputs"] == ",revenue_ttm,"
+    _hold(store, "figures", "AAA", "revenue_ttm", END, END, "revenue disagrees")
+    view = _scores(store, "AAA", "valuation_scores")
+    for m in ("fcf_margin_change", "op_margin_change"):
+        assert (view[m]["status"], view[m]["value"], view[m]["status_reason"]) == ("held", None, "revenue disagrees")
+    assert _scores(store, "AAA")["op_margin_change"]["status"] == "ok"                 # raw is never changed
+
+
 def test_margins_without_a_ttm_a_year_earlier_are_not_enough_history(store, cfg):
     _company(store)
     _quarters(store, {}, {"revenue": 100.0, "ocf": 20.0, "capex": 5.0, "operating_income": 20.0})   # one TTM row
@@ -763,6 +795,35 @@ def test_estimate_change_from_zero_is_unsupported(store, cfg):
     assert (r["status"], r["value"]) == ("unsupported", None)
 
 
+def test_estimate_change_needs_a_fresh_newest_snapshot(store, cfg):          # R9: 7 days old is fine, 8 is not
+    assert scores.SNAPSHOT_MAX_AGE_DAYS == 7
+    _company(store)
+    now = _days_before(END, 7)
+    _estimates(store, {_days_before(now, 40): 5.0, now: 5.5})
+    r = _run(store, cfg)["estimate_change_30d"]
+    assert r["status"] == "ok" and r["value"] == pytest.approx(0.10)
+    store.conn.execute("DELETE FROM estimate_snapshots")
+    store.conn.commit()
+    now = _days_before(END, 8)
+    _estimates(store, {_days_before(now, 40): 5.0, now: 5.5})
+    r = _run(store, cfg)["estimate_change_30d"]
+    assert (r["status"], r["value"], r["status_reason"]) == \
+           ("unsupported", None, f"newest estimate snapshot is from {now}")
+
+
+def test_estimate_change_needs_then_at_most_45_days_before_now(store, cfg):  # 45 days is fine, 46 is not
+    _company(store)
+    _estimates(store, {_days_before(END, 45): 5.0, END: 5.5})
+    r = _run(store, cfg)["estimate_change_30d"]
+    assert r["status"] == "ok" and r["value"] == pytest.approx(0.10)
+    store.conn.execute("DELETE FROM estimate_snapshots")
+    store.conn.commit()
+    _estimates(store, {_days_before(END, 46): 5.0, _days_before(END, 10): 5.2, END: 5.5})
+    r = _run(store, cfg)["estimate_change_30d"]
+    assert (r["status"], r["value"], r["status_reason"]) == \
+           ("not_enough_history", None, f"no estimate snapshot 30-45 days before {END}")
+
+
 def test_estimate_rows_are_one_period_ascending(store):
     _weekday_bars(store, "AAA", n=5)
     _estimates(store, {"2026-10-20": 5.0, "2026-10-01": 4.0})
@@ -796,6 +857,28 @@ def test_insider_feed_missing_says_so(store, cfg, tmp_path):
     assert (r["status"], r["value"], r["status_reason"]) == ("unsupported", None, "insider feed not found")
     cfg.investing_dir = None
     assert _run(store, cfg)["insider_net_90d"]["status_reason"] == "insider feed not found"
+
+
+def test_an_old_insider_feed_is_unsupported(store, cfg, tmp_path):           # R9: as_of 7 days old is fine, 8 is not
+    _company(store)
+    cfg.investing_dir = tmp_path / "inv"
+    path = tmp_path / "inv" / "data" / "insider.json"
+    _insider(path, {"AAA": [_entry(5, "buy", "0000999002-26-000201")]}, as_of=_days_before(END, 7) + "T06:00:00Z")
+    r = _run(store, cfg)["insider_net_90d"]
+    assert (r["status"], r["value"]) == ("ok", 1.0)
+    _insider(path, {"AAA": [_entry(5, "buy", "0000999002-26-000201")]}, as_of=_days_before(END, 8) + "T06:00:00Z")
+    r = _run(store, cfg)["insider_net_90d"]
+    assert (r["status"], r["value"], r["status_reason"]) == \
+           ("unsupported", None, f"insider feed is from {_days_before(END, 8)}")
+
+
+def test_an_insider_feed_without_a_date_is_unsupported(store, cfg, tmp_path):
+    _company(store)
+    cfg.investing_dir = tmp_path / "inv"
+    _insider(tmp_path / "inv" / "data" / "insider.json", {"AAA": [_entry(5, "buy", "0000999002-26-000201")]},
+             as_of=None)
+    r = _run(store, cfg)["insider_net_90d"]
+    assert (r["status"], r["value"], r["status_reason"]) == ("unsupported", None, "insider feed has no date")
 
 
 def test_a_symbol_not_in_the_insider_feed_says_so(store, cfg, tmp_path):

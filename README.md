@@ -243,17 +243,22 @@ Each stock with an SEC CIK also gets ten fundamentals, with no percentile or ban
 - `last_surprise`: the surprise (percent) of the newest earnings report on or before the day that has one; its
   sources are the 8-K (when SEC dated the report) and Yahoo's date.
 - `estimate_change_30d`: (now - then) / |then| of this year's (`0y`) EPS estimate, now the newest snapshot, then the
-  newest at least 30 days before it; `not_enough_history` ("estimate snapshots start <date>") until one is,
-  `unsupported` when an earnings report fell between the two (the fiscal year may have rolled) or then is 0.
+  newest 30-45 days before it; `unsupported` "newest estimate snapshot is from <date>" when now is more than 7 days
+  before the day; `not_enough_history` ("estimate snapshots start <date>") until a snapshot is 30 days old, or "no
+  estimate snapshot 30-45 days before <date>" when the one before is older than 45 days; `unsupported` when an
+  earnings report fell between the two (the fiscal year may have rolled) or then is 0.
 - `insider_net_90d`: buys minus sells among the sibling `<investing content_dir>/data/insider.json` feed's Form 4
   entries filed in the 90 days ending the day (`mixed` and `other` count 0); each counted filing's SEC link is built
-  from the CIK and accession, never taken from the feed; `unsupported` "insider feed not found" or "not in the insider
-  feed". The feed is read once per run.
+  from the CIK and accession, never taken from the feed; `unsupported` "insider feed not found", "insider feed has no
+  date", "insider feed is from <date>" (its `as_of` more than 7 days before the day) or "not in the insider feed".
+  The feed is read once per run.
 
 The newest valuation row decides the four built on it (`implied_growth`, the margins, `net_debt_ebitda`,
-`buyback_yield`): not on the day, `stale` or `unsupported` makes them `unsupported` with its reason. `implied_growth`
-names `market_cap`, `fcf_ttm` and `close` as inputs and `buyback_yield` `market_cap` and `close`, so a hold on those
-holds them; the rest name none, so only a `*` hold holds them, at build time as in the view.
+`buyback_yield`): not on the day, `stale` or `unsupported` makes them `unsupported` with its reason. Inputs:
+`implied_growth` names `market_cap`, `fcf_ttm` and `close`, `buyback_yield` `market_cap` and `close`,
+`fcf_margin_change` `revenue_ttm` and `fcf_ttm`, `op_margin_change` `revenue_ttm`, so a hold on one of those (the
+`figures` check holds `revenue_ttm` and `fcf_ttm` field by field) holds them; the rest name none, so only a `*` hold
+holds them. Either way at build time as in the view.
 
 A row's `status` is `ok`, `held`, `unsupported` or `not_enough_history`; `inputs` names the `valuation_daily` columns
 it was built from (`,close,` for the price shape; a company history score names its own column and the close it is
