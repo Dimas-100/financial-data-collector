@@ -988,6 +988,11 @@ class Store:
                           (account_key,))
         return self._proposal_dict(rows[0]) if rows else None
 
+    def open_proposal_keys(self) -> list[str]:
+        """Every account_key with an open proposal (raw rows), sorted."""
+        return [r[0] for r in self.query(
+            "SELECT account_key FROM allocation_proposals_raw WHERE status = 'open' ORDER BY account_key")]
+
     def last_spent_proposal(self, account_key: str) -> dict | None:
         """The account's newest `spent` proposal (by closed_at, then id), with its lines; None when none."""
         rows = self.query("SELECT * FROM allocation_proposals_raw WHERE account_key = ? AND status = 'spent' "

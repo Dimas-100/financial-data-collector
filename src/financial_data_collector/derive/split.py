@@ -5,7 +5,7 @@ leaning careful; the rows are the symbol's `valuation_scores` view rows as dicts
 the household's holdings with fund look-through, and the split of one account's waiting cash in whole dollars by
 target gap and band, inside every band top, sleeve max and cap. Those are pure: no SQL, no store, no files.
 
-`run` is the lifecycle, called by the engine step after the scores (only when its gate is open): for each account
+`run` is the lifecycle, called by the engine step after the scores and their re-check (only when its gate is open): for each account
 named in config `[allocation.accounts]` it reads the waiting cash, the targets file and the scores (through Store
 reads) and opens, replaces or closes that account's proposal. Proposals are a record: a run only adds one or closes
 one, never rewrites an open one, and a run with the same cash writes nothing. A proposal, never an order.
@@ -57,7 +57,8 @@ def holding_band(rows: list[dict], is_fund: bool) -> tuple[str, tuple[str, ...],
 
     Reasons: primary metrics that did not count first, in PRIMARY order (`held:<m>`, `unsupported:<m>`,
     `no_history:<m>`, `missing:<m>`), then the verdict codes. The rows returned are the counted primary rows, plus the
-    two quality rows when they changed or qualified the result.
+    two quality rows when they changed or qualified the result. No code holds a comma (a line's reasons are stored
+    comma-joined): `cheap_by:` / `premium_by:` join their metrics with `+` (`cheap_by:pe+p_fcf`).
     """
     primary = PRIMARY_FUND if is_fund else PRIMARY_COMPANY
     by_metric = {r["metric"]: r for r in rows}
@@ -81,18 +82,18 @@ def holding_band(rows: list[dict], is_fund: bool) -> tuple[str, tuple[str, ...],
     premium = [m for m, r in counted if r["band"] == "premium"]
     cheap = [m for m, r in counted if r["band"] == "cheap"]
     if 2 * len(premium) > n:
-        reasons.append("premium_by:" + ",".join(premium))
+        reasons.append("premium_by:" + "+".join(premium))
         return "premium", tuple(reasons), deciding
     if not premium and 2 * len(cheap) > n:
         if is_fund:
-            reasons.append("cheap_by:" + ",".join(cheap))
+            reasons.append("cheap_by:" + "+".join(cheap))
             return "cheap", tuple(reasons), deciding
         quality = [by_metric.get(m) for m in QUALITY]
         quality_rows = tuple(q for q in quality if q is not None)
         if all(_known(q) for q in quality) and all(q["value"] < 0 for q in quality):
             reasons.append("quality_falling")
             return "usual", tuple(reasons), deciding + quality_rows
-        reasons.append("cheap_by:" + ",".join(cheap))
+        reasons.append("cheap_by:" + "+".join(cheap))
         if not all(_known(q) for q in quality):
             reasons.append("quality_unknown")
             return "cheap", tuple(reasons), deciding + quality_rows
@@ -198,7 +199,7 @@ class _Line:
 
 @dataclass(frozen=True)
 class _Group:
-    code: str                  # sleeve_cut:<label> | cap_cut:<symbol>
+    code: str                  # sleeve_cut:<label, any comma as +> | cap_cut:<symbol> (never a comma: reasons are comma-joined)
     room: float                # dollars (a cap's: dollars of the capped name), never below 0
     coef: dict[str, float]     # line symbol -> how much of the room one dollar on that line uses (only > 0)
 
@@ -219,7 +220,7 @@ def _groups(account: str, base: float, held: dict[str, float], household: Househ
         if not coef:
             continue
         room = sleeve.high / 100 * base - sum(float(held.get(m, 0.0)) for m in set(sleeve.members))
-        groups.append(_Group(f"sleeve_cut:{sleeve.label}", max(room, 0.0), coef))
+        groups.append(_Group(f"sleeve_cut:{sleeve.label.replace(',', '+')}", max(room, 0.0), coef))
     for cap in targets.caps:
         name = cap.symbol
         coef = {}
@@ -431,27 +432,43 @@ def _stamp(now: datetime) -> str:
 
 
 def household_rows(positions: list[dict], cash: dict[str, tuple[str, float]], days: int
-                   ) -> tuple[list[dict], dict[str, float], set[str]]:
-    """The household's accounts (Call 9): those whose newest positions snapshot is within `days` of the newest any
-    account has (the newest cash date when there are no positions at all). Returns their positions, the cash of the
-    kept accounts whose own cash row is that fresh too, and the labels left out (a stale snapshot or stale cash)."""
+                   ) -> tuple[list[dict], dict[str, float], int, int]:
+    """The household (Call 9, as ruled): investment accounts only, those with a positions snapshot, kept when their
+    newest positions date is within `days` of the newest positions date of any account. A kept account's cash counts
+    only when its own cash row is within the same cutoff (else 0). Cash-only accounts (a bank, a card) are not in it.
+
+    Returns the kept accounts' positions, their counted cash by label, how many accounts were left out as old, and how
+    many kept accounts' cash rows were too old to count."""
     newest_of: dict[str, str] = {}
     for r in positions:
         if r["as_of_date"] > newest_of.get(r["account"], ""):
             newest_of[r["account"]] = r["as_of_date"]
-    dates = list(newest_of.values()) or [d for d, _ in cash.values()]
-    if not dates:
-        return list(positions), {}, set()
-    cutoff = (date.fromisoformat(max(dates)) - timedelta(days=days)).isoformat()
+    if not newest_of:
+        return [], {}, 0, 0
+    cutoff = (date.fromisoformat(max(newest_of.values())) - timedelta(days=days)).isoformat()
     left_out = {a for a, d in newest_of.items() if d < cutoff}
-    left_out |= {label for label, (d, _) in cash.items() if d < cutoff}
     kept = [r for r in positions if r["account"] not in left_out]
-    kept_cash = {label: float(amount or 0.0) for label, (_, amount) in cash.items() if label not in left_out}
-    return kept, kept_cash, left_out
+    kept_cash: dict[str, float] = {}
+    stale_cash = 0
+    for label in sorted(set(newest_of) - left_out):
+        if label not in cash:
+            continue
+        cash_date, amount = cash[label]
+        if cash_date < cutoff:
+            stale_cash += 1
+        else:
+            kept_cash[label] = float(amount or 0.0)
+    return kept, kept_cash, len(left_out), stale_cash
 
 
-def _left_out_note(n: int, days: int) -> str:
-    return f"{n} account{'' if n == 1 else 's'} older than {days} days left out"
+def _household_notes(left_out: int, stale_cash: int, days: int) -> list[str]:
+    notes = []
+    if left_out:
+        notes.append(f"{left_out} account{'' if left_out == 1 else 's'} older than {days} days left out")
+    if stale_cash:
+        what = "account's cash row" if stale_cash == 1 else "accounts' cash rows"
+        notes.append(f"{stale_cash} {what} older than {days} days not counted")
+    return notes
 
 
 def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: str, cash: float, targets: Targets,
@@ -466,7 +483,11 @@ def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: st
         if r["account"] == label:
             held[r["symbol"]] = held.get(r["symbol"], 0.0) + float(r.get("market_value") or 0.0)
     base = sum(held.values()) + cash
-    symbols = sorted({e.symbol for e in _account_entries(key, targets)})
+    entries = _account_entries(key, targets)
+    entry_of: dict[str, TargetEntry] = {}
+    for e in entries:                   # the first entry for a symbol is the one plan_split plans (later: `duplicate`)
+        entry_of.setdefault(e.symbol, e)
+    symbols = sorted(entry_of)
     rows_of = store.split_scores(symbols)
     bands: dict[str, tuple[str, tuple[str, ...]]] = {}
     deciding: dict[str, tuple[dict, ...]] = {}
@@ -478,7 +499,9 @@ def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: st
 
     line_sources = []
     for line in plan.lines:
-        src = [sources.feed(targets.file_name, targets.last_revised, f"{key}/{line.symbol}")]
+        # The entry's place in the file: the account it is filed under (a pct_of_brokerage entry filed under roth
+        # sends money to the brokerage and is cited as roth/<symbol>).
+        src = [sources.feed(targets.file_name, targets.last_revised, f"{entry_of[line.symbol].account}/{line.symbol}")]
         src += [sources.derived(f"valuation_scores {r['metric']}", f"{line.symbol} {r['metric']}", r.get("date"))
                 for r in deciding.get(line.symbol, ())]
         src.append(sources.config(f"[allocation] tilt.{line.band}", line.tilt))
@@ -491,16 +514,22 @@ def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: st
                               tuple(notes), proposal_sources)
 
 
+_STAYS_OPEN = "; its open proposal stays open"
+
+
 def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> SplitReport:
     """Open, replace or close each configured account's proposal as its waiting cash moved (Call 12).
 
-    Skipped, touching nothing, when there is no targets file, it cannot be read, or `[allocation.accounts]` is
-    empty. For each account (by targets-file name, sorted), its newest USD cash row: with an open proposal, cash
-    `min_new` or more above that proposal's cash makes a new proposal for all of it that replaces it, cash at least
-    $1 below closes it as spent (placed, in full or in part), anything between changes nothing; with none open,
-    cash `min_new` or more above the baseline (0 before any proposal; after a spent one, the lower of its closing
-    cash and the lowest balance since that day) opens one. An open proposal's lines are never rewritten; the same
-    cash writes nothing. `now` stamps created_at / closed_at, `checked_at` is the covering check run's finish."""
+    Called by the engine step after the scores and their re-check, only when the engine's gate is open. Skipped,
+    touching nothing, when there is no targets file, it cannot be read, or `[allocation.accounts]` is empty. For each
+    account (by targets-file name, sorted), its newest USD cash row: with an open proposal, cash `min_new` or more
+    above that proposal's cash makes a new proposal for all of it that replaces it, cash at least $1 below closes it as
+    spent (placed, in full or in part), anything between changes nothing; with none open, cash `min_new` or more above
+    the baseline (0 before any proposal; after a spent one, the lower of its closing cash and the lowest balance since
+    that day) opens one. An account named twice on one label, with no entries in the targets file, or with no cash row
+    is left alone (an open proposal of it stays open, said in the notes), as is an open proposal whose name is no longer
+    configured. An open proposal's lines are never rewritten; the same cash writes nothing. `now` stamps created_at /
+    closed_at, `checked_at` is the covering check run's finish. Notes name targets-file account names, never a label."""
     alloc = cfg.allocation
     try:
         targets = read_targets(alloc.targets)
@@ -514,19 +543,21 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
     stamp = _stamp(now)
     positions = store.split_positions()
     cash_rows = store.split_cash()
-    kept, kept_cash, left_out = household_rows(positions, cash_rows, alloc.household_days)
+    kept, kept_cash, n_left_out, n_stale_cash = household_rows(positions, cash_rows, alloc.household_days)
     look_through = read_look_through(alloc.fund_holdings)
     symbols = {r["symbol"] for r in positions} | {e.symbol for e in targets.entries} | set(look_through)
     types = store.split_asset_types(sorted(symbols))
     funds = frozenset(s for s, t in types.items() if t in FUND_TYPES)
     household = household_of(kept, kept_cash, look_through, funds)
+    kept_labels = {r["account"] for r in kept}
+    positions_labels = {r["account"] for r in positions}
 
-    run_notes: list[str] = []
-    household_notes: list[dict] = []
-    if left_out:
-        note = _left_out_note(len(left_out), alloc.household_days)
-        run_notes.append(note)
-        household_notes.append({"symbol": None, "reason": note})
+    hh_notes = _household_notes(n_left_out, n_stale_cash, alloc.household_days)
+    run_notes: list[str] = list(hh_notes)
+    household_notes = [{"symbol": None, "reason": n} for n in hh_notes]
+    open_keys = set(store.open_proposal_keys())
+    for key in sorted(open_keys - set(alloc.accounts)):
+        run_notes.append(f"{key}: not in [allocation.accounts]{_STAYS_OPEN}")
 
     # Two targets-file names on one fdc account would each propose the same cash: neither gets a proposal.
     keys_of: dict[str, list[str]] = {}
@@ -538,10 +569,16 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
 
     opened = replaced = spent = 0
     for key, label in sorted(alloc.accounts.items()):
+        stays = _STAYS_OPEN if key in open_keys else ""
         if key in shared:
+            if stays:
+                run_notes.append(f"{key}: named with another on one account{stays}")
+            continue
+        if not _account_entries(key, targets):
+            run_notes.append(f"no targets for {key}{stays}")
             continue
         if label not in cash_rows:
-            run_notes.append(f"{key}: no cash row")
+            run_notes.append(f"{key}: no cash row{stays}")
             continue
         cash_date, amount = cash_rows[label]
         cash = float(amount or 0.0)
@@ -562,7 +599,7 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
             if cash < baseline + alloc.min_new - _CMP_EPS:
                 continue
         extra = list(household_notes)
-        if label in left_out:
+        if label in positions_labels and label not in kept_labels:
             extra.append({"symbol": None, "reason":
                           f"this account is older than {alloc.household_days} days and left out of the household"})
         proposal = _new_proposal(store, cfg, key, label, cash_date, cash, targets, household, positions, types, extra)

@@ -297,7 +297,8 @@ def test_first_deposit_opens_a_proposal(setup):
     assert p["placed"] == 2 and p["waits"] >= 0
     assert by["AAPL"]["band"] == "cheap" and by["AAPL"]["tilt"] == 1.5
     raw = store.query("SELECT reasons FROM allocation_lines_raw WHERE symbol = 'AAPL'")[0][0]
-    assert raw.startswith("missing:ps,cheap_by:pe,p_fcf,quality_unknown")      # the band's codes come first
+    assert raw == "missing:ps,cheap_by:pe+p_fcf,quality_unknown,band_top"      # the band's codes come first
+    assert by["AAPL"]["reasons"] == ("missing:ps", "cheap_by:pe+p_fcf", "quality_unknown", "band_top")   # round trip
     assert by["VOO"]["band"] == "usual" and "no_scores" in by["VOO"]["reasons"]
     assert by["AAPL"]["sources"] == [
         {"kind": "feed", "label": "sizing-targets.json", "date": "2026-10-01", "ref": "brokerage/AAPL"},
@@ -519,3 +520,111 @@ def test_one_account_named_twice_gets_no_proposal(setup):
     assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
     assert "brokerage, roth: one account named more than once in [allocation.accounts]; no proposal" in rep.notes
     assert _all_rows(store) == []
+
+
+# ---- fix round 1: comma-free reasons, the household of fresh investment accounts, filed refs, unreachable proposals
+
+BANK = AccountRef("Sample Bank", "bank", "sample", "checking")
+
+
+def test_reasons_round_trip_with_a_comma_in_a_sleeve_label(setup, tmp_path: Path):
+    store, _ = setup
+    doc = dict(TARGETS_DOC, sleeves=[{"account": "brokerage", "label": "Core, index", "members": ["VOO", "AAPL"],
+                                      "max": 45.0}])
+    cfg = _cfg(tmp_path, doc)
+    _run(store, cfg, 2)
+    # base 1000; the sleeve's room 450 - 400 held = 50: both lines cut by it.
+    lines = store.open_proposal("brokerage")["lines"]
+    assert lines and all("sleeve_cut:Core+ index" in l["reasons"] for l in lines)
+    for l in lines:
+        raw = store.query("SELECT reasons FROM allocation_lines_raw WHERE symbol = ?", (l["symbol"],))[0][0]
+        assert tuple(raw.split(",")) == l["reasons"]
+        assert not any("," in code for code in l["reasons"])
+
+
+def _cap_doc(cap: float) -> dict:
+    return {"last_revised": "2026-10-01",
+            "brokerage": [{"ticker": "VOO", "target": 50.0}, {"ticker": "AAPL", "target": 20.0}],
+            "caps": [{"ticker": "AAPL", "max": cap}]}
+
+
+def test_an_account_with_fresh_positions_and_old_cash_stays_in_the_household(store: Store, tmp_path: Path):
+    _types(store)
+    _day(store, "2026-10-30", 500.0)
+    store.write_snapshot(Snapshot("2026-10-01", "fidelity_csv", [], [CashRow(ROTH, 9000.0)]))   # its cash is old
+    _day(store, "2026-10-30", None, ROTH, (("AAPL", 5000.0),))                                   # its positions are not
+    rep = _run(store, _cfg(tmp_path, _cap_doc(25.0), accounts={"brokerage": "Sample Brokerage"}), 2)
+    assert rep.opened == 1
+    note = "1 account's cash row older than 7 days not counted"
+    assert note in rep.notes and not any("left out" in n for n in rep.notes)
+    p = store.open_proposal("brokerage")
+    assert {"symbol": None, "reason": note} in p["notes"]
+    # Its AAPL counts toward the cap: 25% of (1000 + 5000) = 1500, already 5100 held -> no room.
+    assert "AAPL" not in {l["symbol"] for l in p["lines"]}
+    assert {"symbol": "AAPL", "reason": "cap_cut:AAPL"} in p["notes"]
+
+
+def test_a_cash_only_account_is_neither_counted_nor_noted(store: Store, tmp_path: Path):
+    _types(store)
+    _day(store, "2026-10-30", 500.0)
+    store.write_snapshot(Snapshot("2026-10-30", "sample_bank", [], [CashRow(BANK, 100000.0)]))
+    rep = _run(store, _cfg(tmp_path, _cap_doc(10.0), accounts={"brokerage": "Sample Brokerage"}), 2)
+    assert rep.opened == 1 and rep.notes == ()
+    p = store.open_proposal("brokerage")
+    # Counted, the bank's cash would make room under the cap; it is not: 10% of 1000 - 100 held = 0.
+    assert "AAPL" not in {l["symbol"] for l in p["lines"]}
+    assert {"symbol": "AAPL", "reason": "cap_cut:AAPL"} in p["notes"]
+    assert not any(n["symbol"] is None for n in p["notes"])
+
+
+def test_a_line_cites_the_account_its_entry_is_filed_under(setup, tmp_path: Path):
+    store, _ = setup
+    store.upsert_security("SPY", None, "etf", "2026-10-01")
+    store.set_asset_type("SPY", "etf")
+    doc = {"last_revised": "2026-10-01", "brokerage": [{"ticker": "VOO", "target": 50.0}],
+           "roth": [{"ticker": "SPY", "type": "pct_of_brokerage", "target": 20.0}]}
+    _run(store, _cfg(tmp_path, doc, accounts={"brokerage": "Sample Brokerage"}), 2)
+    by = {l["symbol"]: l for l in store.open_proposal("brokerage")["lines"]}
+    assert by["SPY"]["sources"][0] == {"kind": "feed", "label": "sizing-targets.json", "date": "2026-10-01",
+                                       "ref": "roth/SPY"}
+    assert by["VOO"]["sources"][0]["ref"] == "brokerage/VOO"
+
+
+@pytest.mark.parametrize("accounts, note", [
+    ({"roth": "Sample Roth"}, "brokerage: not in [allocation.accounts]; its open proposal stays open"),
+    ({"brokerage": "Nobody"}, "brokerage: no cash row; its open proposal stays open"),
+    ({"brokerage": "Sample Brokerage", "roth": "Sample Brokerage"},
+     "brokerage: named with another on one account; its open proposal stays open"),
+])
+def test_an_unreachable_open_proposal_stays_open_and_is_noted(setup, accounts, note):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    before = _all_rows(store)
+    _day(store, "2026-11-02", 0.0)                                 # would close it, were it reachable
+    rep = _run(store, dataclasses.replace(cfg, allocation=dataclasses.replace(cfg.allocation, accounts=accounts)), 3)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+    assert note in rep.notes and not any("Sample" in n or "Nobody" in n for n in rep.notes)
+    assert _all_rows(store) == before
+
+
+def test_an_account_with_no_targets_opens_nothing(store: Store, tmp_path: Path):
+    _types(store)
+    _day(store, "2026-10-30", 500.0)
+    _day(store, "2026-10-30", 400.0, ROTH, R_POSITIONS)
+    doc = {"last_revised": "2026-10-01", "roth": [{"ticker": "VOO", "type": "pct_of_brokerage", "target": 50.0}]}
+    rep = _run(store, _cfg(tmp_path, doc), 2)
+    assert rep.opened == 1 and "no targets for roth" in rep.notes      # its only entry sends money to the brokerage
+    assert "no targets for brokerage" not in rep.notes
+    assert store.open_proposal("brokerage") is not None and store.open_proposal("roth") is None
+    doc = {"last_revised": "2026-10-01", "roth": [{"ticker": "VFIAX", "target": 90.0}]}
+    rep = _run(store, _cfg(tmp_path, doc), 3)
+    assert "no targets for brokerage; its open proposal stays open" in rep.notes
+    assert rep.opened == 1 and store.open_proposal("roth") is not None
+
+
+def test_open_proposal_keys(store: Store):
+    store.write_proposal(_proposal("roth"), created_at=NOW, checked_at=None, replaces=None)
+    pid = store.write_proposal(_proposal("brokerage"), created_at=NOW, checked_at=None, replaces=None)
+    assert store.open_proposal_keys() == ["brokerage", "roth"]
+    store.close_proposal(pid, closed_at=NOW, closed_cash=0.0)
+    assert store.open_proposal_keys() == ["roth"]

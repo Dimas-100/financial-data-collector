@@ -56,7 +56,7 @@ def test_full_sync_then_noop(project, fixtures: Path):
     c1 = _counts(project)
     assert c1["position_snapshots"] > 0 and c1["prices"] > 0 and c1["sec_facts"] == 35
     assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 11
-    assert c1["valuation_scores_raw"] > 0 and rep.steps[-1].message.endswith("0 moves; split: no targets file; checks: 0 holds, 0 warnings, 0 errors")
+    assert c1["valuation_scores_raw"] > 0 and rep.steps[-1].message.endswith("0 moves; checks: 0 holds, 0 warnings, 0 errors; split: no targets file")
     assert "without data" in rep.steps[2].message          # KO, VTI, BRK.B had no bars
     rep2 = sync.run_sync(project, fetch=fetch, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert rep2.steps[1].rows == 0
@@ -454,7 +454,7 @@ def test_engine_step_rechecks_what_it_wrote_and_does_not_stamp_checked_at(projec
 
     rep = sync.run_sync(project, now=NOW, sleep=lambda s: None, only=["engine"])
     (step,) = rep.steps
-    assert step.status == "ok" and step.message.endswith("; checks: 0 holds, 0 warnings, 0 errors"), step.message
+    assert step.status == "ok" and step.message.endswith("; checks: 0 holds, 0 warnings, 0 errors; split: no targets file"), step.message
     s = Store.open(project.db_path, migrate=False)
     try:
         runs = s.query("SELECT checks_run, derive_run_id FROM check_runs ORDER BY run_id")
@@ -552,21 +552,34 @@ def test_engine_step_message_names_the_split(project, tmp_path: Path):
     _covered_derive(cfg)
     _brokerage_cash(cfg, "2026-02-27", 500.0)
     (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
-    assert step.status == "ok" and "; split: 1 new, 0 replaced, 0 spent; checks: " in step.message, step.message
+    assert step.status == "ok" and step.message.endswith("; checks: 0 holds, 0 warnings, 0 errors; split: 1 new, 0 replaced, 0 spent"), step.message
     (row,) = _proposals(cfg)
     s = Store.open(cfg.db_path, migrate=False)
     p = s.open_proposal("brokerage")
     s.close()
     assert p["checked_at"] == "2026-03-01T11:30:00Z" and p["created_at"] == "2026-03-01T12:00:00Z"
     (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
-    assert "; split: 0 new, 0 replaced, 0 spent" in step.message and _proposals(cfg) == [row]
+    assert step.message.endswith("; split: 0 new, 0 replaced, 0 spent") and _proposals(cfg) == [row]
     _brokerage_cash(cfg, "2026-02-28", 100.0)
     (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
-    assert "; split: 0 new, 0 replaced, 1 spent" in step.message
+    assert step.message.endswith("; split: 0 new, 0 replaced, 1 spent")
 
 
 def test_engine_step_message_says_why_the_split_was_skipped(project, tmp_path: Path):
     cfg = _with_allocation(project, tmp_path, targets=False)
     _covered_derive(cfg)
     (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
-    assert step.status == "ok" and "; split: no targets file; checks: " in step.message, step.message
+    assert step.status == "ok" and step.message.endswith("; split: no targets file"), step.message
+
+
+def test_engine_step_runs_the_split_after_the_score_recheck(project, tmp_path: Path, monkeypatch):
+    from financial_data_collector import check as check_mod
+    from financial_data_collector.derive import split
+    cfg = _with_allocation(project, tmp_path)
+    _covered_derive(cfg)
+    order = []
+    real_check, real_split = check_mod.run_check, split.run
+    monkeypatch.setattr(check_mod, "run_check", lambda *a, **k: (order.append("check"), real_check(*a, **k))[1])
+    monkeypatch.setattr(split, "run", lambda *a, **k: (order.append("split"), real_split(*a, **k))[1])
+    (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
+    assert order == ["check", "split"] and step.message.endswith("; split: 0 new, 0 replaced, 0 spent"), step.message

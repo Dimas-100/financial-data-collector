@@ -34,7 +34,7 @@ def test_primary_metrics():
 def test_two_cheap_of_three_is_cheap():
     band, reasons, rows = holding_band(_company(pe="cheap", p_fcf="cheap", ev_ebit="usual", ps=None), False)
     assert band == "cheap"
-    assert reasons == ("missing:ps", "cheap_by:pe,p_fcf")
+    assert reasons == ("missing:ps", "cheap_by:pe+p_fcf")
     assert [r["metric"] for r in rows] == ["pe", "p_fcf", "ev_ebit"]
 
 
@@ -47,13 +47,13 @@ def test_most_premium_is_premium():
     band, reasons, rows = holding_band(_company(pe="premium", p_fcf="premium", ev_ebit="cheap", ps="usual"), False)
     assert (band, reasons) == ("usual", ("disagree",))                       # 2 of 4 is not more than half
     band, reasons, rows = holding_band(_company(pe="premium", p_fcf="premium", ev_ebit="premium", ps="cheap"), False)
-    assert (band, reasons) == ("premium", ("premium_by:pe,p_fcf,ev_ebit",))
+    assert (band, reasons) == ("premium", ("premium_by:pe+p_fcf+ev_ebit",))
     assert [r["metric"] for r in rows] == ["pe", "p_fcf", "ev_ebit", "ps"]
 
 
 def test_premium_beats_cheap_when_it_is_the_majority():
     band, reasons, _ = holding_band(_company(pe="premium", p_fcf="premium", ev_ebit="cheap", ps=None), False)
-    assert (band, reasons) == ("premium", ("missing:ps", "premium_by:pe,p_fcf"))
+    assert (band, reasons) == ("premium", ("missing:ps", "premium_by:pe+p_fcf"))
 
 
 def test_single_metric_is_usual():
@@ -72,7 +72,7 @@ def test_held_metric_does_not_count_and_is_named():
     rows = _company(pe=None, p_fcf="cheap", ev_ebit="usual", ps="cheap") + [_row("pe", status="held")]
     band, reasons, decided = holding_band(rows, False)
     assert band == "cheap"
-    assert reasons == ("held:pe", "cheap_by:p_fcf,ps")
+    assert reasons == ("held:pe", "cheap_by:p_fcf+ps")
     assert "pe" not in [r["metric"] for r in decided]
 
 
@@ -102,7 +102,7 @@ def test_quality_falling_blocks_cheap():
 def test_one_falling_margin_does_not_block_cheap():
     band, reasons, rows = holding_band(_company(pe="cheap", p_fcf="cheap", ev_ebit="cheap", ps="cheap",
                                                 fcf_margin=-0.02, op_margin=0.01), False)
-    assert (band, reasons) == ("cheap", ("cheap_by:pe,p_fcf,ev_ebit,ps",))
+    assert (band, reasons) == ("cheap", ("cheap_by:pe+p_fcf+ev_ebit+ps",))
     assert [r["metric"] for r in rows] == ["pe", "p_fcf", "ev_ebit", "ps"]
 
 
@@ -111,11 +111,11 @@ def test_quality_unknown_does_not_block_but_is_said():
     rows.append(_row("fcf_margin_change", status="not_enough_history"))
     band, reasons, decided = holding_band(rows, False)
     assert band == "cheap"
-    assert reasons == ("cheap_by:pe,p_fcf,ps", "quality_unknown")
+    assert reasons == ("cheap_by:pe+p_fcf+ps", "quality_unknown")
     assert {"fcf_margin_change", "op_margin_change"} <= {r["metric"] for r in decided}
     band, reasons, _ = holding_band(_company(pe="cheap", p_fcf="cheap", ev_ebit="cheap", ps="cheap",
                                              fcf_margin=None, op_margin=None), False)
-    assert (band, reasons) == ("cheap", ("cheap_by:pe,p_fcf,ev_ebit,ps", "quality_unknown"))
+    assert (band, reasons) == ("cheap", ("cheap_by:pe+p_fcf+ev_ebit+ps", "quality_unknown"))
 
 
 def test_quality_is_not_read_for_a_company_that_is_not_cheap():
@@ -132,7 +132,7 @@ def test_fund_without_a_year_is_usual():
 
 def test_fund_two_cheap_is_cheap():
     band, reasons, rows = holding_band([_row("pe", "cheap"), _row("dividend_yield", "cheap")], True)
-    assert (band, reasons) == ("cheap", ("cheap_by:pe,dividend_yield",))
+    assert (band, reasons) == ("cheap", ("cheap_by:pe+dividend_yield",))
     assert [r["metric"] for r in rows] == ["pe", "dividend_yield"]
 
 
@@ -140,7 +140,7 @@ def test_fund_has_no_quality_check():
     rows = [_row("pe", "cheap"), _row("dividend_yield", "cheap"), _row("fcf_margin_change", None, value=-1.0),
             _row("op_margin_change", None, value=-1.0)]
     band, reasons, decided = holding_band(rows, True)
-    assert (band, reasons) == ("cheap", ("cheap_by:pe,dividend_yield",))
+    assert (band, reasons) == ("cheap", ("cheap_by:pe+dividend_yield",))
     assert len(decided) == 2
 
 
@@ -152,7 +152,7 @@ def test_fund_split_decision_is_usual():
 def test_a_fund_ignores_company_metrics():
     rows = [_row("pe", "premium"), _row("dividend_yield", "premium"), _row("ps", "cheap"), _row("p_fcf", "cheap")]
     band, reasons, _ = holding_band(rows, True)
-    assert (band, reasons) == ("premium", ("premium_by:pe,dividend_yield",))
+    assert (band, reasons) == ("premium", ("premium_by:pe+dividend_yield",))
 
 
 def test_reasons_come_back_as_a_tuple_and_the_rows_are_the_inputs():
@@ -266,18 +266,18 @@ def test_shares_follow_gaps():
 def test_tilt_cheap_and_premium():
     # AAPL and JNJ 50% each of base 1000, none held: gaps 500 / 500, tops 625 / 625.
     # weights 500 x 1.5 = 750 (cheap) and 500 x 0.5 = 250 (premium); cash 300 -> 225 / 75.
-    bands = {"AAPL": ("cheap", ("cheap_by:pe,p_fcf",)), "JNJ": ("premium", ("premium_by:pe,ps",))}
+    bands = {"AAPL": ("cheap", ("cheap_by:pe+p_fcf",)), "JNJ": ("premium", ("premium_by:pe+ps",))}
     plan = _plan([_e("AAPL", 50), _e("JNJ", 50)], 300, bands=bands)
     assert _d(plan) == {"AAPL": 225, "JNJ": 75}
     aapl, jnj = _line(plan, "AAPL"), _line(plan, "JNJ")
-    assert (aapl.band, aapl.tilt, aapl.target_gap, aapl.reasons) == ("cheap", 1.5, 500.0, ("cheap_by:pe,p_fcf",))
-    assert (jnj.band, jnj.tilt, jnj.reasons) == ("premium", 0.5, ("premium_by:pe,ps",))
+    assert (aapl.band, aapl.tilt, aapl.target_gap, aapl.reasons) == ("cheap", 1.5, 500.0, ("cheap_by:pe+p_fcf",))
+    assert (jnj.band, jnj.tilt, jnj.reasons) == ("premium", 0.5, ("premium_by:pe+ps",))
 
 
 def test_hold_name_gets_nothing_even_with_a_gap():
     # KO says hold: a 500 gap and a cheap band, still no line. SPY 30%: gap 300, top 375 -> all 200.
     # KO is also reachable through VOO's file: that gives it no line of its own either.
-    bands = {"KO": ("cheap", ("cheap_by:pe,ps",)), **_usual("SPY")}
+    bands = {"KO": ("cheap", ("cheap_by:pe+ps",)), **_usual("SPY")}
     hh = _hh(look_through={"VOO": {"KO": 0.01}}, funds={"VOO"}, indirect={"KO": 5.0})
     plan = _plan([_e("KO", 50, rule="hold"), _e("SPY", 30)], 200, bands=bands, hh=hh)
     assert _d(plan) == {"SPY": 200}
@@ -322,6 +322,14 @@ def test_sleeve_max_cuts_its_members():
     assert _line(plan, "KO").reasons == ("disagree", "sleeve_cut:Defensives")
     assert "sleeve_cut:Defensives" not in _line(plan, "SPY").reasons
     assert plan.waits == 0.0
+
+
+def test_a_sleeve_label_with_a_comma_gives_a_comma_free_code():
+    # Same numbers as above: the sleeve cuts KO; its label's comma becomes "+" (reasons are stored comma-joined).
+    sleeve = Sleeve("brokerage", "Staples, health", ("KO", "JNJ"), None, 20.0, "contributions")
+    plan = _plan([_e("KO", 20)], 100, held={"JNJ": 180.0}, sleeves=[sleeve])
+    assert _line(plan, "KO").reasons == ("disagree", "sleeve_cut:Staples+ health")
+    assert not any("," in code for line in plan.lines for code in line.reasons)
 
 
 def test_sleeve_room_counts_members_held_without_a_line():
@@ -612,7 +620,7 @@ def test_whole_dollars_only():
 
 
 def test_same_inputs_same_plan():
-    bands = {"SPY": ("cheap", ("cheap_by:pe,ps",)), "KO": ("premium", ("premium_by:pe,ps",)), "JNJ": ("usual", ())}
+    bands = {"SPY": ("cheap", ("cheap_by:pe+ps",)), "KO": ("premium", ("premium_by:pe+ps",)), "JNJ": ("usual", ())}
     sleeve = Sleeve("brokerage", "Defensives", ("KO", "JNJ"), None, 20.0, "contributions")
     a = _plan(THREE, 555.55, held=THREE_HELD, bands=bands, sleeves=[sleeve])
     b = _plan(THREE, 555.55, held=dict(reversed(list(THREE_HELD.items()))),

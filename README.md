@@ -337,7 +337,7 @@ run, so until then a move may rest on a close that is now held.
 
 ### The weekly split (proposals, never an order)
 
-After the scores, the same step proposes how to split cash waiting in an account (its money market, which the
+After the scores and their re-check, the same step proposes how to split cash waiting in an account (its money market, which the
 adapters turn into cash) across that account's holdings, from your own targets file. It is a proposal written to the
 database, never an order: nothing here can trade, sell, or move money between accounts, and it never proposes more
 than the waiting cash. It runs only under the engine's gate, so a sync whose check failed opens, replaces and closes
@@ -349,7 +349,7 @@ targets = "../investing/config/sizing-targets.json"   # no file, no proposals (t
 fund_holdings = "../investing/fund_holdings"          # optional <FUND>.csv look-through weights
 min_new = 25                       # dollars of new cash that make a proposal
 min_line = 10                      # a line under this is folded into the largest line
-household_days = 7                 # caps count accounts whose newest snapshot is this close to the newest
+household_days = 7                 # caps count investment accounts whose newest positions are this close to the newest
 tilt = { cheap = 1.5, usual = 1.0, premium = 0.5 }
 
 [allocation.accounts]              # targets-file account name = fdc account label (`fdc accounts` lists them)
@@ -364,14 +364,22 @@ For each account named there, the waiting cash is the account's newest USD cash 
   replaces it (`replaced`); cash at least $1 below it means you placed it, in full or in part (`spent`); anything
   between changes nothing;
 - after a spent proposal, the next one needs the cash `min_new` above the lowest balance since then, and covers all
-  of the cash, so money you left waiting joins the next deposit.
+  of the cash, so money you left waiting joins the next deposit;
+- an account with no entries in the targets file ("no targets for <name>"), with no cash row, or named twice on one
+  account gets no proposal; one it already has stays open, as does one whose name left `[allocation.accounts]`, and
+  the step's notes say so by the targets-file name.
+
+Caps and the direct/via-funds ratio are measured on the household: every investment account (one with positions)
+whose newest positions are within `household_days` of the newest of any account, with its cash when its cash row
+is that fresh too. A bank or card account with only cash is not part of it.
 
 A proposal's lines share the cash by each holding's gap to its target times its band's tilt (the band from the
 holding's primary valuation scores), in whole dollars, never past a band's top, a sleeve's max or a cap; a `hold`
 name gets nothing; what fits nowhere waits for next week. Each line lists its sources: the targets entry (the file's
-name only, never its path), the scores that decided its band, and the tilt; the proposal lists the cash row and the
+name only, never its path, and the account the entry is filed under), the scores that decided its band, and the tilt; the proposal lists the cash row and the
 targets file. Its notes say why an entry got no line, what the targets file could not be read for, and how many
-accounts were left out of the household for being older than `household_days` (a count, never a name). A re-run with
+accounts were left out of the household for being older than `household_days`, or had a cash row too old to
+count (counts, never a name). A re-run with
 the same cash writes nothing, and new scores alone never rewrite an open proposal. Read them in
 `allocation_proposals` and `allocation_lines`.
 

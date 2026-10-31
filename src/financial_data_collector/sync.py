@@ -16,7 +16,7 @@ from .collectors.sec_facts import FUND_TYPES, collect_sec
 from .config import Config, ConfigError
 from .connections.keys import KeyHome
 from .connections.service import run as run_connections
-from .derive import engine as engine_mod, history, valuation
+from .derive import engine as engine_mod, history, split as split_mod, valuation
 from .export.cockpit import export_cockpit
 from .ingest import ingest_inbox, ingest_news, ingest_snaptrade, news_feed
 from .models import PriceBar
@@ -259,18 +259,22 @@ def _step_engine(store: Store, cfg: Config, *, progress: Progress, fetch=http.fe
     # After the check: the engine builds only from a derive a full, error-free check run has covered, so a sync whose
     # check failed (or was left out) skips it and the previous scores stay, with their older checked_at.
     progress("scores")
-    rep = engine_mod.run(store, cfg, now=now)
+    rep = engine_mod.run(store, cfg)
     if rep.skipped:
         return 0, rep.skipped, "skipped"
     msg = f"{rep.symbols} symbols, {rep.scores} scores ({rep.held} held), {rep.moves} moves"
-    if rep.split is not None:              # proposals only, never an order; a skipped split never fails the step
-        sp = rep.split
-        msg += f"; split: {sp.skipped or f'{sp.opened} new, {sp.replaced} replaced, {sp.spent} spent'}"
     # What was just written is examined at once by the checker's engine checks. A partial run: it never stamps
     # checked_at (only a full, error-free run records the derive it covered).
     progress("checking scores")
     chk = check_mod.run_check(cfg, fetch=fetch, now=now, store=store, sleep=sleep, only=list(ENGINE_CHECKS))
     msg += f"; checks: {chk.holds} holds, {chk.warns} warnings, {len(chk.errors)} errors"
+    # The weekly split, under the same gate and after the re-check, so it reads the scores with any hold that
+    # re-check opened (the valuation_scores view applies it). Proposals only, never an order; a skipped split never
+    # fails the step.
+    progress("split")
+    sp = split_mod.run(store, cfg, checked_at=rep.checked_at, now=now or datetime.now(timezone.utc))
+    msg += f"; split: {sp.skipped or f'{sp.opened} new, {sp.replaced} replaced, {sp.spent} spent'}"
+    # (A re-check of what the split just wrote goes here.)
     return rep.scores + rep.moves, msg, "ok"
 
 

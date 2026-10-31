@@ -449,7 +449,7 @@ def test_engine_step_message(store, cfg):
     _spy(store)
     _cover(store)
     rows, msg, status = sync._step_engine(store, cfg, progress=lambda d: None)
-    assert (rows, msg, status) == (7, "1 symbols, 4 scores (0 held), 3 moves; split: no targets file; checks: 0 holds, 0 warnings, 0 errors", "ok")
+    assert (rows, msg, status) == (7, "1 symbols, 4 scores (0 held), 3 moves; checks: 0 holds, 0 warnings, 0 errors; split: no targets file", "ok")
 
 
 def test_engine_step_skips_without_coverage(store, cfg):
