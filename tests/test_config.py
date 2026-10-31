@@ -98,6 +98,8 @@ def test_check_settings_default_to_the_specs_values(tmp_path: Path):
     cfg = C.load_config(tmp_path)
     assert (cfg.check.fresh_warn_months, cfg.check.fresh_hold_months) == (5, 15)
     assert (cfg.check.recompute_tolerance, cfg.check.max_daily_move) == (0.01, 0.40)
+    assert (cfg.check.price_warn, cfg.check.price_hold) == (0.005, 0.03)
+    assert (cfg.check.figure_warn, cfg.check.figure_hold) == (0.15, 0.40)
     (tmp_path / "config.toml").write_text("")
     assert C.load_config(tmp_path).check == cfg.check
 
@@ -109,10 +111,17 @@ def test_check_settings_can_be_set(tmp_path: Path):
     assert (c.fresh_warn_months, c.fresh_hold_months, c.recompute_tolerance, c.max_daily_move) == (3, 12, 0.02, 0.5)
 
 
+def test_outside_check_thresholds_can_be_set(tmp_path: Path):
+    (tmp_path / "config.toml").write_text("[check]\nprice_warn = 0.01\nprice_hold = 0.05\nfigure_warn = 0.2\nfigure_hold = 0.5\n")
+    c = C.load_config(tmp_path).check
+    assert (c.price_warn, c.price_hold, c.figure_warn, c.figure_hold) == (0.01, 0.05, 0.2, 0.5)
+
+
 @pytest.mark.parametrize("body", [
     "fresh_warn_months = 0", "fresh_warn_months = 'five'", "fresh_warn_months = 2.5", "fresh_warn_months = true",
     "fresh_warn_months = 20", "fresh_hold_months = -1", "recompute_tolerance = 0", "recompute_tolerance = 'x'",
     "max_daily_move = -0.1", "max_daily_move = false", "typo_months = 5",
+    "price_warn = 0", "price_hold = 'x'", "price_warn = 0.5", "figure_warn = 0.9", "figure_hold = -1",
 ])
 def test_a_bad_check_setting_is_a_config_error(tmp_path: Path, body):
     (tmp_path / "config.toml").write_text(f"[check]\n{body}\n")

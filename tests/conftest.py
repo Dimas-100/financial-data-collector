@@ -23,3 +23,22 @@ def no_real_key_store(monkeypatch):
         if name.startswith("FDC_"):
             monkeypatch.delenv(name, raising=False)
     return fake
+
+
+class _NoOutside:
+    """What the suite's outside source knows: nothing."""
+
+    def quote(self, symbol, on):
+        return None
+
+    def figures(self, symbol):
+        return None
+
+
+@pytest.fixture(autouse=True)
+def no_real_outside_source(monkeypatch):
+    """No test reaches Yahoo: the checker's default outside source answers None for everything. A test that
+    exercises the outside checks passes its own fake through `outside=`."""
+    from financial_data_collector.check import outside
+
+    monkeypatch.setattr(outside, "default_source", lambda: _NoOutside())

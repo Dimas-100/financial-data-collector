@@ -31,6 +31,10 @@ fresh_warn_months = 5              # warn when the newest statements end more th
 fresh_hold_months = 15             # hold the valuation beyond this many
 recompute_tolerance = 0.01         # a stored ratio may differ from its recomputed value by this fraction
 max_daily_move = 0.40              # a one-day close move beyond this fraction (no split that day) is impossible
+price_warn = 0.005                 # the newest close differs from a second provider's by more than this fraction: warn
+price_hold = 0.03                  # ... by more than this: hold the symbol's values
+figure_warn = 0.15                 # a figure (EPS, market cap, revenue, free cash flow) differs from Yahoo's by more than this: warn
+figure_hold = 0.40                 # ... by more than this: hold that figure
 
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"

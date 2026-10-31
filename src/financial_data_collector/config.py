@@ -41,6 +41,10 @@ fresh_warn_months = 5              # warn when the newest statements end more th
 fresh_hold_months = 15             # hold the valuation beyond this many
 recompute_tolerance = 0.01         # a stored ratio may differ from its recomputed value by this fraction
 max_daily_move = 0.40              # a one-day close move beyond this fraction (no split that day) is impossible
+price_warn = 0.005                 # the newest close differs from a second provider's by more than this fraction: warn
+price_hold = 0.03                  # ... by more than this: hold the symbol's values
+figure_warn = 0.15                 # a figure (EPS, market cap, revenue, free cash flow) differs from Yahoo's by more than this: warn
+figure_hold = 0.40                 # ... by more than this: hold that figure
 
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"
@@ -86,6 +90,10 @@ class CheckSettings:
     fresh_hold_months: int = 15
     recompute_tolerance: float = 0.01
     max_daily_move: float = 0.40
+    price_warn: float = 0.005
+    price_hold: float = 0.03
+    figure_warn: float = 0.15
+    figure_hold: float = 0.40
 
 
 @dataclass
@@ -173,11 +181,14 @@ def _check_settings(raw: object, cfg_path: Path) -> CheckSettings:
         values[name] = v
     if values["fresh_warn_months"] > values["fresh_hold_months"]:
         raise ConfigError(f"{cfg_path}: [check] fresh_warn_months must not be more than fresh_hold_months")
-    for name in ("recompute_tolerance", "max_daily_move"):
+    for name in ("recompute_tolerance", "max_daily_move", "price_warn", "price_hold", "figure_warn", "figure_hold"):
         v = raw.get(name, getattr(defaults, name))
         if not isinstance(v, (int, float)) or isinstance(v, bool) or not v > 0:
             raise ConfigError(f"{cfg_path}: [check] {name} must be a number above 0")
         values[name] = float(v)
+    for warn, hold in (("price_warn", "price_hold"), ("figure_warn", "figure_hold")):
+        if values[warn] > values[hold]:
+            raise ConfigError(f"{cfg_path}: [check] {warn} must not be more than {hold}")
     return CheckSettings(**values)
 
 

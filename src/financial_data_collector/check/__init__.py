@@ -22,9 +22,8 @@ __all__ = ["CHECKS", "Check", "CheckContext", "CheckReport", "Finding", "run_che
 
 @dataclass
 class CheckContext:
-    """What a check is given. `outside` is an object with `quote(symbol) -> Quote | None` and
-    `figures(symbol) -> Figures | None`; it is built by `check.outside.default_source()`, which a later task
-    writes. It is None until then."""
+    """What a check is given. `outside` is an `outside.OutsideSource` (`quote(symbol, on)` and `figures(symbol)`);
+    `run_check` builds the real one only when a check first uses it."""
     store: Store
     cfg: Config
     fetch: http.Fetch
@@ -34,6 +33,24 @@ class CheckContext:
 
 
 Check = Callable[[CheckContext], list[Finding]]
+
+
+class _LazyOutside:
+    """The default outside source, built on first use: a run of offline checks never builds it (nor imports yfinance)."""
+
+    def __init__(self) -> None:
+        self._source: Any = None
+
+    def _get(self) -> Any:
+        if self._source is None:
+            self._source = outside_mod.default_source()
+        return self._source
+
+    def quote(self, symbol: str, on: str) -> Any:
+        return self._get().quote(symbol, on)
+
+    def figures(self, symbol: str) -> Any:
+        return self._get().figures(symbol)
 
 CHECKS: dict[str, Check] = {}      # name -> check; the checks register themselves here
 
@@ -69,7 +86,8 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
     own = store is None
     st = store or Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
     try:
-        ctx = CheckContext(store=st, cfg=cfg, fetch=fetch, outside=outside, now=now, sleep=sleep)
+        ctx = CheckContext(store=st, cfg=cfg, fetch=fetch, outside=outside if outside is not None else _LazyOutside(),
+                           now=now, sleep=sleep)
         holds = warns = 0
         errors: list[str] = []
         fields = set(st.check_valuation_columns()) | {"*"}
@@ -103,4 +121,4 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
             st.close()
 
 
-from . import offline, filings  # noqa: E402,F401  (register the checks in CHECKS; last, because they import from here)
+from . import offline, filings, outside as outside_mod  # noqa: E402,F401  (register the checks in CHECKS; last, because they import from here)

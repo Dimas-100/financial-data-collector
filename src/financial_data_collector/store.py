@@ -739,6 +739,12 @@ class Store:
                           "ORDER BY date DESC LIMIT ?", (symbol, limit))
         return [(r[0], r[1], r[2]) for r in reversed(rows)]
 
+    def check_newest_final_bar(self, symbol: str) -> tuple[str, float, float, str] | None:
+        """The newest final bar as (date, close, split_factor, source), or None when there is none."""
+        r = self.query("SELECT date, close, split_factor, source FROM prices WHERE symbol = ? AND final = 1 "
+                       "ORDER BY date DESC LIMIT 1", (symbol,))
+        return (r[0][0], r[0][1], r[0][2], r[0][3]) if r else None
+
     def check_first_price_date(self, symbol: str) -> str | None:
         r = self.query("SELECT MIN(date) FROM prices WHERE symbol = ?", (symbol,))
         return r[0][0] if r else None
