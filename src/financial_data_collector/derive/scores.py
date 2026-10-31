@@ -19,7 +19,7 @@ buying. Each one that cannot be known is `unsupported` or `not_enough_history` a
 `read_insider`, which reads the sibling insider feed once per engine run.
 
 `fund_scores` gives a fund (ETF, mutual fund) its trailing P/E and dividend yield against its own daily snapshots, banded
-only once a year of them exists, and its expense ratio as a value.
+only once a year of them exists and at least MIN_FUND_SNAPSHOTS of them, and its expense ratio as a value.
 """
 from __future__ import annotations
 
@@ -603,6 +603,7 @@ def fundamental_scores(symbol: str, day: str, newest: dict | None, ttm: dict[str
 FUND_METRICS = ("pe", "dividend_yield", "expense_ratio")
 FUND_COLUMNS = {"pe": "trailing_pe", "dividend_yield": "dividend_yield", "expense_ratio": "expense_ratio"}
 FUND_LABELS = {"pe": "trailing P/E", "dividend_yield": "dividend yield", "expense_ratio": "expense ratio"}
+MIN_FUND_SNAPSHOTS = 200              # a band also needs this many of the fund's own snapshots, not only a year's span
 
 
 def fund_scores(symbol: str, day: str, snaps: list[dict], s: EngineSettings, *,
@@ -613,8 +614,9 @@ def fund_scores(symbol: str, day: str, snaps: list[dict], s: EngineSettings, *,
     ascending. The newest one dated on or before `day` is the value; one more than SNAPSHOT_MAX_AGE_DAYS older than
     `day` makes every row `unsupported` ("newest snapshot is from <date>"), none at all "no fund snapshot yet".
     `pe` and `dividend_yield` are ranked among the snapshots with the same `source` as the newest within
-    `history_years`, and get a band only once those span `min_history_days`: until then `not_enough_history` (a fund
-    whose P/E is borrowed from a proxy ETF does not count the proxy's days as its own), with the value and no band.
+    `history_years`, and get a band only once those span `min_history_days` and number at least MIN_FUND_SNAPSHOTS:
+    until then `not_enough_history` (a fund whose P/E is borrowed from a proxy ETF does not count the proxy's days as
+    its own), with the value and no band; short on both, the days reason is the one said.
     `expense_ratio` is a value only. Funds file no statements, so no row names a valuation_daily column; holds: the
     symbol's open holds as the checker wrote them, of which a `*` covering `day` holds every row that has a value, a
     `not_enough_history` one too (value, percentile and band blank; a hold on
@@ -656,6 +658,10 @@ def fund_scores(symbol: str, day: str, snaps: list[dict], s: EngineSettings, *,
                 out.append(row(metric, value, status="not_enough_history",
                                reason=f"{days} days of its own snapshots; a band needs {s.min_history_days}",
                                src=(feed, derived, sources.config("min_history_days", s.min_history_days))))
+            elif len(own) < MIN_FUND_SNAPSHOTS:
+                out.append(row(metric, value, status="not_enough_history",
+                               reason=f"{len(own)} snapshots of its own; a band needs {MIN_FUND_SNAPSHOTS}",
+                               src=(feed, derived)))
             else:
                 out.append(row(metric, value, percentile([v for _, v in own], value), "ok", src=(
                     feed, derived, sources.config("history_years", s.history_years),

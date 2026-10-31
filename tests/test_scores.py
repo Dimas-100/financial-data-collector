@@ -993,3 +993,51 @@ def test_second_run_with_fundamentals_changes_no_row(store, cfg, tmp_path):
     engine.run(store, cfg)
     assert [tuple(r) for r in store.query("SELECT * FROM valuation_scores_raw ORDER BY symbol, metric")] == first
     assert store.conn.total_changes == before
+
+
+# ---- plan 3's deferred boundaries, pinned as the code behaves today (plan 4, Task 2) --------------------------------
+
+@pytest.mark.parametrize("days, want", [(89, 1.0), (90, 0.0), (91, 0.0)])
+def test_insider_window_takes_the_90_days_ending_the_day(store, cfg, tmp_path, days, want):
+    # `start < filed <= day` with start = day - 90: a filing 89 days back is counted, one 90 or 91 days back is not
+    _company(store)
+    cfg.investing_dir = tmp_path / "inv"
+    _insider(tmp_path / "inv" / "data" / "insider.json", {"AAA": [_entry(days, "buy", "0000999002-26-000301")]})
+    r = _run(store, cfg)["insider_net_90d"]
+    assert (r["status"], r["value"]) == ("ok", want)
+
+
+@pytest.mark.parametrize("gap, found", [(349, False), (350, True), (380, True), (381, False)])
+def test_year_earlier_ttm_row_is_350_to_380_days_before_inclusive(gap, found):
+    assert scores.YEAR_EARLIER_DAYS == (350, 380)
+    period = "2026-06-30"
+    earlier = _days_before(period, gap)
+    ttm = {period: {"period_end": period}, earlier: {"period_end": earlier}}
+    got = scores._year_earlier(ttm, period)
+    assert (got is not None) is found
+    if found:
+        assert got["period_end"] == earlier
+
+
+def test_year_earlier_ttm_row_picks_the_one_nearest_a_year():
+    period = "2026-06-30"
+    days = {_days_before(period, g): {"period_end": _days_before(period, g)} for g in (352, 366, 378)}
+    assert scores._year_earlier(days, period)["period_end"] == _days_before(period, 366)
+
+
+@pytest.mark.parametrize("gap, ok", [(29, False), (30, True)])
+def test_estimate_then_is_at_least_30_days_before_now(store, cfg, gap, ok):
+    _company(store)
+    _estimates(store, {_days_before(END, gap): 5.0, END: 5.5})
+    r = _run(store, cfg)["estimate_change_30d"]
+    if ok:
+        assert (r["status"], r["value"]) == ("ok", pytest.approx(0.10))
+    else:
+        assert (r["status"], r["value"]) == ("not_enough_history", None)
+        assert r["status_reason"] == f"estimate snapshots start {_days_before(END, gap)}"
+
+
+def test_snapshot_age_limit_is_7_days_inclusive_for_all_three_feeds():
+    # the estimate and insider rows are pinned through the engine above (7 ok, 8 not); the fund rows in
+    # test_fund_scores.py; here the constant they all read
+    assert scores.SNAPSHOT_MAX_AGE_DAYS == 7

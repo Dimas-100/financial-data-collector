@@ -279,7 +279,9 @@ Each fund (ETF, mutual fund) also gets three scores from its own daily `fund_sna
   Only snapshots with the same `source` as the newest count, so a fund that borrows an ETF's P/E through
   `[fund_proxies]` ranks the proxy's days apart from its own. History starts the day the `funds` step first ran, so a
   fund has **no band** until its own snapshots span `min_history_days` (365): the row is `not_enough_history`, shows
-  its value, and says "<N> days of its own snapshots; a band needs 365". Until then a fund is read by its price
+  its value, and says "<N> days of its own snapshots; a band needs 365". It also needs at least 200 of its own
+  snapshots (`not_enough_history`, "<N> snapshots of its own; a band needs 200"; short on both, the days reason is
+  the one said). Until then a fund is read by its price
   measures only (off the 52-week high, against the 200-day average, the week against the market).
 - `expense_ratio`: the newest snapshot's figure as a fraction (0.0004 = 0.04%); a value only.
 

@@ -275,3 +275,54 @@ def test_fund_scores_is_pure(store):
     assert [r.metric for r in rows] == list(FUND_METRICS)
     assert [r.status for r in rows] == ["not_enough_history", "unsupported", "ok"]
     assert all(r.inputs == () for r in rows)
+
+
+# ---- the band also needs 200 of the fund's own snapshots (plan 4, Task 2) -----------------------------------------------
+
+def test_two_snapshots_a_year_apart_get_no_band(store, cfg):
+    _weekday_bars(store, "VFIAX", asset_type="mutual_fund")
+    _snapshots(store, "VFIAX", [_days(END, 366)[0], END])
+    r = _build(store, cfg, "VFIAX")
+    for m in ("pe", "dividend_yield"):
+        assert (r[m]["status"], r[m]["band"], r[m]["percentile_5y"]) == ("not_enough_history", None, None)
+        assert r[m]["value"] is not None
+        assert r[m]["status_reason"] == "2 snapshots of its own; a band needs 200"
+        src = json.loads(r[m]["sources"])
+        assert any(s["kind"] == "derived" and s["ref"].endswith("(2 snapshots)") for s in src)
+
+
+def test_364_days_no_band_365_days_band(store, cfg):
+    assert scores.MIN_FUND_SNAPSHOTS == 200
+    _weekday_bars(store, "VFIAX", asset_type="mutual_fund")
+    _snapshots(store, "VFIAX", _days(END, 365), pe=_ramp(365))                  # 365 snapshots spanning 364 days
+    r = _build(store, cfg, "VFIAX")
+    assert (r["pe"]["status"], r["pe"]["band"]) == ("not_enough_history", None)
+    assert r["pe"]["status_reason"] == "364 days of its own snapshots; a band needs 365"
+    store.conn.execute("DELETE FROM fund_snapshots")
+    store.conn.commit()
+    _snapshots(store, "VFIAX", _days(END, 366), pe=_ramp(366))                  # spanning 365 days
+    r = _build(store, cfg, "VFIAX")
+    assert (r["pe"]["status"], r["pe"]["band"]) == ("ok", "premium")
+
+
+@pytest.mark.parametrize("n, banded", [(199, False), (200, True)])
+def test_a_band_needs_200_snapshots_even_over_a_year(store, cfg, n, banded):
+    _weekday_bars(store, "VFIAX", asset_type="mutual_fund")
+    days = [_days(END, 366)[0]] + _days(END, n - 1)                              # n snapshots spanning 365 days
+    assert len(days) == n
+    _snapshots(store, "VFIAX", days, pe=_ramp(n), yld=lambda i: 0.05 - i / 100000)
+    r = _build(store, cfg, "VFIAX")
+    for m in ("pe", "dividend_yield"):
+        if banded:
+            assert (r[m]["status"], r[m]["status_reason"]) == ("ok", None)
+            assert r[m]["band"] is not None
+        else:
+            assert (r[m]["status"], r[m]["band"]) == ("not_enough_history", None)
+            assert r[m]["status_reason"] == f"{n} snapshots of its own; a band needs 200"
+
+
+def test_short_on_days_and_count_keeps_the_days_reason(store, cfg):
+    _weekday_bars(store, "VFIAX", asset_type="mutual_fund")
+    _snapshots(store, "VFIAX", _days(END, 30))
+    r = _build(store, cfg, "VFIAX")
+    assert r["pe"]["status_reason"] == "29 days of its own snapshots; a band needs 365"
