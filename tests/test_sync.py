@@ -643,3 +643,36 @@ def test_engine_step_rechecks_what_the_split_wrote_and_reports_the_hold(project,
         assert s.query("SELECT status FROM allocation_proposals")[0][0] == "held"
     finally:
         s.close()
+
+
+def test_engine_step_rechecks_even_when_the_split_raises(project, tmp_path: Path, monkeypatch):
+    from financial_data_collector import check as check_mod
+    from financial_data_collector.derive import split
+    from financial_data_collector.models import AllocationProposal, SplitLine
+    cfg = _with_allocation(project, tmp_path)
+    _covered_derive(cfg)
+    order = []
+    real_check = check_mod.run_check
+    monkeypatch.setattr(check_mod, "run_check",
+                        lambda *a, **k: (order.append(("check", tuple(k["only"]))), real_check(*a, **k))[1])
+
+    def broken(store, cfg, **k):    # wrote a bad proposal, then failed
+        order.append("split")
+        src = ({"kind": "derived", "label": "cash_balances", "date": "2026-02-27", "ref": "c"},)
+        store.write_proposal(AllocationProposal("brokerage", "2026-02-27", 100.0, 100, 0.0,
+                                                (SplitLine("ZZZ", 100, 1.0, "usual", 1.0, ()),), (src,), (), src),
+                             created_at="2026-03-01T12:00:00Z", checked_at=None, replaces=None)
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(split, "run", broken)
+    (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
+    assert order == [("check", ("scores",)), "split", ("check", ("split",))], order
+    assert step.status == "error", step.message
+    assert step.message.startswith("1 symbols, ") and "; checks: 0 holds, 0 warnings, 0 errors" in step.message
+    assert "; split: RuntimeError: boom; split checks: 1 holds, 0 warnings, 0 errors" in step.message, step.message
+    assert len(step.message.splitlines()) == 1
+    s = Store.open(cfg.db_path, migrate=False)
+    try:
+        assert s.query("SELECT status FROM allocation_proposals")[0][0] == "held"      # what it wrote is held
+    finally:
+        s.close()

@@ -274,16 +274,25 @@ def _step_engine(store: Store, cfg: Config, *, progress: Progress, fetch=http.fe
     # re-check opened (the valuation_scores view applies it). Proposals only, never an order; a skipped split never
     # fails the step.
     progress("split")
-    sp = split_mod.run(store, cfg, checked_at=rep.checked_at, now=now or datetime.now(timezone.utc))
-    if sp.skipped:
-        return rep.scores + rep.moves, msg + f"; split: {sp.skipped}", "ok"
-    msg += f"; split: {sp.opened} new, {sp.replaced} replaced, {sp.spent} spent"
-    if sp.notes:        # keys and counts only; one line
-        msg += " (notes: " + "; ".join(" ".join(str(n).split()) for n in sp.notes) + ")"
+    failed = None
+    try:
+        sp = split_mod.run(store, cfg, checked_at=rep.checked_at, now=now or datetime.now(timezone.utc))
+    except Exception as e:  # what it wrote before failing is still re-checked below; the step then reports the error
+        tb = traceback.format_exc().strip().splitlines()
+        failed = " | ".join(tb[-3:])
+        msg += f"; split: {type(e).__name__}: {' '.join(str(e).split())}"
+    else:
+        if sp.skipped:
+            return rep.scores + rep.moves, msg + f"; split: {sp.skipped}", "ok"
+        msg += f"; split: {sp.opened} new, {sp.replaced} replaced, {sp.spent} spent"
+        if sp.notes:        # keys and counts only; one line
+            msg += " (notes: " + "; ".join(" ".join(str(n).split()) for n in sp.notes) + ")"
     # What the split just wrote is examined at once, too: a proposal that breaks a rule is held before anyone reads it.
     progress("checking split")
     chk = check_mod.run_check(cfg, fetch=fetch, now=now, store=store, sleep=sleep, only=["split"])
     msg += f"; split checks: {chk.holds} holds, {chk.warns} warnings, {len(chk.errors)} errors"
+    if failed is not None:
+        return rep.scores + rep.moves, f"{msg} | {failed}", "error"
     return rep.scores + rep.moves, msg, "ok"
 
 
