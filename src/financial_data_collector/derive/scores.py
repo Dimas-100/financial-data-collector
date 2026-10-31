@@ -238,6 +238,8 @@ ESTIMATE_PERIOD = "0y"
 SNAPSHOT_MAX_AGE_DAYS = 7            # a feed or snapshot older than this before the row's day is not used (R9)
 INSIDER_DAYS = 90
 INSIDER_FILE = "insider.json"
+INSIDER_NOT_FOUND = "insider feed not found"
+INSIDER_UNREADABLE = "insider feed unreadable"
 REPORT_BETWEEN = "a report fell between the two snapshots; the year may have rolled"
 
 
@@ -291,16 +293,27 @@ def _text(value: object) -> str | None:
     return (value.strip() or None) if isinstance(value, str) else None
 
 
+class InsiderFeedUnreadable(Exception):
+    """The insider feed file is there but cannot be read: not UTF-8 JSON, or not an object with a `by_ticker` object."""
+
+
 def read_insider(path: Path) -> tuple[dict[str, list[dict]], str | None]:
     """The sibling insider feed: canonical symbol -> its entries, each {filed, accession, direction} (nothing else is
     read: never the feed's links), and the feed's `as_of`. An entry without a readable filing day, or that is no
-    object, is skipped alone; so is a ticker whose entries are no list. Missing or unreadable -> ({}, None)."""
+    object, is skipped alone; so is a ticker whose entries are no list. Missing -> ({}, None); there but unreadable
+    (invalid JSON, the wrong shape, a read error) raises InsiderFeedUnreadable, so the row can say which."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, None
+    except (OSError, ValueError) as e:
+        raise InsiderFeedUnreadable(str(e)) from e
+    try:
+        data = json.loads(text)
         tickers = list(data["by_ticker"].items())
         as_of = _text(data.get("as_of"))
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return {}, None
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as e:
+        raise InsiderFeedUnreadable(str(e)) from e
     out: dict[str, list[dict]] = {}
     for ticker, entries in tickers:
         symbol = canonical(ticker) if isinstance(ticker, str) else ""
@@ -358,7 +371,7 @@ def _year_earlier(ttm: dict[str, dict], period_end: str) -> dict | None:
 
 def fundamental_scores(symbol: str, day: str, newest: dict | None, ttm: dict[str, dict], annual: list[dict],
                        events: list[EarningsEvent], estimates: list[dict],
-                       insider: tuple[list[dict] | None, str | None] | None, cik: str, s: EngineSettings, *,
+                       insider: tuple[list[dict] | None, str | None] | str | None, cik: str, s: EngineSettings, *,
                        bar: tuple | None = None, holds: list[dict] | tuple = (),
                        filing_of: Callable[[str], dict | None] | None = None) -> list[ScoreRow]:
     """The ten fundamental rows of a company on `day`, in FUNDAMENTAL_METRICS order; none has a percentile or band.
@@ -366,8 +379,8 @@ def fundamental_scores(symbol: str, day: str, newest: dict | None, ttm: dict[str
     newest: the symbol's newest valuation_daily row up to `day` with the holds applied (engine.apply_holds over
     engine.statement_holds), or None. ttm: financials_ttm rows by period_end. annual: financials_annual rows,
     ascending. events: its earnings events. estimates: its `0y` estimate snapshots ({date, eps_avg}, ascending).
-    insider: None when the insider feed was not found; (None, as_of) when the feed does not name the symbol;
-    (entries, as_of) otherwise. bar: the newest final bar, for the price source. holds: the symbol's open holds as the
+    insider: None when the insider feed was not found; a text (INSIDER_UNREADABLE) when it is there but cannot be
+    read; (None, as_of) when the feed does not name the symbol; (entries, as_of) otherwise. bar: the newest final bar, for the price source. holds: the symbol's open holds as the
     checker wrote them (a `close` hold keeps its field), so a row is held as the valuation_scores view would hold it:
     an `ok` row whose date an open hold covers, with field `*` or one of the row's inputs, is `held` with no value.
     filing_of: period_end -> its statement filing ({form, accn, filed}) or None.
@@ -545,9 +558,11 @@ def fundamental_scores(symbol: str, day: str, newest: dict | None, ttm: dict[str
                 out.append(row("estimate_change_30d", (now_v - then_v) / abs(then_v), "ok", src=src))
 
     # net insider buying: buys minus sells filed in the 90 days ending `day`, from a feed at most 7 days old
-    feed_day = _iso_day(insider[1]) if insider is not None else None
+    feed_day = _iso_day(insider[1]) if isinstance(insider, tuple) else None
     if insider is None:
-        out.append(row("insider_net_90d", reason="insider feed not found"))
+        out.append(row("insider_net_90d", reason=INSIDER_NOT_FOUND))
+    elif isinstance(insider, str):
+        out.append(row("insider_net_90d", reason=insider))
     elif feed_day is None:
         out.append(row("insider_net_90d", reason="insider feed has no date",
                        src=(sources.feed(INSIDER_FILE, insider[1], None),)))

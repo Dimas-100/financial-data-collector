@@ -596,13 +596,17 @@ def test_read_insider_keeps_canonical_symbols_and_three_fields(tmp_path):
     assert "XLK" not in by
 
 
-def test_read_insider_missing_or_unreadable_is_empty(tmp_path):
+def test_read_insider_missing_is_empty(tmp_path):
     assert scores.read_insider(tmp_path / "none.json") == ({}, None)
+
+
+@pytest.mark.parametrize("data", [b"{not json", json.dumps({"as_of": "2026-10-30"}).encode(), b'["AAA"]',
+                                  json.dumps({"as_of": "2026-10-30", "by_ticker": ["AAA"]}).encode(), bytes([0xFF, 0xFE]) + b"{}"])
+def test_read_insider_unreadable_raises(tmp_path, data):                                  # R17 (M7)
     bad = tmp_path / "bad.json"
-    bad.write_text("{not json", encoding="utf-8")
-    assert scores.read_insider(bad) == ({}, None)
-    bad.write_text(json.dumps({"as_of": "2026-10-30"}), encoding="utf-8")
-    assert scores.read_insider(bad) == ({}, None)
+    bad.write_bytes(data)
+    with pytest.raises(scores.InsiderFeedUnreadable):
+        scores.read_insider(bad)
 
 
 def test_fundamental_scores_is_pure_and_in_metric_order():
@@ -920,6 +924,18 @@ def test_insider_feed_missing_says_so(store, cfg, tmp_path):
     assert (r["status"], r["value"], r["status_reason"]) == ("unsupported", None, "insider feed not found")
     cfg.investing_dir = None
     assert _run(store, cfg)["insider_net_90d"]["status_reason"] == "insider feed not found"
+
+
+@pytest.mark.parametrize("text", ["{not json", json.dumps({"as_of": "2026-10-30", "by_ticker": ["AAA"]})])
+def test_an_unreadable_insider_feed_says_so(store, cfg, tmp_path, text):                 # R17 (M7)
+    _company(store)
+    cfg.investing_dir = tmp_path / "inv"
+    path = tmp_path / "inv" / "data" / "insider.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(text, encoding="utf-8")
+    r = _run(store, cfg)["insider_net_90d"]
+    assert (r["status"], r["value"], r["status_reason"]) == ("unsupported", None, "insider feed unreadable")
+    assert json.loads(r["sources"]) == []
 
 
 def test_an_old_insider_feed_is_unsupported(store, cfg, tmp_path):           # R9: as_of 7 days old is fine, 8 is not

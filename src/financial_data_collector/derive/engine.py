@@ -97,7 +97,7 @@ ANNUAL_ROWS = 12                     # the newest annual rows read for 5-year gr
 
 
 def _company(store: Store, cfg: Config, symbol: str, cik: str, day: str, bar: tuple, holds: list[dict],
-             insider: tuple[list[dict] | None, str | None] | None) -> list[ScoreRow]:
+             insider: tuple[list[dict] | None, str | None] | str | None) -> list[ScoreRow]:
     """A company's scores from its held valuation_daily rows up to `day`: P/E, P/FCF, P/S, EV/EBIT and yield against
     its own history (scores.history_scores; nothing when it has no rows) and the ten fundamentals
     (scores.fundamental_scores, always)."""
@@ -126,9 +126,13 @@ def _company(store: Store, cfg: Config, symbol: str, cik: str, day: str, bar: tu
 
 def _insider_feed(cfg: Config):
     """The insider feed, read once per run: a function symbol -> what scores.fundamental_scores takes as `insider`
-    (None when the feed is missing or unreadable, (None, as_of) when it does not name the symbol)."""
+    (None when the feed is missing, scores.INSIDER_UNREADABLE when it is there but cannot be read, (None, as_of) when
+    it does not name the symbol)."""
     path = cfg.investing_dir / "data" / scores.INSIDER_FILE if cfg.investing_dir is not None else None
-    by_symbol, as_of = scores.read_insider(path) if path is not None else ({}, None)
+    try:
+        by_symbol, as_of = scores.read_insider(path) if path is not None else ({}, None)
+    except scores.InsiderFeedUnreadable:
+        return lambda symbol: scores.INSIDER_UNREADABLE
     found = bool(by_symbol) or as_of is not None
     return lambda symbol: (by_symbol.get(symbol), as_of) if found else None
 
