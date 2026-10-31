@@ -72,3 +72,22 @@ def test_connections_min_hours(tmp_path):
         assert False
     except C.ConfigError as e:
         assert "min_hours" in str(e)
+
+
+def test_config_reads_share_classes(tmp_path: Path):
+    (tmp_path / "config.toml").write_text('[share_classes]\n"xyz.b" = { per = "XYZ.A", ratio = 1500 }\n')
+    cfg = C.load_config(tmp_path)
+    assert cfg.share_classes["XYZ.B"] == C.ShareClass("XYZ.A", 1500.0)
+
+
+def test_config_share_classes_default_empty(tmp_path: Path):
+    C.init_project(tmp_path)
+    assert C.load_config(tmp_path).share_classes == {}
+
+
+@pytest.mark.parametrize("entry", ['"XYZ.B" = 1500', '"XYZ.B" = { per = "XYZ.A" }', '"XYZ.B" = { per = "XYZ.A", ratio = 0 }',
+                                   '"XYZ.B" = { per = "XYZ.A", ratio = "x" }', '"XYZ.B" = { per = "", ratio = 2 }'])
+def test_config_rejects_a_bad_share_class(tmp_path: Path, entry: str):
+    (tmp_path / "config.toml").write_text(f"[share_classes]\n{entry}\n")
+    with pytest.raises(C.ConfigError):
+        C.load_config(tmp_path)

@@ -70,3 +70,24 @@ def test_ttm_available_from_uses_first_filing(store: Store):
     assert _ttm(store, "total_assets", "2025-12-31") == (5510.0, 1, "2026-02-01")   # value re-reported, availability unchanged
     row = store.query("SELECT available_from FROM financials_ttm WHERE cik=? AND period_end='2025-12-31'", (CIK,))[0]
     assert row[0] == "2026-02-01"
+
+
+def test_other_ppe_capex_gives_a_company_a_free_cash_flow(tmp_path: Path):
+    from financial_data_collector.models import Fact as F
+    s = Store.open(tmp_path / "w.db")
+    s.upsert_security("XYZ", "SAMPLE", "stock", "2026-01-01")
+    s.set_security_cik("XYZ", "0000000007", "Sample Other")
+
+    def f(concept, end, val, form, fp, filed, accn, start="2025-01-01"):
+        return F("us-gaap", concept, "USD", start, end, val, 2025, fp, form, filed, accn)
+
+    facts = []
+    for concept, vals in (("NetCashProvidedByUsedInOperatingActivities", (50.0, 110.0, 180.0, 250.0)),
+                          ("PaymentsToAcquireOtherPropertyPlantAndEquipment", (10.0, 22.0, 33.0, 44.0))):
+        for (end, form, fp, filed, accn), val in zip((("2025-03-31", "10-Q", "Q1", "2025-05-01", "q1"), ("2025-06-30", "10-Q", "Q2", "2025-08-01", "q2"),
+                                                      ("2025-09-30", "10-Q", "Q3", "2025-11-01", "q3"), ("2025-12-31", "10-K", "FY", "2026-02-01", "k")), vals):
+            facts.append(f(concept, end, val, form, fp, filed, accn))
+    s.replace_line_items("0000000007", statements.rebuild(facts, s.concept_rules()))
+    row = s.query("SELECT ocf, capex, fcf FROM financials_ttm WHERE cik='0000000007' AND period_end='2025-12-31'")[0]
+    assert tuple(row) == (250.0, 44.0, 206.0)
+    s.close()

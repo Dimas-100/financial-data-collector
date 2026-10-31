@@ -152,7 +152,7 @@ def _step_derive(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple
     progress("replaying history")
     counts.update(history.rebuild(store))
     progress("valuation")
-    counts["valuation_daily symbols"] = valuation.rebuild(store)
+    counts["valuation_daily symbols"] = valuation.rebuild(store, cfg)
     return sum(counts.values()), ", ".join(f"{k} {v}" for k, v in counts.items()), "ok"
 
 

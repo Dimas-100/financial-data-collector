@@ -4,6 +4,7 @@ from pathlib import Path
 
 from financial_data_collector import statements
 from financial_data_collector.collectors.sec_facts import parse_company_facts
+from financial_data_collector.config import ShareClass, load_config
 from financial_data_collector.derive import valuation as V
 from financial_data_collector.models import PriceBar
 from financial_data_collector.store import Store
@@ -12,6 +13,14 @@ TTM1 = dict(period_end="2025-03-31", available_from="2025-05-01", revenue=1000.0
             fcf=120.0, eps_diluted=2.0, shares_outstanding=50.0, shares_diluted=52.0)
 TTM2 = dict(period_end="2025-06-30", available_from="2025-08-01", revenue=1200.0, net_income=120.0, ocf=160.0,
             fcf=-10.0, eps_diluted=None, shares_outstanding=None, shares_diluted=48.0)
+
+
+def _cfg(tmp_path: Path, extra: str = ""):
+    """A real Config read from a config.toml in its own folder (db path unused: the tests hold their Store)."""
+    root = tmp_path / "cfg"
+    root.mkdir(exist_ok=True)
+    (root / "config.toml").write_text(extra, encoding="utf-8")
+    return load_config(root)
 
 
 def _rows(rows):
@@ -59,7 +68,7 @@ def test_rebuild_writes_only_symbols_with_statements(tmp_path: Path, fixtures: P
     s.upsert_security("KO", "COCA COLA CO", "stock", "2026-01-01")
     for sym in ("AAPL", "KO"):
         s.write_prices(sym, [PriceBar("2026-01-15", 100.0, 100.0), PriceBar("2026-02-02", 110.0, 110.0, 1.0)], "tiingo")
-    n = V.rebuild(s)
+    n = V.rebuild(s, _cfg(tmp_path))
     rows = s.query("SELECT symbol, date, revenue_ttm, shares, pe FROM valuation_daily ORDER BY symbol, date")
     # 2026-01-15 already has the Q3-2025 10-Q window in force (1090); the 10-K window (1100) starts 2026-02-01
     assert n == 1 and [tuple(r)[:3] for r in rows] == [("AAPL", "2026-01-15", 1090.0), ("AAPL", "2026-02-02", 1100.0)]
@@ -87,7 +96,7 @@ def test_rebuild_covers_every_share_class_of_a_cik(tmp_path: Path, fixtures: Pat
         s.write_prices(sym, [PriceBar("2026-02-02", 10.0 if sym == "BRK.B" else 15000.0, 10.0)], "tiingo")
     s.write_sec_facts("0000000001", facts)
     s.replace_line_items("0000000001", statements.rebuild(facts, s.concept_rules()))
-    assert V.rebuild(s) == 2
+    assert V.rebuild(s, _cfg(tmp_path)) == 2
     assert [r[0] for r in s.query("SELECT symbol FROM valuation_latest ORDER BY 1")] == ["BRK.A", "BRK.B"]
     s.close()
 
@@ -102,7 +111,7 @@ def test_valuation_ignores_non_final_bars(tmp_path: Path, fixtures: Path):
     s.write_prices("AAPL", [PriceBar("2026-01-15", 100.0, 100.0)], "tiingo")
     s.write_prices("AAPL", [PriceBar("2026-02-02", 110.0, 110.0)], "yfinance",
                    fetched_at=datetime(2026, 2, 2, 19, 37, tzinfo=timezone.utc))        # 14:37 in New York: still intraday
-    V.rebuild(s)
+    V.rebuild(s, _cfg(tmp_path))
     rows = s.query("SELECT date, status, status_reason FROM valuation_daily")
     assert [tuple(r) for r in rows] == [("2026-01-15", "ok", None)]
     s.close()
@@ -147,7 +156,7 @@ def test_foreign_filer_and_fund_get_unsupported_rows(tmp_path: Path, fixtures: P
         s.upsert_security(sym, "SAMPLE", kind, "2026-01-01")
         s.set_security_cik(sym, cik, "Sample")
         s.write_prices(sym, [PriceBar("2026-01-15", 10.0, 10.0), PriceBar("2026-02-02", 11.35, 11.35, 0.4)], "tiingo")
-    assert V.rebuild(s) == 2
+    assert V.rebuild(s, _cfg(tmp_path)) == 2
     rows = s.query("SELECT * FROM valuation_latest ORDER BY symbol")
     reasons = {r["symbol"]: r["status_reason"] for r in rows}
     assert reasons == {"SAMPLEF": "foreign filer: IFRS statements not read yet", "SAMPLEX": "fund: no company statements"}
@@ -155,4 +164,58 @@ def test_foreign_filer_and_fund_get_unsupported_rows(tmp_path: Path, fixtures: P
         assert r["status"] == "unsupported" and r["close"] == 11.35 and r["date"] == "2026-02-02"
         assert all(r[c] is None for c in V.COLUMNS if c not in ("symbol", "date", "close", "status", "status_reason"))
     assert s.query("SELECT COUNT(*) FROM valuation_daily")[0][0] == 4
+    s.close()
+
+
+def test_share_class_restates_eps_and_shares():
+    ttm = dict(TTM1, eps_diluted=30000.0, shares_outstanding=1.4e6)  # per class-A terms
+    (r,) = _rows(V.build("XYZ.B", [("2025-05-01", 500.0, 0.0, 1.0)], [ttm], share_class=ShareClass("XYZ.A", 1500)))
+    assert r["eps_ttm"] == 20.0 and r["shares"] == 1.4e6 * 1500 and r["pe"] == 25.0
+    assert r["market_cap"] == 500.0 * 1.4e6 * 1500 and r["status"] == "ok"
+
+
+def test_share_class_restates_before_the_split_scaling():
+    prices = [("2025-05-01", 500.0, 0.0, 1.0), ("2025-06-02", 250.0, 0.0, 2.0)]      # 2:1 split on 06-02
+    ttm = dict(TTM1, eps_diluted=30000.0, shares_outstanding=1.4e6)
+    by = {r["date"]: r for r in _rows(V.build("XYZ.B", prices, [ttm], share_class=ShareClass("XYZ.A", 1500)))}
+    assert by["2025-06-02"]["eps_ttm"] == 10.0 and by["2025-06-02"]["shares"] == 1.4e6 * 1500 * 2
+    assert by["2025-06-02"]["pe"] == 25.0
+
+
+def test_share_class_with_no_share_count_or_eps_is_unsupported():
+    ttm = dict(TTM1, eps_diluted=None, shares_outstanding=None, shares_diluted=None)
+    prices = [("2025-05-01", 500.0, 1.0, 1.0), ("2025-06-02", 510.0, 0.0, 1.0)]
+    rows = _rows(V.build("XYZ.B", prices, [ttm], share_class=ShareClass("XYZ.A", 1500)))
+    assert [r["date"] for r in rows] == ["2025-05-01", "2025-06-02"]
+    for r in rows:
+        assert r["status"] == "unsupported" and r["status_reason"] == "share count not in its filings"
+        assert all(r[c] is None for c in V.COLUMNS if c not in ("symbol", "date", "close", "status", "status_reason"))
+    assert rows[1]["close"] == 510.0
+
+
+def test_share_class_with_eps_only_is_still_valued():
+    ttm = dict(TTM1, eps_diluted=30000.0, shares_outstanding=None, shares_diluted=None)
+    (r,) = _rows(V.build("XYZ.B", [("2025-05-01", 500.0, 0.0, 1.0)], [ttm], share_class=ShareClass("XYZ.A", 1500)))
+    assert r["status"] == "ok" and r["eps_ttm"] == 20.0 and r["pe"] == 25.0 and r["shares"] is None
+
+
+def test_company_without_a_share_class_and_no_shares_is_unchanged():
+    ttm = dict(TTM1, eps_diluted=None, shares_outstanding=None, shares_diluted=None)
+    (r,) = _rows(V.build("X", [("2025-05-01", 500.0, 0.0, 1.0)], [ttm]))
+    assert r["status"] == "ok" and r["shares"] is None and r["revenue_ttm"] == 1000.0
+
+
+def test_rebuild_applies_the_configured_share_class(tmp_path: Path, fixtures: Path):
+    s = Store.open(tmp_path / "w.db")
+    facts = parse_company_facts(json.loads((fixtures / "sec" / "companyfacts_SAMPLE.json").read_text()))
+    for sym in ("XYZ.A", "XYZ.B"):
+        s.upsert_security(sym, "SAMPLE HOLDING", "stock", "2026-01-01")
+        s.set_security_cik(sym, "0000000001", "Sample Corp")
+        s.write_prices(sym, [PriceBar("2026-02-02", 10.0, 10.0)], "tiingo")
+    s.write_sec_facts("0000000001", facts)
+    s.replace_line_items("0000000001", statements.rebuild(facts, s.concept_rules()))
+    cfg = _cfg(tmp_path, '[share_classes]\n"XYZ.B" = { per = "XYZ.A", ratio = 1500 }\n')
+    assert V.rebuild(s, cfg) == 2
+    shares = {r["symbol"]: r["shares"] for r in s.query("SELECT symbol, shares FROM valuation_latest")}
+    assert shares["XYZ.B"] == shares["XYZ.A"] * 1500
     s.close()

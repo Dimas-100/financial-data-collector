@@ -227,3 +227,24 @@ def test_first_filed_survives_later_re_reporting():
     assert (assets.value, assets.filed, assets.first_filed) == (505.0, "2026-05-01", "2026-02-01")
     q2 = out[("revenue", "quarter", "2025-06-30")]                      # derived from H1 - Q1
     assert q2.is_derived and q2.first_filed == "2025-08-01"
+
+
+def test_other_ppe_capex_maps_without_changing_other_companies(items):
+    # the seed row is additive: every existing fixture shapes identically with and without it
+    all_rules = load_rules()
+    old_rules = [r for r in all_rules if r.concept != "PaymentsToAcquireOtherPropertyPlantAndEquipment"]
+    assert len(old_rules) == len(all_rules) - 1
+    assert S.rebuild(parse_company_facts(json.loads((FIXTURES / "sec" / "companyfacts_SAMPLE.json").read_text())), old_rules) == items
+
+
+def test_other_ppe_is_the_capex_when_the_usual_concept_is_missing():
+    facts = [Fact("us-gaap", "PaymentsToAcquireOtherPropertyPlantAndEquipment", "USD", "2025-01-01", "2025-12-31", 30.0, 2025, "FY", "10-K", "2026-02-01", "k25")]
+    out = S.rebuild(facts, load_rules())
+    assert [(i.line_item, i.period_kind, i.value, i.concept) for i in out] == [
+        ("capex", "annual", 30.0, "PaymentsToAcquireOtherPropertyPlantAndEquipment")]
+
+
+def test_the_usual_capex_concept_wins_over_other_ppe():
+    f = lambda c, v: Fact("us-gaap", c, "USD", "2025-01-01", "2025-12-31", v, 2025, "FY", "10-K", "2026-02-01", "k25")
+    out = S.rebuild([f("PaymentsToAcquirePropertyPlantAndEquipment", 40.0), f("PaymentsToAcquireOtherPropertyPlantAndEquipment", 30.0)], load_rules())
+    assert [(i.line_item, i.value) for i in out] == [("capex", 40.0)]

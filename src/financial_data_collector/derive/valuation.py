@@ -10,6 +10,7 @@ from bisect import bisect_right
 from calendar import monthrange
 from datetime import date, timedelta
 
+from ..config import Config, ShareClass
 from ..store import Store
 
 COLUMNS = (
@@ -23,6 +24,7 @@ UNSUPPORTED = {
     "foreign_filer": "foreign filer: IFRS statements not read yet",
     "fund": "fund: no company statements",
 }
+NO_SHARE_COUNT = "share count not in its filings"
 
 
 def _add_months(d: date, months: int) -> date:
@@ -37,7 +39,8 @@ def _ratio(num: float | None, den: float | None) -> float | None:
     return num / den if (num is not None and den is not None and den > 0) else None
 
 
-def build(symbol: str, prices: list[tuple[str, float, float, float]], ttm: list[dict]) -> list[tuple]:
+def build(symbol: str, prices: list[tuple[str, float, float, float]], ttm: list[dict],
+          share_class: ShareClass | None = None) -> list[tuple]:
     """One row per price date from the first filing onward.
 
     prices: ascending (date, close, dividend, split_factor). ttm: rows of financials_ttm
@@ -46,6 +49,10 @@ def build(symbol: str, prices: list[tuple[str, float, float, float]], ttm: list[
     the greatest available_from <= date. When that row's period_end is more than STALE_MONTHS
     calendar months before the price date, the row is "stale": close, dividends and the period
     markers stay, every figure that comes from the statements is NULL.
+
+    share_class: the company states shares and EPS in another class's terms (config [share_classes]).
+    EPS is divided by the ratio and shares multiplied by it, before the split scaling. When the TTM
+    row in force has neither shares nor EPS there is nothing to restate: the row is "unsupported".
     """
     if not ttm:
         return []
@@ -91,11 +98,17 @@ def build(symbol: str, prices: list[tuple[str, float, float, float]], ttm: list[
                 "stale", f"newest statements end {current['period_end']}",
             ))
             continue
-        scale = s_now / s_at(current["period_end"])  # splits since the statement's period end
         shares = current.get("shares_outstanding") or current.get("shares_diluted")
+        eps = current.get("eps_diluted")
+        if share_class and not shares and eps is None:
+            rows.append(_unsupported_row(symbol, d, close, NO_SHARE_COUNT))
+            continue
+        if share_class:
+            shares = shares * share_class.ratio if shares else None
+            eps = eps / share_class.ratio if eps is not None else None
+        scale = s_now / s_at(current["period_end"])  # splits since the statement's period end
         shares = shares * scale if shares else None
         market_cap = close * shares if shares else None
-        eps = current.get("eps_diluted")
         eps = eps / scale if eps is not None else None
         if eps is None and current.get("net_income") is not None and shares:
             eps = current["net_income"] / shares
@@ -109,16 +122,20 @@ def build(symbol: str, prices: list[tuple[str, float, float, float]], ttm: list[
     return rows
 
 
+def _unsupported_row(symbol: str, d: str, close: float, reason: str) -> tuple:
+    """A row holding only the close and why no valuation is made (everything between is NULL)."""
+    return (symbol, d, close, *((None,) * 14), "unsupported", reason)
+
+
 def unsupported(symbol: str, prices: list[tuple[str, float, float, float]], reason: str) -> list[tuple]:
     """One row per price date holding only the close and why no valuation is made."""
-    nulls = (None,) * 12
-    return [(symbol, d, close, *nulls, None, None, "unsupported", reason) for d, close, _, _ in prices]
+    return [_unsupported_row(symbol, d, close, reason) for d, close, _, _ in prices]
 
 
-def rebuild(store: Store) -> int:
+def rebuild(store: Store, cfg: Config) -> int:
     """Rebuild valuation_daily for every symbol whose company has TTM statements, plus a row per
     price date, status 'unsupported', for foreign filers and funds (which have no TTM rows).
-    Returns symbols written."""
+    cfg.share_classes restates a configured symbol's per-share figures. Returns symbols written."""
     ttm_by_cik = store.ttm_by_cik()
     rows: list[tuple] = []
     symbols = 0
@@ -130,7 +147,7 @@ def rebuild(store: Store) -> int:
             ttm = ttm_by_cik.get(cik)
             if not ttm:
                 continue
-            built = build(symbol, prices, ttm)
+            built = build(symbol, prices, ttm, cfg.share_classes.get(symbol))
         if built:
             symbols += 1
             rows.extend(built)

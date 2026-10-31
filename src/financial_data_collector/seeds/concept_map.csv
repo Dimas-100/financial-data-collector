@@ -54,6 +54,7 @@ ocf,cashflow,duration,us-gaap,NetCashProvidedByUsedInOperatingActivities,1
 ocf,cashflow,duration,us-gaap,NetCashProvidedByUsedInOperatingActivitiesContinuingOperations,2
 capex,cashflow,duration,us-gaap,PaymentsToAcquirePropertyPlantAndEquipment,1
 capex,cashflow,duration,us-gaap,PaymentsToAcquireProductiveAssets,2
+capex,cashflow,duration,us-gaap,PaymentsToAcquireOtherPropertyPlantAndEquipment,3
 investing_cash_flow,cashflow,duration,us-gaap,NetCashProvidedByUsedInInvestingActivities,1
 financing_cash_flow,cashflow,duration,us-gaap,NetCashProvidedByUsedInFinancingActivities,1
 depreciation_amortization,cashflow,duration,us-gaap,DepreciationDepletionAndAmortization,1

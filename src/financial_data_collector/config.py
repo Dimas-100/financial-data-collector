@@ -38,6 +38,9 @@ dir = "../investing/data"          # must already exist; never created
 
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"
+
+[share_classes]                    # per-share figures a company states for one class only (SEC facts carry no class split)
+# "XYZ.B" = { per = "XYZ.A", ratio = 1500 }   # ratio = how many XYZ.B make one XYZ.A; EPS is divided, shares multiplied
 """
 
 ENV_EXAMPLE = """# Copy to .env (gitignored). Values are never logged.
@@ -60,6 +63,16 @@ class ConfigError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class ShareClass:
+    """A symbol whose company states per-share figures in another class's terms.
+
+    ratio = how many shares of this symbol make one share of `per`: EPS is divided by it, shares multiplied.
+    """
+    per: str
+    ratio: float
+
+
 @dataclass
 class Config:
     root: Path
@@ -75,6 +88,7 @@ class Config:
     snaptrade_enabled: bool = True
     snaptrade_dir: Path | None = None
     classify: dict[str, str] = field(default_factory=dict)
+    share_classes: dict[str, ShareClass] = field(default_factory=dict)
     tiingo_token: str | None = None
     fred_api_key: str | None = None
     sec_user_agent: str | None = None
@@ -111,6 +125,21 @@ def _secret(name: str, dotenv: dict[str, str | None]) -> str | None:
     v = os.environ.get(name) or dotenv.get(name) or ""
     v = v.strip()
     return None if (not v or v in _PLACEHOLDERS) else v
+
+
+def _share_classes(raw: object, cfg_path: Path) -> dict[str, ShareClass]:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{cfg_path}: [share_classes] must be a table")
+    out: dict[str, ShareClass] = {}
+    for symbol, entry in raw.items():
+        per = entry.get("per") if isinstance(entry, dict) else None
+        ratio = entry.get("ratio") if isinstance(entry, dict) else None
+        if not isinstance(per, str) or not per.strip():
+            raise ConfigError(f'{cfg_path}: [share_classes] "{symbol}" needs per = "SYMBOL" (the class its figures are stated for)')
+        if not isinstance(ratio, (int, float)) or isinstance(ratio, bool) or not ratio > 0:
+            raise ConfigError(f'{cfg_path}: [share_classes] "{symbol}" needs ratio = a number above 0')
+        out[str(symbol).upper()] = ShareClass(per.strip().upper(), float(ratio))
+    return out
 
 
 def load_config(root: Path) -> Config:
@@ -153,6 +182,7 @@ def load_config(root: Path) -> Config:
         snaptrade_enabled=bool(snap.get("enabled", True)),
         snaptrade_dir=(root / snap_dir).resolve() if snap_dir else None,
         classify={str(k).upper(): str(v) for k, v in raw.get("classify", {}).items()},
+        share_classes=_share_classes(raw.get("share_classes", {}), cfg_path),
         tiingo_token=_secret("TIINGO_API_TOKEN", dotenv),
         fred_api_key=_secret("FRED_API_KEY", dotenv),
         sec_user_agent=_secret("SEC_USER_AGENT", dotenv),

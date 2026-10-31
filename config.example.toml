@@ -28,3 +28,6 @@ dir = "../investing/data"          # must already exist; never created
 
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"
+
+[share_classes]                    # per-share figures a company states for one class only (SEC facts carry no class split)
+# "XYZ.B" = { per = "XYZ.A", ratio = 1500 }   # ratio = how many XYZ.B make one XYZ.A; EPS is divided, shares multiplied
