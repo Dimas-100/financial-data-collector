@@ -566,9 +566,9 @@ class Store:
             out.setdefault(r["cik"], []).append(dict(r))
         return out
 
-    def securities_with_cik(self) -> list[tuple[str, str]]:
-        return [(r[0], r[1]) for r in self.query(
-            "SELECT symbol, cik FROM securities WHERE cik IS NOT NULL ORDER BY symbol")]
+    def securities_with_cik(self) -> list[tuple[str, str, str]]:
+        return [(r[0], r[1], r[2]) for r in self.query(
+            "SELECT symbol, cik, asset_type FROM securities WHERE cik IS NOT NULL ORDER BY symbol")]
 
     # The SnapTrade feed usually re-syncs the broker once a day, early, so whatever time the
     # export ran its positions are most likely start-of-day: report it as a pre-open time. A CSV

@@ -7,6 +7,7 @@ trailing dividends are restated in the price date's share terms.
 from __future__ import annotations
 
 from bisect import bisect_right
+from calendar import monthrange
 from datetime import date, timedelta
 
 from ..store import Store
@@ -14,8 +15,22 @@ from ..store import Store
 COLUMNS = (
     "symbol", "date", "close", "shares", "market_cap", "revenue_ttm", "net_income_ttm", "ocf_ttm", "fcf_ttm",
     "eps_ttm", "pe", "ps", "p_fcf", "dividends_12m", "dividend_yield", "ttm_period_end", "available_from",
+    "status", "status_reason",
 )
 DIVIDEND_WINDOW_DAYS = 365
+STALE_MONTHS = 15
+UNSUPPORTED = {
+    "foreign_filer": "foreign filer: IFRS statements not read yet",
+    "fund": "fund: no company statements",
+}
+
+
+def _add_months(d: date, months: int) -> date:
+    """Calendar-month arithmetic; the day is clamped when the target month is shorter."""
+    index = d.year * 12 + (d.month - 1) + months
+    year, month = divmod(index, 12)
+    month += 1
+    return date(year, month, min(d.day, monthrange(year, month)[1]))
 
 
 def _ratio(num: float | None, den: float | None) -> float | None:
@@ -28,7 +43,9 @@ def build(symbol: str, prices: list[tuple[str, float, float, float]], ttm: list[
     prices: ascending (date, close, dividend, split_factor). ttm: rows of financials_ttm
     with period_end, available_from, revenue, net_income, ocf, fcf, eps_diluted,
     shares_outstanding, shares_diluted. The TTM row in force on a date is the one with
-    the greatest available_from <= date.
+    the greatest available_from <= date. When that row's period_end is more than STALE_MONTHS
+    calendar months before the price date, the row is "stale": close, dividends and the period
+    markers stay, every figure that comes from the statements is NULL.
     """
     if not ttm:
         return []
@@ -65,6 +82,15 @@ def build(symbol: str, prices: list[tuple[str, float, float, float]], ttm: list[
             div_sum -= window.pop(0)[1]
         if current is None:
             continue
+        dividends_12m = round(div_sum / s_now, 10)
+        yield_ = (dividends_12m / close) if close else None
+        if date.fromisoformat(d) > _add_months(date.fromisoformat(current["period_end"]), STALE_MONTHS):
+            rows.append((
+                symbol, d, close, None, None, None, None, None, None, None, None, None, None,
+                dividends_12m, yield_, current["period_end"], current["available_from"],
+                "stale", f"newest statements end {current['period_end']}",
+            ))
+            continue
         scale = s_now / s_at(current["period_end"])  # splits since the statement's period end
         shares = current.get("shares_outstanding") or current.get("shares_diluted")
         shares = shares * scale if shares else None
@@ -74,27 +100,37 @@ def build(symbol: str, prices: list[tuple[str, float, float, float]], ttm: list[
         if eps is None and current.get("net_income") is not None and shares:
             eps = current["net_income"] / shares
         pe = close / eps if (eps is not None and eps > 0) else None
-        dividends_12m = round(div_sum / s_now, 10)
         rows.append((
             symbol, d, close, shares, market_cap,
             current.get("revenue"), current.get("net_income"), current.get("ocf"), current.get("fcf"),
             eps, pe, _ratio(market_cap, current.get("revenue")), _ratio(market_cap, current.get("fcf")),
-            dividends_12m, (dividends_12m / close) if close else None,
-            current["period_end"], current["available_from"],
+            dividends_12m, yield_, current["period_end"], current["available_from"], "ok", None,
         ))
     return rows
 
 
+def unsupported(symbol: str, prices: list[tuple[str, float, float, float]], reason: str) -> list[tuple]:
+    """One row per price date holding only the close and why no valuation is made."""
+    nulls = (None,) * 12
+    return [(symbol, d, close, *nulls, None, None, "unsupported", reason) for d, close, _, _ in prices]
+
+
 def rebuild(store: Store) -> int:
-    """Rebuild valuation_daily for every symbol whose company has TTM statements. Returns symbols written."""
+    """Rebuild valuation_daily for every symbol whose company has TTM statements, plus a row per
+    price date, status 'unsupported', for foreign filers and funds (which have no TTM rows).
+    Returns symbols written."""
     ttm_by_cik = store.ttm_by_cik()
     rows: list[tuple] = []
     symbols = 0
-    for symbol, cik in store.securities_with_cik():
-        ttm = ttm_by_cik.get(cik)
-        if not ttm:
-            continue
-        built = build(symbol, store.prices_series(symbol, final_only=True), ttm)
+    for symbol, cik, asset_type in store.securities_with_cik():
+        prices = store.prices_series(symbol, final_only=True)
+        if asset_type in UNSUPPORTED:
+            built = unsupported(symbol, prices, UNSUPPORTED[asset_type])
+        else:
+            ttm = ttm_by_cik.get(cik)
+            if not ttm:
+                continue
+            built = build(symbol, prices, ttm)
         if built:
             symbols += 1
             rows.extend(built)

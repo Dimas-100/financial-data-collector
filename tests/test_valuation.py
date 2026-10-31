@@ -106,3 +106,53 @@ def test_valuation_ignores_non_final_bars(tmp_path: Path, fixtures: Path):
     rows = s.query("SELECT date, status, status_reason FROM valuation_daily")
     assert [tuple(r) for r in rows] == [("2026-01-15", "ok", None)]
     s.close()
+
+
+def test_ttm_older_than_15_months_is_stale_not_a_ratio():
+    ttm = dict(TTM1, period_end="2012-12-31", available_from="2013-04-02")
+    (r,) = _rows(V.build("X", [("2026-10-29", 11.35, 0.0, 1.0)], [ttm]))
+    assert r["status"] == "stale" and r["pe"] is None and r["ps"] is None and r["p_fcf"] is None
+    assert r["status_reason"] == "newest statements end 2012-12-31"
+    assert r["close"] == 11.35 and r["ttm_period_end"] == "2012-12-31" and r["available_from"] == "2013-04-02"
+    for col in ("shares", "market_cap", "revenue_ttm", "net_income_ttm", "ocf_ttm", "fcf_ttm", "eps_ttm"):
+        assert r[col] is None, col
+
+
+def test_stale_row_keeps_the_price_side_dividends():
+    ttm = dict(TTM1, period_end="2012-12-31", available_from="2013-04-02")
+    prices = [("2026-09-01", 10.0, 0.5, 1.0), ("2026-10-29", 10.0, 0.0, 1.0)]
+    r = _rows(V.build("X", prices, [ttm]))[-1]
+    assert r["status"] == "stale" and r["dividends_12m"] == 0.5 and abs(r["dividend_yield"] - 0.05) < 1e-9
+
+
+def test_stale_boundary_is_15_calendar_months_with_the_day_clamped():
+    ttm = dict(TTM1, period_end="2025-11-30", available_from="2026-01-15")
+    prices = [("2027-02-28", 10.0, 0.0, 1.0), ("2027-03-01", 10.0, 0.0, 1.0)]
+    by = {r["date"]: r for r in _rows(V.build("X", prices, [ttm]))}
+    assert by["2027-02-28"]["status"] == "ok" and by["2027-02-28"]["status_reason"] is None   # 11-30 + 15 months = 02-28
+    assert by["2027-03-01"]["status"] == "stale"
+
+
+def test_stale_recovers_when_a_new_filing_lands():
+    old = dict(TTM1, period_end="2024-03-31", available_from="2024-05-01")
+    new = dict(TTM1, period_end="2025-06-30", available_from="2025-08-01")
+    prices = [("2025-07-15", 10.0, 0.0, 1.0), ("2025-08-01", 10.0, 0.0, 1.0)]
+    by = {r["date"]: r for r in _rows(V.build("X", prices, [old, new]))}
+    assert by["2025-07-15"]["status"] == "stale" and by["2025-08-01"]["status"] == "ok"
+
+
+def test_foreign_filer_and_fund_get_unsupported_rows(tmp_path: Path, fixtures: Path):
+    s = Store.open(tmp_path / "w.db")
+    for sym, kind, cik in (("SAMPLEF", "foreign_filer", "0000000002"), ("SAMPLEX", "fund", "0000000003")):
+        s.upsert_security(sym, "SAMPLE", kind, "2026-01-01")
+        s.set_security_cik(sym, cik, "Sample")
+        s.write_prices(sym, [PriceBar("2026-01-15", 10.0, 10.0), PriceBar("2026-02-02", 11.35, 11.35, 0.4)], "tiingo")
+    assert V.rebuild(s) == 2
+    rows = s.query("SELECT * FROM valuation_latest ORDER BY symbol")
+    reasons = {r["symbol"]: r["status_reason"] for r in rows}
+    assert reasons == {"SAMPLEF": "foreign filer: IFRS statements not read yet", "SAMPLEX": "fund: no company statements"}
+    for r in rows:
+        assert r["status"] == "unsupported" and r["close"] == 11.35 and r["date"] == "2026-02-02"
+        assert all(r[c] is None for c in V.COLUMNS if c not in ("symbol", "date", "close", "status", "status_reason"))
+    assert s.query("SELECT COUNT(*) FROM valuation_daily")[0][0] == 4
+    s.close()
