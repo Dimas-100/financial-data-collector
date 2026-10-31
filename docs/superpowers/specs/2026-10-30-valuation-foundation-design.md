@@ -1,7 +1,6 @@
 # Valuation foundation: correct data, an independent checker, a sourced valuation engine
 
-Date: 2026-10-30. Status: written from the conversation, with the builder check's answers folded in;
-waiting for the owner's approval before a plan.
+Date: 2026-10-30. Status: approved by the owner 2026-10-30, with the builder check's answers folded in.
 
 ## Intent
 
