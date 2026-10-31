@@ -23,7 +23,8 @@ COUNT_TABLES = (
     "accounts", "securities", "position_snapshots", "cash_balances", "transactions",
     "prices", "sec_facts", "financial_line_items", "sync_runs", "ingested_files",
     "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily", "connections",
-    "unexplained_daily", "macro_observations", "check_runs", "check_findings",
+    "unexplained_daily", "macro_observations", "check_runs", "check_findings", "fund_snapshots", "earnings_events",
+    "estimate_snapshots",
 )
 
 
@@ -199,16 +200,21 @@ class Store:
 
     def mark_benchmarks(self, symbols: Iterable[str]) -> None:
         """Make the listed symbols the benchmarks and nothing else: missing ones are recorded as ETFs, listed ones
-        of unknown type become ETFs (a known type is kept), the mark is set on them and cleared on every other row.
-        What config.toml says wins on every sync, so removing a benchmark there unmarks it here."""
+        of unknown type become ETFs (a known type is kept), the mark is set on them and cleared on every other marked
+        row. What config.toml says wins on every sync, so removing a benchmark there unmarks it here. A benchmark is
+        never parked, so a listed symbol parked before it became one is unparked. A row already as it should be is not
+        written, so a repeat sync changes nothing."""
         listed = list(dict.fromkeys(symbols))
         with self.conn:
             for sym in listed:
                 self.conn.execute("INSERT OR IGNORE INTO securities (symbol, asset_type, first_seen) VALUES (?, 'etf', ?)",
                                   (sym, today()))
                 self.conn.execute("UPDATE securities SET asset_type = 'etf' WHERE symbol = ? AND asset_type = 'unknown'", (sym,))
-            self.conn.execute("UPDATE securities SET benchmark = 0")
-            self.conn.executemany("UPDATE securities SET benchmark = 1 WHERE symbol = ?", [(s,) for s in listed])
+            marks = ",".join("?" * len(listed))
+            self.conn.execute(f"UPDATE securities SET benchmark = 0 WHERE benchmark = 1 AND symbol NOT IN ({marks})", listed)
+            self.conn.executemany(
+                "UPDATE securities SET benchmark = 1, parked_reason = NULL, miss_runs = 0 WHERE symbol = ? "
+                "AND (benchmark = 0 OR parked_reason IS NOT NULL OR miss_runs != 0)", [(s,) for s in listed])
 
     # ---- parking: symbols nothing knows ----------------------------------
     def count_miss(self, symbol: str) -> int:

@@ -148,6 +148,10 @@ def test_files_and_runs(store: Store):
     assert counts["ingested_files"] == 1 and counts["sync_runs"] == 1
 
 
+def test_counts_include_the_valuation_foundation_tables(store: Store):
+    assert {"fund_snapshots", "earnings_events", "estimate_snapshots"} <= set(store.counts())
+
+
 def test_security_sec_fields(store: Store):
     store.upsert_security("AAPL", first_seen="2026-01-01")
     store.set_security_cik("AAPL", "0000320193", "Apple Inc.")

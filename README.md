@@ -105,7 +105,8 @@ for the day.
 They are marked in `securities.benchmark`, collected like any symbol, and never counted as holdings. `fdc export` leaves
 them out unless you also hold them or list them, and the checker compares their newest close with a second provider's
 (`prices2`). Set `[benchmarks]` in `config.toml` to change the market fund or to replace the sector list; remove a
-benchmark there and its mark goes at the next sync.
+benchmark there and its mark goes at the next sync. A benchmark is never parked; a symbol parked before it became one
+is unparked.
 
 Replayed history before your first snapshot assumes the transaction history starts at account opening; for an
 account with a partial history (a broker feed that only goes back a year) treat `reconstructed` cash as approximate.

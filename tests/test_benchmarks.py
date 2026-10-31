@@ -132,6 +132,25 @@ def test_held_symbols_are_the_latest_positions(store):
     assert store.check_benchmark_symbols() == ["SPY", "XLK"]
 
 
+def test_a_symbol_parked_before_it_became_a_benchmark_is_unparked(store):
+    store.upsert_security("XLK", first_seen="2026-01-01")
+    store.count_miss("XLK")
+    store.park("XLK", "no bars from any provider")
+    store.mark_benchmarks(["XLK"])
+    row = store.query("SELECT parked_reason, miss_runs, benchmark FROM securities WHERE symbol = 'XLK'")[0]
+    assert tuple(row) == (None, 0, 1)
+
+
+def test_marking_the_same_benchmarks_again_writes_nothing(store):
+    store.upsert_security("AAA", "AAA", "stock")
+    store.mark_benchmarks(["SPY", "XLK"])
+    before = store.conn.total_changes
+    store.mark_benchmarks(["SPY", "XLK"])
+    assert store.conn.total_changes == before
+    store.mark_benchmarks([])
+    assert _benchmark(store, "SPY") == 0 and _benchmark(store, "XLK") == 0
+
+
 def test_a_benchmark_is_never_parked(store):
     store.upsert_security("AAA", "AAA", "stock")
     store.upsert_security("XLK", first_seen="2026-01-01")
