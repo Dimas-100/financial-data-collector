@@ -29,16 +29,16 @@ def test_reads_the_documented_shape():
     assert sorted({e.account for e in t.entries}) == ["brokerage", "roth"]      # `planned` and `_comment` are not accounts
     assert len(t.entries) == 6
     voo = _entry(t, "brokerage", "VOO")
-    assert (voo.kind, voo.target, voo.rule, voo.raw_rule) == ("pct_of_account", 0.30, "trades", None)
-    assert (voo.low, voo.high) == (0.225, 0.375)                                # no min/max: 0.75x and 1.25x
+    assert (voo.kind, voo.target, voo.rule, voo.raw_rule) == ("pct_of_account", 30.0, "trades", None)
+    assert (voo.low, voo.high) == (22.5, 37.5)                                # no min/max: 0.75x and 1.25x of the percent target
     aapl = _entry(t, "brokerage", "AAPL")
-    assert (aapl.low, aapl.high, aapl.rule) == (0.05, 0.15, "contributions")    # its own band
+    assert (aapl.low, aapl.high, aapl.rule) == (5.0, 15.0, "contributions")    # its own band
     assert _entry(t, "brokerage", "KO").rule == "hold"
     assert _entry(t, "brokerage", "JNJ").kind == "direct_passive_ratio"
     gld = _entry(t, "roth", "GLD")
     assert gld.kind == "pct_of_brokerage"
-    assert t.sleeves == (Sleeve("brokerage", "Defensives", ("KO", "JNJ"), 0.05, 0.20, "contributions"),)
-    assert t.caps == (Cap("AAPL", 0.12),)
+    assert t.sleeves == (Sleeve("brokerage", "Defensives", ("KO", "JNJ"), 5.0, 20.0, "contributions"),)
+    assert t.caps == (Cap("AAPL", 12.0),)
 
 
 def test_missing_file_is_none(tmp_path):
@@ -63,10 +63,10 @@ def test_entry_without_target_or_with_inverted_band_is_skipped_with_a_problem(tm
         {"ticker": "KO"},
         {"ticker": "JNJ", "target": "lots"},
         {"ticker": "SPY", "target": float("nan")},
-        {"ticker": "AAPL", "target": 0.1, "min": 0.2, "max": 0.1},
-        {"ticker": "VOO", "target": 0.1, "type": "pct_of_moon"},
-        {"target": 0.1},
-        {"ticker": "GLD", "target": 0.05},
+        {"ticker": "AAPL", "target": 10.0, "min": 20.0, "max": 10.0},
+        {"ticker": "VOO", "target": 10.0, "type": "pct_of_moon"},
+        {"target": 10.0},
+        {"ticker": "GLD", "target": 5.0},
     ]}
     t = T.read_targets(_write(tmp_path, doc))
     assert [e.symbol for e in t.entries] == ["GLD"]
@@ -78,9 +78,9 @@ def test_entry_without_target_or_with_inverted_band_is_skipped_with_a_problem(tm
 
 def test_rule_missing_is_trades_and_misspelled_is_unknown(tmp_path):
     doc = {"brokerage": [
-        {"ticker": "KO", "target": 0.1},
-        {"ticker": "JNJ", "target": 0.1, "rebalance": "Hold"},
-        {"ticker": "SPY", "target": 0.1, "rebalance": "contributions"},
+        {"ticker": "KO", "target": 10.0},
+        {"ticker": "JNJ", "target": 10.0, "rebalance": "Hold"},
+        {"ticker": "SPY", "target": 10.0, "rebalance": "contributions"},
     ]}
     t = T.read_targets(_write(tmp_path, doc))
     assert _entry(t, "brokerage", "KO").rule == "trades"
@@ -91,14 +91,14 @@ def test_rule_missing_is_trades_and_misspelled_is_unknown(tmp_path):
 
 
 def test_tickers_are_canonical(tmp_path):
-    doc = {"brokerage": [{"ticker": "brkb", "target": 0.1}],
+    doc = {"brokerage": [{"ticker": "brkb", "target": 10.0}],
            "sleeves": [{"account": "brokerage", "label": "X", "members": ["BRKB", "ko"]}],
-           "caps": [{"ticker": "BRKB", "max": 0.1}, {"ticker": "KO"}]}
+           "caps": [{"ticker": "BRKB", "max": 10.0}, {"ticker": "KO"}]}
     t = T.read_targets(_write(tmp_path, doc))
     assert t.entries[0].symbol == "BRK.B"
     assert t.sleeves[0].members == ("BRK.B", "KO")
     assert (t.sleeves[0].low, t.sleeves[0].high, t.sleeves[0].rule) == (None, None, "trades")
-    assert t.caps == (Cap("BRK.B", 0.1),)
+    assert t.caps == (Cap("BRK.B", 10.0),)
     assert len(t.problems) == 1 and "KO" in t.problems[0]                       # a cap with no max
 
 

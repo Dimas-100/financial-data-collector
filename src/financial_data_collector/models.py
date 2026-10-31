@@ -271,6 +271,7 @@ class Headline:
 @dataclass(frozen=True)
 class TargetEntry:
     """One line of the owner's targets file: a holding's target share in an account, with its band.
+    `target`, `low` and `high` are percent (15.0 = 15%), except for `direct_passive_ratio`, where they are a plain ratio;
     `kind` says what the share is of; `rule` is how the file lets it be rebalanced (`unknown` keeps the spelling
     it was given in `raw_rule`)."""
     account: str
@@ -285,7 +286,7 @@ class TargetEntry:
 
 @dataclass(frozen=True)
 class Sleeve:
-    """A group of holdings the targets file limits together; `low` / `high` are None when it gives none."""
+    """A group of holdings the targets file limits together; `low` / `high` are percent, None when it gives none."""
     account: str
     label: str
     members: tuple[str, ...]
@@ -296,7 +297,7 @@ class Sleeve:
 
 @dataclass(frozen=True)
 class Cap:
-    """A household-wide ceiling on one holding, as a fraction."""
+    """A household-wide ceiling on one holding, in percent of the household (12.0 = 12%)."""
     symbol: str
     high: float
 
