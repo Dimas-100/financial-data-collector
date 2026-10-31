@@ -36,7 +36,7 @@ content_dir = "../investing"       # owner-only: theses/ + watchlist/ frontmatte
 enabled = false                    # write prices.json / dividends.json / fundamentals.json for the investing cockpit
 dir = "../investing/data"          # must already exist; never created
 
-[classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto"
+[classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"
 """
 

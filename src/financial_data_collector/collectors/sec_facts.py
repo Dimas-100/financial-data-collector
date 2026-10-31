@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
 from ..config import Config, ConfigError
@@ -16,7 +17,10 @@ from .sec_cik import load_cik_map, lookup
 
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 PAUSE_SECONDS = 1.0
-_FUND_TYPES = {"etf", "mutual_fund", "money_market", "crypto"}
+_FUND_TYPES = {"etf", "mutual_fund", "money_market", "crypto", "fund", "foreign_filer"}
+_FOREIGN_FORMS = {"20-F", "20-F/A", "40-F", "6-K"}
+_FUND_NAME = re.compile(r"\b(trust|fund|etf)\b", re.IGNORECASE)
+_REVENUE_CONCEPTS = ("RevenueFromContractWithCustomer", "Revenues")
 Rebuild = Callable[[list[Fact], list[ConceptRule]], list[LineItem]]
 
 
@@ -61,6 +65,30 @@ def has_operating_facts(facts: list[Fact]) -> bool:
     return any(f.taxonomy == "us-gaap" and f.period_start for f in facts)
 
 
+def classify_filer(facts: list[Fact], sec_name: str | None) -> str | None:
+    """"foreign_filer", "fund" or None (an ordinary company the statements can shape).
+
+    A foreign filer's newest filing is a 20-F, 40-F or 6-K, or its only operating facts are IFRS (a company that
+    filed 10-Ks until 2012 and 20-Fs since has old us-gaap facts and is still a foreign filer). A fund-like filer
+    has "trust", "fund" or "etf" in its name and no revenue in the two years before its newest filing: a bank
+    called "... Trust Corp" has revenue and stays a company."""
+    if not facts:
+        return None
+    newest = max(f.filed for f in facts)
+    if any(f.form in _FOREIGN_FORMS for f in facts if f.filed == newest):
+        return "foreign_filer"
+    us_gaap = any(f.taxonomy == "us-gaap" and f.period_start for f in facts)
+    ifrs = any(f.taxonomy == "ifrs-full" and f.period_start for f in facts)
+    if ifrs and not us_gaap:
+        return "foreign_filer"
+    if sec_name and _FUND_NAME.search(sec_name) and newest:
+        cutoff = (date.fromisoformat(newest[:10]) - timedelta(days=730)).isoformat()
+        if not any(f.taxonomy == "us-gaap" and f.concept.startswith(_REVENUE_CONCEPTS) and f.period_end >= cutoff
+                   for f in facts):
+            return "fund"
+    return None
+
+
 def _looks_like_mutual_fund(symbol: str) -> bool:
     return len(symbol) == 5 and symbol.endswith("X") and symbol.isalpha()
 
@@ -98,6 +126,7 @@ def collect_sec(
     securities = store.securities()
     for i, row in enumerate(securities, start=1):
         symbol, asset_type, cik = row["symbol"], row["asset_type"], row["cik"]
+        sec_name = row["sec_name"]
         if asset_type in _FUND_TYPES or is_money_market(symbol, row["description"]) or row["parked_reason"]:
             continue
         if progress:
@@ -110,6 +139,7 @@ def collect_sec(
                 results.append(SecResult(symbol, None, message="no CIK in SEC ticker map"))
                 continue
             cik, name = hit
+            sec_name = name
             store.set_security_cik(symbol, cik, name)
             if asset_type == "unknown":
                 store.set_asset_type(symbol, "stock")
@@ -129,6 +159,15 @@ def collect_sec(
             sleep(PAUSE_SECONDS)
             continue
         facts = parse_company_facts(data)
+        kind = classify_filer(facts, sec_name or data.get("entityName"))
+        if kind:
+            # not an operating company the statements can shape: typed, its old lines cleared, never shaped again
+            store.set_asset_type(symbol, kind)
+            store.mark_sec_fetch(symbol, stamp)
+            store.replace_line_items(cik, [])
+            results.append(SecResult(symbol, cik, facts=len(facts), message=f"classified as {kind}"))
+            sleep(PAUSE_SECONDS)
+            continue
         if not has_operating_facts(facts):
             store.set_asset_type(symbol, "etf")
             store.mark_sec_fetch(symbol, stamp)

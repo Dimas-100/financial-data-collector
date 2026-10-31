@@ -1,0 +1,20 @@
+{
+  "cik": 7,
+  "entityName": "Sample Mining SA",
+  "facts": {
+    "dei": {
+      "EntityCommonStockSharesOutstanding": {"units": {"shares": [
+        {"end": "2025-12-31", "val": 500, "accn": "f25", "fy": 2025, "fp": "FY", "form": "20-F", "filed": "2026-03-20"}
+      ]}}
+    },
+    "ifrs-full": {
+      "Revenue": {"units": {"USD": [
+        {"start": "2024-01-01", "end": "2024-12-31", "val": 800, "accn": "f24", "fy": 2024, "fp": "FY", "form": "20-F", "filed": "2025-03-20", "frame": "CY2024"},
+        {"start": "2025-01-01", "end": "2025-12-31", "val": 900, "accn": "f25", "fy": 2025, "fp": "FY", "form": "20-F", "filed": "2026-03-20", "frame": "CY2025"}
+      ]}},
+      "ProfitLoss": {"units": {"USD": [
+        {"start": "2025-01-01", "end": "2025-12-31", "val": 90, "accn": "f25", "fy": 2025, "fp": "FY", "form": "20-F", "filed": "2026-03-20", "frame": "CY2025"}
+      ]}}
+    }
+  }
+}

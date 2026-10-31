@@ -18,7 +18,7 @@ FILES = ("prices.json", "dividends.json", "fundamentals.json")
 PRICES_LOOKBACK_DAYS = 1826
 FUNDAMENTALS_LOOKBACK_YEARS = 10
 QUARTERS_KEPT = 9
-FUND_TYPES = {"etf", "mutual_fund", "money_market", "crypto"}
+FUND_TYPES = {"etf", "mutual_fund", "money_market", "crypto", "fund", "foreign_filer"}
 ANNUAL_KEYS = (
     "fy", "revenue", "gross_profit", "operating_income", "net_income", "ocf", "capex", "assets", "liabilities",
     "cash", "shares_diluted", "eps_diluted", "dividends_paid", "buybacks", "fcf",
