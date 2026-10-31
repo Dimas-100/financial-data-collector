@@ -398,10 +398,12 @@ For each account named in `[allocation.accounts]`, the waiting cash is the accou
 - with a proposal open, cash `min_new` or more above its cash makes a new proposal for all of the cash, which
   replaces it (`replaced`); cash at least $1 below it means you placed it, in full or in part (`spent`); anything
   between changes nothing;
-- a `buy` of a holding (not the money market) in that account dated on or after the proposal's cash date, once a newer
-  cash row is in, also means you placed it (`spent`), even when a deposit since then hides it from the cash; a new
-  proposal for all of the cash then opens at once if it is at least `min_new`. When the transactions feed lags behind
-  the balances, the cash rules above still apply, and a late buy is caught a sync late;
+- a `buy` of a holding (not the money market) in that account dated after the proposal's cash date, and on or before
+  the date of the newest cash row (so that row shows it), also means you placed it (`spent`), even when a deposit since
+  then hides it from the cash; a new proposal for all of the cash then opens at once if it is at least `min_new`. A buy
+  on the proposal's own cash date is not counted (it may already be in the cash the proposal was made from; a same-day
+  placement after the sync is caught by the $1 rule). When the transactions feed lags behind the balances, the cash
+  rules above still apply, and a late buy is caught a sync late;
 - after a spent proposal, the next one needs the cash `min_new` above the baseline, the lower of the cash it closed with
   and the lowest balance since its closing day (that day included), and covers all of the cash, so money you left
   waiting joins the next deposit;

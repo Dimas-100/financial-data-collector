@@ -746,17 +746,18 @@ def _buy(store: Store, day: str, symbol: str = "AAPL", acct: AccountRef = ACCT, 
                                              "fidelity_csv")])
 
 
-def test_split_buys_since_counts_buys_of_holdings_only(store: Store):
+def test_split_buys_between_counts_buys_of_holdings_only(store: Store):
     _buy(store, "2026-10-30")
     _buy(store, "2026-11-02", "VOO")
     _buy(store, "2026-11-02", "SPAXX")                             # the money market's sweep is not a placement
     _buy(store, "2026-11-02", "KO", kind="dividend")
     _buy(store, "2026-11-02", "VFIAX", ROTH)
-    assert store.split_buys_since("Sample Brokerage", "2026-10-30") == 2      # the day itself counts
-    assert store.split_buys_since("Sample Brokerage", "2026-10-31") == 1
-    assert store.split_buys_since("Sample Brokerage", "2026-11-03") == 0
-    assert store.split_buys_since("Sample Roth", "2026-10-30") == 1
-    assert store.split_buys_since("Nobody", "2026-01-01") == 0
+    assert store.split_buys_between("Sample Brokerage", "2026-10-29", "2026-11-02") == 2
+    assert store.split_buys_between("Sample Brokerage", "2026-10-30", "2026-11-02") == 1   # the first day does not count
+    assert store.split_buys_between("Sample Brokerage", "2026-10-29", "2026-11-01") == 1   # the last day does
+    assert store.split_buys_between("Sample Brokerage", "2026-11-02", "2026-11-09") == 0
+    assert store.split_buys_between("Sample Roth", "2026-10-30", "2026-11-02") == 1
+    assert store.split_buys_between("Nobody", "2026-01-01", "2026-12-31") == 0
 
 
 def test_a_placement_hidden_by_a_deposit_is_spent_and_a_new_proposal_opens(setup):
@@ -807,6 +808,55 @@ def test_a_buy_on_the_proposals_own_cash_row_changes_nothing(setup):
         rep = _run(store, cfg, day)
         assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
     assert _all_rows(store) == before
+    # A newer cash row with the same cash and no new buy: still nothing (the review's probe, case 1).
+    _day(store, "2026-10-31", 500.0)
+    _day(store, "2026-11-01", 500.0)
+    for day in (5, 6):
+        rep = _run(store, cfg, day)
+        assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+    assert _all_rows(store) == before
+
+
+def test_a_proposal_the_buy_rule_opened_is_not_closed_by_the_same_buy(setup):
+    # The review's probe, case 2: the buy is on the newer row's own day; the reissued proposal is made from that row.
+    store, cfg = setup
+    _run(store, cfg, 2)
+    _buy(store, "2026-11-03")
+    _day(store, "2026-11-03", 500.0)
+    rep = _run(store, cfg, 3)
+    assert (rep.opened, rep.replaced, rep.spent) == (1, 0, 1)
+    before = _all_rows(store)
+    _day(store, "2026-11-04", 500.0)                               # a newer row, no new buy
+    rep = _run(store, cfg, 4)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0) and _all_rows(store) == before
+
+
+def test_a_buy_the_day_after_the_cash_date_spends_and_reissues(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)                                            # made from the 10-30 row
+    first = store.open_proposal("brokerage")["id"]
+    _buy(store, "2026-10-31")
+    _day(store, "2026-10-31", 500.0)
+    rep = _run(store, cfg, 3)
+    assert (rep.opened, rep.replaced, rep.spent) == (1, 0, 1)
+    new = store.open_proposal("brokerage")
+    assert new["id"] != first and new["cash_date"] == "2026-10-31"
+
+
+def test_a_buy_newer_than_the_cash_row_waits_for_its_row_and_closes_one_proposal(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)                                            # made from the 10-30 row
+    _buy(store, "2026-11-04")                                      # the transactions feed runs ahead of the balances
+    _day(store, "2026-11-03", 500.0)
+    rep = _run(store, cfg, 3)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)      # not yet in any cash row: nothing to say
+    _day(store, "2026-11-04", 500.0)
+    rep = _run(store, cfg, 4)
+    assert (rep.opened, rep.replaced, rep.spent) == (1, 0, 1)
+    before = _all_rows(store)
+    _day(store, "2026-11-05", 500.0)
+    rep = _run(store, cfg, 5)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0) and _all_rows(store) == before
 
 
 def test_a_money_market_buy_is_not_a_placement(setup):

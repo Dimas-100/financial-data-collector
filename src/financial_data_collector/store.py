@@ -962,13 +962,15 @@ class Store:
                        "WHERE a.label = ? AND c.currency = 'USD' AND c.as_of_date >= ?", (label, after))
         return r[0][0] if r else None
 
-    def split_buys_since(self, label: str, since: str) -> int:
-        """How many `buy` transactions of the account are dated `since` or later (the day itself counts), leaving out
-        a money market fund (its sweep is cash, not a placement) and a row with no symbol."""
+    def split_buys_between(self, label: str, after: str, through: str) -> int:
+        """How many `buy` transactions of the account are dated after `after` and on or before `through` (the first
+        day does not count, the last does), leaving out a money market fund (its sweep is cash, not a placement) and a
+        row with no symbol."""
         rows = self.query(
             "SELECT t.symbol, t.description, s.asset_type FROM transactions t JOIN accounts a ON a.id = t.account_id "
             "LEFT JOIN securities s ON s.symbol = t.symbol "
-            "WHERE a.label = ? AND t.type = 'buy' AND t.trade_date >= ? AND t.symbol IS NOT NULL", (label, since))
+            "WHERE a.label = ? AND t.type = 'buy' AND t.trade_date > ? AND t.trade_date <= ? "
+            "AND t.symbol IS NOT NULL", (label, after, through))
         return sum(1 for r in rows if r[2] != "money_market" and not is_money_market(r[0], r[1]))
 
     def split_asset_types(self, symbols: list[str]) -> dict[str, str]:
