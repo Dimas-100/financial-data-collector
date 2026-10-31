@@ -70,7 +70,7 @@ def test_a_year_of_snapshots_gives_a_band(store, cfg):
     assert src[0] == {"kind": "feed", "label": "fund_snapshots: yfinance", "date": END, "ref": FETCHED_AT}
     derived = [s for s in src if s["kind"] == "derived"]
     assert derived == [{"kind": "derived", "label": "fund_snapshots trailing_pe", "date": END,
-                        "ref": f"{_days(END, 366)[0]}..{END} (366 days)"}]
+                        "ref": f"{_days(END, 366)[0]}..{END} (366 snapshots)"}]
     conf = {s["label"]: s["ref"] for s in src if s["kind"] == "config"}
     assert conf == {"[engine] history_years": "5", "[engine] cheap_percentile": "25.0",
                     "[engine] premium_percentile": "75.0"}
@@ -201,6 +201,19 @@ def test_a_star_hold_covering_the_day_holds_the_fund_rows(store, cfg):
     # the same hold seen through the view
     v = _scores(store, "VFIAX", "valuation_scores")
     assert all(v[m]["status"] == "held" for m in FUND_METRICS)
+
+
+def test_a_star_hold_wins_over_not_enough_history(store, cfg):                 # R12
+    _weekday_bars(store, "VFIAX", asset_type="mutual_fund")
+    _snapshots(store, "VFIAX", _days(END, 30))
+    _hold(store, "fresh", "VFIAX", "*", END, None, "stale feed")
+    r = _build(store, cfg, "VFIAX")
+    for m in FUND_METRICS:
+        assert (r[m]["status"], r[m]["status_reason"], r[m]["value"]) == ("held", "stale feed", None)
+        assert (r[m]["percentile_5y"], r[m]["band"]) == (None, None)
+    v = _scores(store, "VFIAX", "valuation_scores")
+    for m in FUND_METRICS:
+        assert (v[m]["status"], v[m]["status_reason"], v[m]["value"]) == ("held", "stale feed", None)
 
 
 def test_a_hold_on_another_day_does_not_hold_the_fund_rows(store, cfg):

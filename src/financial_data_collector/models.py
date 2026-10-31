@@ -193,6 +193,8 @@ SCORE_METRICS: tuple[str, ...] = (
     "estimate_change_30d", "insider_net_90d", "expense_ratio", "off_high_52w", "vs_200d", "week_vs_market",
     "week_vs_sector",
 )
+# The asset types of a fund (ETF, mutual fund): the funds step snapshots them and the engine scores them from the snapshots.
+FUND_TYPES: tuple[str, ...] = ("etf", "mutual_fund", "fund")
 SCORE_STATUSES: tuple[str, ...] = ("ok", "held", "unsupported", "not_enough_history")
 SCORE_BANDS: tuple[str | None, ...] = (None, "cheap", "usual", "premium")
 

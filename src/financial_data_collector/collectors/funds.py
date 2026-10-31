@@ -14,11 +14,10 @@ from zoneinfo import ZoneInfo
 
 from ..config import Config
 from ..connections.redact import redact
-from ..models import FundSnapshot
+from ..models import FUND_TYPES, FundSnapshot
 from ..store import Store
 from .yahoo import PAUSE_SECONDS, YahooClient, finite
 
-FUND_TYPES = ("etf", "mutual_fund", "fund")
 NEW_YORK = ZoneInfo("America/New_York")
 YIELD_RANGE = (0.0, 0.25)               # a fraction: 0 up to, not including, 25%
 EXPENSE_RANGE = (0.0, 0.05)             # 0 up to, not including, 5%

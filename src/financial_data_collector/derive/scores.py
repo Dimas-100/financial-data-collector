@@ -27,7 +27,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from ..config import EngineSettings
-from ..models import EarningsEvent, ScoreRow
+from ..models import FUND_TYPES, EarningsEvent, ScoreRow
 from ..symbols import canonical
 from . import sources
 
@@ -570,7 +570,6 @@ def fundamental_scores(symbol: str, day: str, newest: dict | None, ttm: dict[str
 
 # ---- funds ------------------------------------------------------------------------------------------------------------
 
-FUND_TYPES = ("etf", "mutual_fund", "fund")
 FUND_METRICS = ("pe", "dividend_yield", "expense_ratio")
 FUND_COLUMNS = {"pe": "trailing_pe", "dividend_yield": "dividend_yield", "expense_ratio": "expense_ratio"}
 FUND_LABELS = {"pe": "trailing P/E", "dividend_yield": "dividend yield", "expense_ratio": "expense ratio"}
@@ -587,7 +586,8 @@ def fund_scores(symbol: str, day: str, snaps: list[dict], s: EngineSettings, *,
     `history_years`, and get a band only once those span `min_history_days`: until then `not_enough_history` (a fund
     whose P/E is borrowed from a proxy ETF does not count the proxy's days as its own), with the value and no band.
     `expense_ratio` is a value only. Funds file no statements, so no row names a valuation_daily column; holds: the
-    symbol's open holds as the checker wrote them, of which a `*` covering `day` holds an `ok` row (a hold on
+    symbol's open holds as the checker wrote them, of which a `*` covering `day` holds every row that has a value, a
+    `not_enough_history` one too (value, percentile and band blank; a hold on
     `score:<metric>` reaches the row through the valuation_scores view).
     """
     snaps = [x for x in snaps if x["date"] <= day]
@@ -617,7 +617,7 @@ def fund_scores(symbol: str, day: str, snaps: list[dict], s: EngineSettings, *,
                    if x["source"] == newest["source"] and x["date"] >= start and x[column] is not None]
             first = own[0][0]
             days = (date.fromisoformat(newest["date"]) - date.fromisoformat(first)).days
-            derived = sources.derived(f"fund_snapshots {column}", f"{first}..{newest['date']} ({len(own)} days)",
+            derived = sources.derived(f"fund_snapshots {column}", f"{first}..{newest['date']} ({len(own)} snapshots)",
                                       newest["date"])
             if days < s.min_history_days:
                 out.append(row(metric, value, status="not_enough_history",
@@ -629,9 +629,10 @@ def fund_scores(symbol: str, day: str, snaps: list[dict], s: EngineSettings, *,
                     sources.config("cheap_percentile", s.cheap_percentile),
                     sources.config("premium_percentile", s.premium_percentile))))
 
-    # the holds open now, as the valuation_scores view applies them to an input-less row: a `*` covering `day`
+    # the holds open now, as the valuation_scores view applies them to an input-less row: a `*` covering `day` wins
+    # over every row that carries a value (`ok`, and `not_enough_history` of a young fund): it is `held`, blank
     msgs = [h["message"] for h in holds if _covers(h, day) and h["field"] == "*"]
     if msgs:
-        out = [row(r.metric, status="held", reason="; ".join(msgs), src=r.sources) if r.status == "ok" else r
-               for r in out]
+        out = [row(r.metric, status="held", reason="; ".join(msgs), src=r.sources)
+               if r.status == "ok" or r.value is not None else r for r in out]
     return out
