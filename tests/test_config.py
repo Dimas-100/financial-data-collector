@@ -195,3 +195,32 @@ def test_engine_unknown_setting_is_named(tmp_path: Path):
 def test_engine_bad_values_are_refused(tmp_path: Path, line: str):
     with pytest.raises(C.ConfigError, match=line.split(" ")[0]):
         _engine_cfg(tmp_path, f"[engine]\n{line}\n")
+
+
+@pytest.mark.parametrize("lines, name", [("cheap_percentile = 0.25\npremium_percentile = 0.75", "cheap_percentile"),
+                                         ("cheap_percentile = 0.5", "cheap_percentile"),
+                                         ("cheap_percentile = 0.2\npremium_percentile = 0.8", "cheap_percentile"),
+                                         ("cheap_percentile = 1\npremium_percentile = 0.9", "premium_percentile")])
+def test_engine_percentiles_are_percent_not_fractions(tmp_path: Path, lines: str, name: str):       # R17 (M4)
+    with pytest.raises(C.ConfigError, match=rf"\[engine\] {name} must be a percentile such as 25, not 0\.25"):
+        _engine_cfg(tmp_path, f"[engine]\n{lines}\n")
+
+
+def test_engine_a_percentile_of_one_is_allowed(tmp_path: Path):
+    assert _engine_cfg(tmp_path, "[engine]\ncheap_percentile = 1\n").engine.cheap_percentile == 1.0
+
+
+@pytest.mark.parametrize("line", ["drop_day = 1", "drop_week = 4", "discount_rate = 9",
+                                  "terminal_growth = 1.0\ndiscount_rate = 0.5"])
+def test_engine_fractions_must_be_below_one(tmp_path: Path, line: str):                         # R17 (M4)
+    name = line.split(" ")[0]
+    with pytest.raises(C.ConfigError, match=rf"\[engine\] {name} must be below 1"):
+        _engine_cfg(tmp_path, f"[engine]\n{line}\n")
+
+
+@pytest.mark.parametrize("line", ["excess_sd = inf", "drop_day = nan", "premium_percentile = inf",
+                                  "cheap_percentile = nan", "discount_rate = +inf"])
+def test_engine_numbers_must_be_finite(tmp_path: Path, line: str):                              # R17 (M4)
+    name = line.split(" ")[0]
+    with pytest.raises(C.ConfigError, match=rf"\[engine\] {name} must be a finite number above 0"):
+        _engine_cfg(tmp_path, f"[engine]\n{line}\n")

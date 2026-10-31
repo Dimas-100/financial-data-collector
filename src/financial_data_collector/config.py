@@ -1,6 +1,7 @@
 """config.toml (paths, cadences) + .env (secrets). Both gitignored; examples committed."""
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -259,6 +260,10 @@ def _check_settings(raw: object, cfg_path: Path) -> CheckSettings:
     return CheckSettings(**values)
 
 
+ENGINE_PERCENTILES = ("cheap_percentile", "premium_percentile")      # percent, 25 = the 25th percentile
+ENGINE_FRACTIONS = ("drop_day", "drop_week", "discount_rate", "terminal_growth")   # fractions, 0.04 = 4%
+
+
 def _engine_settings(raw: object, cfg_path: Path) -> EngineSettings:
     if not isinstance(raw, dict):
         raise ConfigError(f"{cfg_path}: [engine] must be a table")
@@ -275,8 +280,12 @@ def _engine_settings(raw: object, cfg_path: Path) -> EngineSettings:
     for name in ("cheap_percentile", "premium_percentile", "discount_rate", "terminal_growth",
                  "drop_day", "drop_week", "excess_sd"):
         v = raw.get(name, getattr(defaults, name))
-        if not isinstance(v, (int, float)) or isinstance(v, bool) or not v > 0:
-            raise ConfigError(f"{cfg_path}: [engine] {name} must be a number above 0")
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or not v > 0:
+            raise ConfigError(f"{cfg_path}: [engine] {name} must be a finite number above 0")
+        if name in ENGINE_PERCENTILES and v < 1:
+            raise ConfigError(f"{cfg_path}: [engine] {name} must be a percentile such as 25, not 0.25")
+        if name in ENGINE_FRACTIONS and not v < 1:
+            raise ConfigError(f"{cfg_path}: [engine] {name} must be below 1: a fraction, 0.04 = 4%")
         values[name] = float(v)
     if not values["cheap_percentile"] < values["premium_percentile"]:
         raise ConfigError(f"{cfg_path}: [engine] cheap_percentile must be less than premium_percentile")
