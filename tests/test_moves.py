@@ -133,6 +133,15 @@ def test_excess_needs_120_earlier_moves_with_the_market():
     assert len(moves.find_moves("AAA", _series(closes), ("SPY", _series([500.0] * len(closes))), None, SINCE, S)) == 1
 
 
+def test_a_stock_that_rose_on_a_day_the_market_rose_more_is_not_a_drop():                 # R17
+    closes = _alternating(252, 0.005)                                     # the stock +0.5% on the last day
+    market = [500.0] * (len(closes) - 1) + [520.0]                        # the market +4% that day
+    assert moves.find_moves("AAA", _series(closes), ("SPY", _series(market)), None, SINCE, S) == []
+    closes = _alternating(252, -0.001)                                    # a small fall that day still counts
+    (m,) = moves.find_moves("AAA", _series(closes), ("SPY", _series(market)), None, SINCE, S)
+    assert m.triggers == ("excess",) and m.excess_sd < -S.excess_sd
+
+
 def test_a_drop_day_also_stores_its_excess_sd():
     closes = _alternating(252, -0.05)
     (m,) = moves.find_moves("AAA", _series(closes), ("SPY", _series([500.0] * len(closes))), None, SINCE, S)

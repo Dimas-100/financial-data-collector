@@ -3,8 +3,8 @@
 Pure: no SQL, no store. `find_moves` finds the drops in a symbol's held adjusted closes (the engine passes
 `engine.held_adjusted_bars`: adjusted over every final bar, held dates then dropped, so a split or an ex-dividend day
 is never a drop): a day down `drop_day` (4%), 5 trading bars down `drop_week` (8%, recorded on the first day it
-crosses), or a day `excess_sd` (2.5) of the symbol's own standard deviations of daily excess moves over the market
-fund below it. `add_causes` explains one from sourced facts only, in this order: an earnings report, an 8-K, the
+crosses), or a day down at all and `excess_sd` (2.5) of the symbol's own standard deviations of daily excess moves
+over the market fund below it. `add_causes` explains one from sourced facts only, in this order: an earnings report, an 8-K, the
 market fund, the sector fund, up to three headlines; when none applies the one cause is "no cause found", never a
 guess.
 """
@@ -109,7 +109,7 @@ def find_moves(symbol: str, bars: list[tuple], market: tuple[str, list] | None, 
                     sd = statistics.stdev(history)
                     if sd > 0:
                         sd_value = excesses[i] / sd
-                        if sd_value <= -s.excess_sd:
+                        if move < 0 and sd_value <= -s.excess_sd:      # a stock that rose is not a drop
                             triggers.append("excess")
                             extra.append(sources.derived(
                                 f"daily excess moves over {market[0]} ({len(history)} before {day})",

@@ -303,9 +303,10 @@ The same step writes `price_moves`: every drop of each scored symbol (stocks and
 (so a split or an ex-dividend day is never a drop). A row is one of:
 
 - `1d`, trigger `drop_day`: the close fell `drop_day` (4%) or more from the previous held close;
-- `1d`, trigger `excess`: the day's move minus the market fund's (`[benchmarks] market`, SPY) was `excess_sd` (2.5) or
-  more of the symbol's own standard deviations of such daily excess moves below zero, over the 252 bars before (needs
-  120 of them with the market fund's closes on both dates). `excess_sd` is stored on every `1d` row it can compute;
+- `1d`, trigger `excess`: the close fell (a stock that rose while the market rose more is not a drop) and the day's
+  move minus the market fund's (`[benchmarks] market`, SPY) was `excess_sd` (2.5) or more of the symbol's own standard
+  deviations of such daily excess moves below zero, over the 252 bars before (needs 120 of them with the market fund's
+  closes on both dates). `excess_sd` is stored on every `1d` row it can compute;
 - `5d`, trigger `drop_week`: the close fell `drop_week` (8%) or more from 5 held bars back, recorded only on the first
   day it crosses.
 
