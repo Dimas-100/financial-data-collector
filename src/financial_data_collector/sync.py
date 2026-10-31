@@ -80,8 +80,15 @@ def _step_ingest(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple
     return a.rows + b.rows, "; ".join(msgs), "ok"
 
 
+def _universe(store: Store, cfg: Config) -> list[str]:
+    """What the collecting steps work on: the benchmarks the config names are marked (and recorded) first, so they
+    are collected like any symbol; then the usual universe. The export builds its own, without the benchmarks."""
+    store.mark_benchmarks(cfg.benchmarks.symbols)
+    return build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir)
+
+
 def _step_prices(store: Store, cfg: Config, *, fetch, now, yf, sleep, progress: Progress, **_) -> tuple[int, str, str]:
-    universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir)
+    universe = _universe(store, cfg)
     kwargs = {"fetch": fetch, "today": now.date(), "now": now, "sleep": sleep, "progress": progress}
     if yf is not None:
         kwargs["yf"] = yf
@@ -171,7 +178,8 @@ def _step_export(store: Store, cfg: Config, *, now, progress: Progress, **_) -> 
     if not cfg.export_cockpit:
         return 0, "export.cockpit disabled in config.toml", "skipped"
     progress("writing feed files")
-    universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir)
+    universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir,
+                              include_benchmarks=False)
     results = export_cockpit(store, cfg, universe, now)
     written = sum(1 for _, s in results if s == "written")
     msg = ", ".join(f"{name} {status}" for name, status in results)

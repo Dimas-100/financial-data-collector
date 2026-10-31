@@ -8,6 +8,9 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
+from .sectors import DEFAULT_SECTOR_ETFS, SECTORS
+from .symbols import canonical
+
 CONFIG_EXAMPLE = """# financial-data-collector configuration. Copy to config.toml (gitignored).
 # Relative paths resolve against this file's folder.
 
@@ -24,6 +27,10 @@ max_age_hours = 24                 # refetch a company's facts at most this ofte
 
 [connections]
 min_hours = 6                      # ask a connected service (fdc connect) at most this often
+
+[benchmarks]                       # what a move is measured against; their prices are collected like any symbol, never counted as holdings
+market = "SPY"
+# sectors = { "Technology" = "XLK", "Health Care" = "XLV" }   # replaces the default: the 11 Select Sector SPDRs
 
 [sources.snaptrade]
 enabled = true                     # owner-only: investing's SnapTrade export. Ignored if dir is missing.
@@ -96,6 +103,22 @@ class CheckSettings:
     figure_hold: float = 0.40
 
 
+@dataclass(frozen=True)
+class Benchmarks:
+    """The yardsticks a move is measured against: one fund for the whole market and one per sector."""
+    market: str = "SPY"
+    sectors: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_SECTOR_ETFS))
+
+    @property
+    def symbols(self) -> tuple[str, ...]:
+        """The market fund first, then the sector funds in SECTORS order, each once."""
+        out: list[str] = [self.market]
+        for name in SECTORS:
+            if name in self.sectors and self.sectors[name] not in out:
+                out.append(self.sectors[name])
+        return tuple(out)
+
+
 @dataclass
 class Config:
     root: Path
@@ -113,6 +136,7 @@ class Config:
     classify: dict[str, str] = field(default_factory=dict)
     share_classes: dict[str, ShareClass] = field(default_factory=dict)
     check: CheckSettings = field(default_factory=CheckSettings)
+    benchmarks: Benchmarks = field(default_factory=Benchmarks)
     tiingo_token: str | None = None
     fred_api_key: str | None = None
     sec_user_agent: str | None = None
@@ -192,6 +216,29 @@ def _check_settings(raw: object, cfg_path: Path) -> CheckSettings:
     return CheckSettings(**values)
 
 
+def _benchmarks(raw: object, cfg_path: Path) -> Benchmarks:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{cfg_path}: [benchmarks] must be a table")
+    unknown = sorted(set(raw) - {"market", "sectors"})
+    if unknown:
+        raise ConfigError(f"{cfg_path}: [benchmarks] has no setting {', '.join(unknown)}")
+    market = raw.get("market", Benchmarks().market)
+    if not isinstance(market, str) or not market.strip():
+        raise ConfigError(f'{cfg_path}: [benchmarks] market must be a symbol, such as "SPY"')
+    sector_funds = raw.get("sectors")
+    if sector_funds is None:
+        return Benchmarks(market=canonical(market))
+    if not isinstance(sector_funds, dict):
+        raise ConfigError(f'{cfg_path}: [benchmarks] sectors must be a table, such as {{ "Technology" = "XLK" }}')
+    bad = [name for name in sector_funds if name not in SECTORS]
+    if bad:
+        raise ConfigError(f'{cfg_path}: [benchmarks] sectors has no sector "{bad[0]}"; the sectors are: {", ".join(SECTORS)}')
+    for name, symbol in sector_funds.items():
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ConfigError(f'{cfg_path}: [benchmarks] sectors "{name}" needs a symbol, such as "XLK"')
+    return Benchmarks(market=canonical(market), sectors={name: canonical(symbol) for name, symbol in sector_funds.items()})
+
+
 def load_config(root: Path) -> Config:
     root = Path(root)
     cfg_path = root / "config.toml"
@@ -234,6 +281,7 @@ def load_config(root: Path) -> Config:
         classify={str(k).upper(): str(v) for k, v in raw.get("classify", {}).items()},
         share_classes=_share_classes(raw.get("share_classes", {}), cfg_path),
         check=_check_settings(raw.get("check", {}), cfg_path),
+        benchmarks=_benchmarks(raw.get("benchmarks", {}), cfg_path),
         tiingo_token=_secret("TIINGO_API_TOKEN", dotenv),
         fred_api_key=_secret("FRED_API_KEY", dotenv),
         sec_user_agent=_secret("SEC_USER_AGENT", dotenv),

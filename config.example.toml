@@ -15,6 +15,10 @@ max_age_hours = 24                 # refetch a company's facts at most this ofte
 [connections]
 min_hours = 6                      # ask a connected service (fdc connect) at most this often
 
+[benchmarks]                       # what a move is measured against; their prices are collected like any symbol, never counted as holdings
+market = "SPY"
+# sectors = { "Technology" = "XLK", "Health Care" = "XLV" }   # replaces the default: the 11 Select Sector SPDRs
+
 [sources.snaptrade]
 enabled = true                     # owner-only: investing's SnapTrade export. Ignored if dir is missing.
 dir = "../investing/fidelity/dashboard-data"

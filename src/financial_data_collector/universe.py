@@ -69,32 +69,40 @@ def read_watchlist(path: Path) -> list[str]:
 
 
 def universe_symbols(store: Store, watchlist_path: Path, classify: dict[str, str] | None = None,
-                     investing_dir: Path | None = None) -> list[str]:
+                     investing_dir: Path | None = None, *, include_benchmarks: bool = True) -> list[str]:
     """The symbols the collector follows, computed without writing: the securities on record plus the watchlist
     and research names, [classify] overrides applied to the answer, money markets, skipped kinds and parked symbols left out.
-    What the console counts; works on a read-only store."""
+    With `include_benchmarks=False` a benchmark is left out unless it is also held or on the watchlist or research lists
+    (the export is about the owner's names, not the yardsticks). What the console counts; works on a read-only store."""
     kinds: dict[str, tuple[str, str | None]] = {}
-    parked: set[str] = set()
+    left_out: set[str] = set()                # parked symbols, and benchmarks the export does not want
+    benchmarks: set[str] = set()
     for row in store.securities():
         kinds[row["symbol"]] = (row["asset_type"], row["description"])
         if row["parked_reason"]:
-            parked.add(row["symbol"])
-    for sym in read_watchlist(watchlist_path) + read_investing_tickers(investing_dir):
+            left_out.add(row["symbol"])
+        if row["benchmark"]:
+            benchmarks.add(row["symbol"])
+    listed = read_watchlist(watchlist_path) + read_investing_tickers(investing_dir)
+    for sym in listed:
         kinds.setdefault(sym, ("unknown", None))
+    if not include_benchmarks:
+        left_out |= benchmarks - store.held_symbols() - set(listed)
     for sym, asset_type in (classify or {}).items():
         sym = canonical(sym)
         if sym in kinds:
             kinds[sym] = (asset_type, kinds[sym][1])
     return sorted(sym for sym, (asset_type, description) in kinds.items()
-                  if sym not in parked and asset_type not in _SKIP_TYPES and not is_money_market(sym, description))
+                  if sym not in left_out and asset_type not in _SKIP_TYPES and not is_money_market(sym, description))
 
 
 def build_universe(store: Store, watchlist_path: Path, classify: dict[str, str] | None = None,
-                   investing_dir: Path | None = None) -> list[str]:
+                   investing_dir: Path | None = None, *, include_benchmarks: bool = True) -> list[str]:
     """universe_symbols, after recording the watchlist and research names as securities and applying the
-    [classify] overrides from config.toml to the table. What a sync calls."""
+    [classify] overrides from config.toml to the table. What a sync calls. It never marks benchmarks: the sync's
+    steps do that first (sync._universe), and the export leaves them out."""
     for sym in read_watchlist(watchlist_path) + read_investing_tickers(investing_dir):
         store.upsert_security(sym, first_seen=today())
     for sym, asset_type in (classify or {}).items():
         store.set_asset_type(canonical(sym), asset_type)
-    return universe_symbols(store, watchlist_path, classify, investing_dir)
+    return universe_symbols(store, watchlist_path, classify, investing_dir, include_benchmarks=include_benchmarks)

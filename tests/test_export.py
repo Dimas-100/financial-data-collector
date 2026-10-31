@@ -102,3 +102,13 @@ def test_prices_export_rebases_older_bars(store: Store):
     got = [(r["d"], r["c"]) for r in p["by_ticker"]["AAPL"]]
     assert got[-1] == ("2026-01-06", 52.0)
     # descending: F=1 -> 06: 52; F *= ((51-0.25)/51)/1 -> 05: 51*0.995098=50.75; F *= ((100-0)/100)/2 -> 02: 100*0.497549=49.75\n    assert got[1] == ("2026-01-05", round(51.0 * ((51.0 - 0.25) / 51.0), 4))\n    assert got[0] == ("2026-01-02", round(100.0 * ((51.0 - 0.25) / 51.0) * 0.5, 4))
+
+
+def test_a_benchmark_that_is_not_held_is_not_exported(store: Store, tmp_path: Path):
+    from financial_data_collector.universe import build_universe
+    store.mark_benchmarks(["XLK"])
+    store.write_prices("XLK", [PriceBar("2026-01-02", 200.0, 200.0)], "tiingo")
+    universe = build_universe(store, tmp_path / "watchlist.txt", include_benchmarks=False)
+    assert "XLK" not in universe
+    p = E.build_prices(store, universe, NOW)
+    assert "XLK" not in p["by_ticker"] and "XLK" not in p["misses"]

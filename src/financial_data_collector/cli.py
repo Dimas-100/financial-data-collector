@@ -225,7 +225,8 @@ def cmd_export(root: Path, args) -> int:
     cfg = load_config(root)
     store = Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
     try:
-        universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir)
+        universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir,
+                                  include_benchmarks=False)
         results = export_cockpit(store, cfg, universe, datetime.now(timezone.utc),
                                  out_dir=Path(args.dir) if args.dir else None)
     finally:

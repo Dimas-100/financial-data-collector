@@ -111,6 +111,13 @@ def _covered(ctx: CheckContext) -> list[str]:
     return [s for s in ctx.store.check_held_symbols() if types.get(s) not in NOT_COVERED]
 
 
+def _price_covered(ctx: CheckContext) -> list[str]:
+    """Held symbols plus the benchmarks (a wrong SPY close would skew every measure built on it), each once."""
+    types = ctx.store.check_asset_types()
+    symbols = set(ctx.store.check_held_symbols()) | set(ctx.store.check_benchmark_symbols())
+    return sorted(s for s in symbols if types.get(s) not in NOT_COVERED)
+
+
 def _split_adjusted(ours: float, theirs: float, factor: float) -> tuple[float, float]:
     """On a split day one provider may still show the pre-split price: divide the pre-split side by the factor.
     Which side that is shows in the ratio, whichever way the split went."""
@@ -149,12 +156,12 @@ def _tiingo_quote(ctx: CheckContext, symbol: str, on: str) -> Quote | None:
 # ---- prices2 ---------------------------------------------------------------------------------------
 
 def second_price(ctx: CheckContext) -> list[Finding]:
-    """The newest final close of each held symbol against another provider's. Over `price_hold` apart is a hold
-    on every value ("*"); over `price_warn` is a warning on the close."""
+    """The newest final close of each held symbol and benchmark against another provider's. Over `price_hold` apart
+    is a hold on every value ("*"); over `price_warn` is a warning on the close."""
     cfg = ctx.cfg.check
     out: list[Finding] = []
     asked = 0
-    for symbol in _covered(ctx):
+    for symbol in _price_covered(ctx):
         bar = ctx.store.check_newest_final_bar(symbol)
         if bar is None:
             continue

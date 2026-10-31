@@ -72,7 +72,7 @@ waits its turn too. Older history: `fdc query "select * from sync_runs order by 
 |---|---|
 | `position_snapshots`, `cash_balances` | one row per day, account and symbol; cash separately |
 | `transactions` | buys, sells, dividends, reinvestments, contributions, withdrawals, fees; de-duplicated across re-imports |
-| `prices` | daily close, adjusted close, dividends and splits per symbol |
+| `prices` | daily close, adjusted close, dividends and splits per symbol, for what you hold, your watchlist and the benchmarks (see "Benchmarks") |
 | `macro_observations` | FRED economic numbers in FRED's own units: `CPIAUCSL`, `CPILFESL` (inflation indexes), `DFEDTARL`, `DFEDTARU` (the Fed's target range), `DGS10` (10-year yield), `UNRATE`; one row per series and date, a revision overwrites its row |
 | `sec_facts` | every XBRL fact each held company ever filed (all forms, all periods) |
 | `financial_line_items` | those facts shaped into income statement, balance sheet and cash-flow line items, annual and quarterly |
@@ -89,6 +89,13 @@ Quarterly cash-flow items are computed from year-to-date filings where companies
 year-to-date; fourth quarters are derived from the full year. A quarterly row whose line items include
 any computed value carries `has_derived_items = 1`; `financial_line_items.is_derived` says which ones.
 Funds (ETFs, mutual funds) get positions and prices only; they file no statements.
+
+**Benchmarks.** A sync also collects prices for the market fund (`SPY`) and the eleven Select Sector SPDRs (`XLC`, `XLY`,
+`XLP`, `XLE`, `XLF`, `XLV`, `XLI`, `XLB`, `XLRE`, `XLK`, `XLU`), so a later measure has something to compare a move against.
+They are marked in `securities.benchmark`, collected like any symbol, and never counted as holdings. `fdc export` leaves
+them out unless you also hold them or list them, and the checker compares their newest close with a second provider's
+(`prices2`). Set `[benchmarks]` in `config.toml` to change the market fund or to replace the sector list; remove a
+benchmark there and its mark goes at the next sync.
 
 Replayed history before your first snapshot assumes the transaction history starts at account opening; for an
 account with a partial history (a broker feed that only goes back a year) treat `reconstructed` cash as approximate.

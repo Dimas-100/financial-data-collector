@@ -174,6 +174,19 @@ class Store:
         with self.conn:
             self.conn.execute("UPDATE securities SET asset_type = ? WHERE symbol = ?", (asset_type, symbol))
 
+    def mark_benchmarks(self, symbols: Iterable[str]) -> None:
+        """Make the listed symbols the benchmarks and nothing else: missing ones are recorded as ETFs, listed ones
+        of unknown type become ETFs (a known type is kept), the mark is set on them and cleared on every other row.
+        What config.toml says wins on every sync, so removing a benchmark there unmarks it here."""
+        listed = list(dict.fromkeys(symbols))
+        with self.conn:
+            for sym in listed:
+                self.conn.execute("INSERT OR IGNORE INTO securities (symbol, asset_type, first_seen) VALUES (?, 'etf', ?)",
+                                  (sym, today()))
+                self.conn.execute("UPDATE securities SET asset_type = 'etf' WHERE symbol = ? AND asset_type = 'unknown'", (sym,))
+            self.conn.execute("UPDATE securities SET benchmark = 0")
+            self.conn.executemany("UPDATE securities SET benchmark = 1 WHERE symbol = ?", [(s,) for s in listed])
+
     # ---- parking: symbols nothing knows ----------------------------------
     def count_miss(self, symbol: str) -> int:
         """One more run in which no provider had a bar for the symbol; returns the new count."""
@@ -195,9 +208,10 @@ class Store:
             self.conn.execute("UPDATE securities SET parked_reason = NULL, miss_runs = 0 WHERE symbol = ?", (symbol,))
 
     def is_parkable(self, symbol: str) -> bool:
-        """No CIK and no row in positions_latest: nothing in the warehouse says this symbol is real."""
+        """No CIK and no row in positions_latest: nothing in the warehouse says this symbol is real. A benchmark is
+        real because the config names it, so it is never parked."""
         row = self.conn.execute(
-            "SELECT 1 FROM securities s WHERE s.symbol = ? AND s.cik IS NULL "
+            "SELECT 1 FROM securities s WHERE s.symbol = ? AND s.cik IS NULL AND s.benchmark = 0 "
             "AND NOT EXISTS (SELECT 1 FROM positions_latest p WHERE p.symbol = s.symbol)", (symbol,)).fetchone()
         return row is not None
 
@@ -729,9 +743,17 @@ class Store:
         """The column names of valuation_daily: what a finding's `field` may name (besides '*')."""
         return [r["name"] for r in self.conn.execute("PRAGMA table_info(valuation_daily)")]
 
+    def held_symbols(self) -> set[str]:
+        """Symbols in the latest position snapshots (positions_latest)."""
+        return {r[0] for r in self.query("SELECT DISTINCT symbol FROM positions_latest")}
+
     def check_held_symbols(self) -> list[str]:
         """Symbols in the latest position snapshots (positions_latest)."""
-        return [r[0] for r in self.query("SELECT DISTINCT symbol FROM positions_latest ORDER BY symbol")]
+        return sorted(self.held_symbols())
+
+    def check_benchmark_symbols(self) -> list[str]:
+        """The symbols marked as benchmarks, in symbol order."""
+        return [r[0] for r in self.query("SELECT symbol FROM securities WHERE benchmark = 1 ORDER BY symbol")]
 
     def check_newest_valuation(self) -> list[sqlite3.Row]:
         """The newest valuation_daily row of every symbol, raw (no holds applied), with the symbol's asset type

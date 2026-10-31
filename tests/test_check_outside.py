@@ -452,3 +452,28 @@ def test_the_suite_never_reaches_yahoo():
     # the autouse fixture in conftest swaps default_source for a stub that knows nothing
     src = outside.default_source()
     assert src.quote("AAA", DAY) is None and src.figures("AAA") is None
+
+
+# ---- benchmarks are compared too ---------------------------------------------------------------------
+
+def test_prices2_also_compares_benchmarks(store, cfg):
+    store.upsert_security("SPY", "SPY", "etf")
+    store.write_prices("SPY", [PriceBar(DAY, 500.0, 500.0, 0.0, 1.0)], "tiingo")
+    store.mark_benchmarks(["SPY"])
+    found = _prices2(store, cfg, FakeOutside({"SPY": Q(530.0, DAY)}))
+    assert [(f.symbol, f.severity) for f in found] == [("SPY", "hold")]
+
+
+def test_a_benchmark_that_is_also_held_is_compared_once(store, cfg):
+    _held(store, "SPY", close=500.0, asset_type="etf")
+    store.mark_benchmarks(["SPY"])
+    out = FakeOutside({"SPY": Q(500.0, DAY)})
+    assert _prices2(store, cfg, out) == [] and out.asked == [("quote", "SPY", DAY)]
+
+
+def test_a_benchmark_of_a_kind_not_covered_is_not_asked(store, cfg):
+    store.upsert_security("BTC", "BTC", "crypto")
+    store.write_prices("BTC", [PriceBar(DAY, 5.0, 5.0, 0.0, 1.0)], "tiingo")
+    store.mark_benchmarks(["BTC"])
+    out = FakeOutside()
+    assert _prices2(store, cfg, out) == [] and out.asked == []
