@@ -9,6 +9,8 @@ is simply missing from the history, and a held newest day makes the score `held`
 The band reads the percentile through the metric's direction: a high P/E, P/FCF, P/S or EV/EBIT is expensive
 (`HIGH_IS_PREMIUM`), a high dividend yield is cheap (`HIGH_IS_CHEAP`). With the default thresholds a value under the
 25th percentile of its own history is `cheap`, over the 75th `premium`, anything between (both included) `usual`.
+A dividend yield of zero is no dividend, not a rank: today's is `unsupported` and the zero days are left out of the
+history (companies and funds alike).
 
 Beside them, `fundamental_scores` gives ten company fundamentals with no percentile or band: the growth the price
 implies, 5-year free cash flow and revenue growth, the year's change in free cash flow and operating margin, net debt /
@@ -53,8 +55,17 @@ NOT_COMPUTED = {                      # why an `ok` row has no value when no hol
     "pe": "earnings not positive",
     "p_fcf": "free cash flow not positive",
     "ps": "no revenue",
-    "dividend_yield": "no dividend",
+    "dividend_yield": "no close",
 }
+NO_DIVIDEND = "no dividend in 12 months"
+ZERO_YIELD = 1e-12                    # a yield below this is zero (float leftovers of a dividend sum that netted out)
+
+
+def _ranked(metric: str, value: float) -> bool:
+    """Whether a value of `metric` takes part in a ranking: a dividend yield only when positive (a company or fund with
+    no dividend has no yield to compare, so its zero days are left out of the history and a zero today is not known);
+    every other value always."""
+    return metric != "dividend_yield" or value >= ZERO_YIELD
 NO_DEBT_OR_CASH = "no debt or cash figure in its filings"
 NO_OPERATING_INCOME = "operating income not positive"
 NO_MARKET_CAP = "no market cap"
@@ -189,8 +200,12 @@ def history_scores(symbol: str, day: str, rows: list[dict], ttm: dict[str, dict]
             out.append(row(metric, status="held", reason="; ".join(held)) if held
                        else row(metric, reason=_why_none(metric, newest, ttm)))
             continue
+        if not _ranked(metric, value):
+            out.append(row(metric, reason=NO_DIVIDEND))
+            continue
         history = [(r["date"], v) for r in rows
-                   if r["date"] >= start and r["status"] == "ok" and (v := _value(metric, r, ttm)) is not None]
+                   if r["date"] >= start and r["status"] == "ok" and (v := _value(metric, r, ttm)) is not None
+                   and _ranked(metric, v)]
         first = history[0][0]
         span = f"{first}..{day} ({len(history)} days)"
         derived = sources.derived(_label(metric), span, day)
@@ -610,11 +625,14 @@ def fund_scores(symbol: str, day: str, snaps: list[dict], s: EngineSettings, *,
         value = newest.get(column)
         if value is None:
             out.append(row(metric, reason=f"no {FUND_LABELS[metric]} in the newest snapshot", src=(feed,)))
+        elif not _ranked(metric, value):
+            out.append(row(metric, reason=NO_DIVIDEND, src=(feed,)))
         elif metric == "expense_ratio":
             out.append(row(metric, value, status="ok", src=(feed,)))
         else:
             own = [(x["date"], x[column]) for x in snaps
-                   if x["source"] == newest["source"] and x["date"] >= start and x[column] is not None]
+                   if x["source"] == newest["source"] and x["date"] >= start and x[column] is not None
+                   and _ranked(metric, x[column])]
             first = own[0][0]
             days = (date.fromisoformat(newest["date"]) - date.fromisoformat(first)).days
             derived = sources.derived(f"fund_snapshots {column}", f"{first}..{newest['date']} ({len(own)} snapshots)",

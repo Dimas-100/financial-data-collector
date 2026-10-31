@@ -76,6 +76,23 @@ def test_a_year_of_snapshots_gives_a_band(store, cfg):
                     "[engine] premium_percentile": "75.0"}
 
 
+@pytest.mark.parametrize("newest", [0.0, 4e-13])
+def test_a_fund_with_a_zero_yield_has_no_dividend_not_a_rank(store, cfg, newest):     # R17 (M3)
+    _weekday_bars(store, "VFIAX", asset_type="mutual_fund")
+    _snapshots(store, "VFIAX", _days(END, 400), yld=lambda i: newest if i == 399 else 0.02)
+    r = _build(store, cfg, "VFIAX")["dividend_yield"]
+    assert (r["status"], r["status_reason"], r["value"], r["percentile_5y"], r["band"]) ==            ("unsupported", "no dividend in 12 months", None, None, None)
+
+
+def test_a_fund_ranks_only_its_positive_yields(store, cfg):                            # R17 (M3)
+    # 300 snapshots with no yield, 499 at 2%, the newest 1%: lowest of the positive ones (premium); with the zeros
+    # counted it would be the 37.6th percentile (usual)
+    _weekday_bars(store, "VFIAX", asset_type="mutual_fund")
+    _snapshots(store, "VFIAX", _days(END, 800), yld=lambda i: 0.0 if i < 300 else (0.01 if i == 799 else 0.02))
+    r = _build(store, cfg, "VFIAX")["dividend_yield"]
+    assert (r["status"], r["band"], r["percentile_5y"]) == ("ok", "premium", 0.1)
+
+
 def test_a_cheap_fund_reads_low_pe_and_high_yield_as_cheap(store, cfg):
     _weekday_bars(store, "VFIAX", asset_type="mutual_fund")
     _snapshots(store, "VFIAX", _days(END, 400), pe=lambda i: 30.0 - i / 100 if i < 399 else 5.0,

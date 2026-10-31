@@ -293,6 +293,23 @@ def test_a_stopped_feed_found_after_the_build_holds_them_in_the_view(store, cfg)
     assert view["off_high_52w"]["status"] == "held"
 
 
+@pytest.mark.parametrize("newest", [0.0, 4e-13])           # float leftovers of a zero sum count as zero
+def test_a_zero_yield_is_no_dividend_not_a_rank(store, cfg, newest):                     # R17 (M3)
+    _company(store, row=lambda i, d: {"dividend_yield": newest, "dividends_12m": 0.0} if i == 1299 else None)
+    r = _run(store, cfg)["dividend_yield"]
+    assert (r["status"], r["status_reason"], r["value"], r["percentile_5y"], r["band"]) ==            ("unsupported", "no dividend in 12 months", None, None, None)
+
+
+def test_only_positive_yields_are_ranked(store, cfg):                                   # R17 (M3)
+    # 650 days with no dividend, 649 at 2%, the newest 1%: among the positive yields the newest is the lowest
+    # (premium); counting the zeros it would sit at the 50th percentile (usual)
+    _company(store, row=lambda i, d: {"dividend_yield": 0.0 if i < 650 else (0.01 if i == 1299 else 0.02)})
+    r = _run(store, cfg)["dividend_yield"]
+    assert (r["status"], r["band"], r["percentile_5y"]) == ("ok", "premium", 0.1)
+    derived = [x for x in json.loads(r["sources"]) if x["kind"] == "derived"]
+    assert derived[0]["ref"].endswith("(650 days)")
+
+
 def test_a_hold_on_an_unrelated_field_does_not_hold_the_metric(store, cfg):
     _company(store)
     _hold(store, "figures", "AAA", "revenue_ttm", END, END, "revenue disagrees")
@@ -322,7 +339,7 @@ def test_negative_earnings_is_unsupported_and_says_why(store, cfg):
              if i == 1299 else None)
     rows = _run(store, cfg)
     want = {"pe": "earnings not positive", "p_fcf": "free cash flow not positive", "ps": "no revenue",
-            "dividend_yield": "no dividend"}
+            "dividend_yield": "no close"}               # valuation_daily leaves a yield out only without a close
     for m, why in want.items():
         assert (rows[m]["status"], rows[m]["status_reason"], rows[m]["value"], rows[m]["band"]) == \
                ("unsupported", why, None, None)

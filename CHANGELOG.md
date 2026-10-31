@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Valuation engine: a dividend yield of zero (below 1e-12, to absorb float leftovers) is not ranked, for companies and funds: today's is `unsupported` "no dividend in 12 months", and only positive yields make up the history (a company that started paying no longer ranks its new yield against its years of zeros). A company's yield left out of `valuation_daily` (only without a close) now says "no close".
 - Migration 0021: a partial index of the open holds (`check_findings` by symbol, severity `hold`, not cleared), which the `valuation_latest` and `valuation_scores` views look up for every row.
 - Valuation engine: the `excess` trigger of `price_moves` fires only on a day the close fell; a stock that rose on a day the market rose more is not a drop. `excess_sd` is still stored on every `1d` row that is recorded.
 - Checker: the `closes` warning and hold (a stopped price feed) are dated from the newest final close itself, open-ended, not from the first missed trading day. Dated after the close, the hold covered no row: `valuation_latest`, the engine's build and the `valuation_scores` view all sit on that stale close, so its values kept their `ok` bands. The first check run after this change clears the old findings and opens them again under the new date.

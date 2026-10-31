@@ -234,7 +234,9 @@ newest close, the 10-Q or 10-K the statements came from (with its SEC link) and 
 in. The newest `valuation_daily` row decides the rest: a `stale` or `unsupported` row makes every score
 `unsupported` with its reason; a value a hold blanks (a hold on the metric's own column, a `*` hold from any check,
 or a `close` hold, since every one of these is built on the close) makes it `held`; a value that cannot be computed is
-`unsupported` with why ("earnings not positive", "free cash flow not positive", "no revenue", "no dividend").
+`unsupported` with why ("earnings not positive", "free cash flow not positive", "no revenue"). A dividend yield of
+zero is not ranked: today's is `unsupported` "no dividend in 12 months", and only the days with a positive yield make
+up the history it is ranked in.
 
 Each stock with an SEC CIK also gets ten fundamentals, with no percentile or band:
 
@@ -282,7 +284,8 @@ Each fund (ETF, mutual fund) also gets three scores from its own daily `fund_sna
 - `expense_ratio`: the newest snapshot's figure as a fraction (0.0004 = 0.04%); a value only.
 
 A fund with no snapshot is `unsupported` "no fund snapshot yet"; one whose newest snapshot is more than 7 days before
-the day, "newest snapshot is from <date>"; a figure the snapshot lacks says so. No fund row names a `valuation_daily`
+the day, "newest snapshot is from <date>"; a figure the snapshot lacks says so; a yield of zero is `unsupported` "no
+dividend in 12 months", and only positive yields are ranked. No fund row names a `valuation_daily`
 column, so only a `*` hold (or one on `score:<metric>`, through the view) holds it. Sources: the snapshot
 (`fund_snapshots: <source>`), the history span and the settings.
 
