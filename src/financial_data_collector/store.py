@@ -718,6 +718,16 @@ class Store:
     def check_asset_types(self) -> dict[str, str]:
         return {r[0]: r[1] for r in self.query("SELECT symbol, asset_type FROM securities")}
 
+    def check_sec_companies(self) -> list[tuple[str, str]]:
+        """(symbol, cik) of every stock the SEC collector has fetched at least once, in symbol order."""
+        return [(r[0], r[1]) for r in self.query(
+            "SELECT symbol, cik FROM securities WHERE asset_type = 'stock' AND cik IS NOT NULL "
+            "AND last_sec_fetch IS NOT NULL ORDER BY symbol")]
+
+    def check_sec_accessions(self, cik: str) -> set[str]:
+        """Every accession number the warehouse holds SEC facts for, for this CIK, as SEC writes them."""
+        return {r[0] for r in self.query("SELECT DISTINCT accn FROM sec_facts WHERE cik = ?", (cik,))}
+
     def check_final_bars(self, symbol: str, limit: int) -> list[tuple[str, float, float]]:
         """The last `limit` final bars as ascending (date, close, split_factor)."""
         rows = self.query("SELECT date, close, split_factor FROM prices WHERE symbol = ? AND final = 1 "

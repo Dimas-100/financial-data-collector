@@ -169,11 +169,11 @@ def _step_export(store: Store, cfg: Config, *, now, progress: Progress, **_) -> 
     return written, msg, "ok"
 
 
-def _step_check(store: Store, cfg: Config, *, fetch, now, progress: Progress, **_) -> tuple[int, str, str]:
+def _step_check(store: Store, cfg: Config, *, fetch, now, sleep, progress: Progress, **_) -> tuple[int, str, str]:
     # The checks' own failures are findings about the checks, not a failed sync: the step is ok unless the
     # frame itself breaks (that raises and run_sync records an error, which exit_code ignores).
     progress("checks")
-    rep = check_mod.run_check(cfg, fetch=fetch, now=now, store=store)
+    rep = check_mod.run_check(cfg, fetch=fetch, now=now, store=store, sleep=sleep)
     msg = f"{rep.holds} holds found, {rep.open_holds} open, {rep.warns} warnings, {len(rep.errors)} errors"
     if rep.errors:
         msg += ": " + "; ".join(rep.errors)

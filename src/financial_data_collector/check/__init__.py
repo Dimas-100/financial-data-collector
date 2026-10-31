@@ -30,6 +30,7 @@ class CheckContext:
     fetch: http.Fetch
     outside: Any
     now: datetime
+    sleep: Callable[[float], None] = time.sleep     # the pause between companies that a check asks an outside service about
 
 
 Check = Callable[[CheckContext], list[Finding]]
@@ -48,7 +49,8 @@ class CheckReport:
 
 
 def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = None, now: datetime | None = None,
-              only: list[str] | None = None, store: Store | None = None) -> CheckReport:
+              only: list[str] | None = None, store: Store | None = None,
+              sleep: Callable[[float], None] = time.sleep) -> CheckReport:
     """Run the registered checks (or just `only`), record the run and its findings. A check that raises is
     reported in `errors` and leaves its own open findings as they were; the others still run. That covers what a
     check returns too: anything but a list of Findings under its own name, each naming a valuation_daily column
@@ -67,7 +69,7 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
     own = store is None
     st = store or Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
     try:
-        ctx = CheckContext(store=st, cfg=cfg, fetch=fetch, outside=outside, now=now)
+        ctx = CheckContext(store=st, cfg=cfg, fetch=fetch, outside=outside, now=now, sleep=sleep)
         holds = warns = 0
         errors: list[str] = []
         fields = set(st.check_valuation_columns()) | {"*"}
@@ -101,4 +103,4 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
             st.close()
 
 
-from . import offline  # noqa: E402,F401  (registers the offline checks in CHECKS; last, because it imports from here)
+from . import offline, filings  # noqa: E402,F401  (register the checks in CHECKS; last, because they import from here)
