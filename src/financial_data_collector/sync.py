@@ -174,7 +174,7 @@ def _step_check(store: Store, cfg: Config, *, fetch, now, progress: Progress, **
     # frame itself breaks (that raises and run_sync records an error, which exit_code ignores).
     progress("checks")
     rep = check_mod.run_check(cfg, fetch=fetch, now=now, store=store)
-    msg = f"{rep.holds} holds, {rep.warns} warnings, {len(rep.errors)} errors"
+    msg = f"{rep.holds} holds found, {rep.open_holds} open, {rep.warns} warnings, {len(rep.errors)} errors"
     if rep.errors:
         msg += ": " + "; ".join(rep.errors)
     return rep.holds + rep.warns, msg, "ok"

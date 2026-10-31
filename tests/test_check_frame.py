@@ -143,12 +143,67 @@ def test_derive_run_id_is_null_when_no_derive_succeeded(cfg):
 
 def test_check_imports_nothing_it_checks():
     src = Path(check.__file__).parent
-    files = list(src.glob("*.py"))
+    files = list(src.rglob("*.py"))
     assert len(files) >= 2
     text = "\n".join(p.read_text(encoding="utf-8") for p in files)
-    assert not re.search(r"from \.\.(derive|statements|collectors\.(prices|sec_facts|sec_cik|macro))", text)
-    assert not re.search(r"from \.\.collectors import", text)
-    assert not re.search(r"import financial_data_collector\.(derive|statements|collectors)", text)
+    banned = r"(derive|statements|collectors)"
+    assert not re.search(rf"from\s+\.\.\s*{banned}", text)                       # from ..derive.x import y
+    assert not re.search(rf"from\s+\.\.\s+import\s+[^\n]*\b{banned}\b", text)    # from .. import derive
+    assert not re.search(r"from\s+\.\.collectors\.(?!http)", text)
+    assert not re.search(rf"(from|import)\s+financial_data_collector(\.|\s+import\s+[^\n]*\b){banned}", text)
+
+
+def test_a_check_that_returns_junk_hurts_no_other_check(cfg):
+    _run(cfg, {"a": lambda ctx: [_finding("a")], "b": lambda ctx: [_finding("b")], "c": lambda ctx: [_finding("c")]})
+    junk = {
+        "a": lambda ctx: [_finding("a", symbol=None)],      # NOT NULL column
+        "c": lambda ctx: None,
+        "b": lambda ctx: [],
+    }
+    rep = _run(cfg, junk, when=T0 + timedelta(days=1))
+    by = {r["check_name"]: r for r in _rows(cfg)}
+    assert by["a"]["cleared_at"] is None and by["a"]["last_seen"] == "2026-03-01T12:00:00Z"
+    assert by["c"]["cleared_at"] is None
+    assert by["b"]["cleared_at"] == "2026-03-02T12:00:00Z"
+    assert sorted(e.split(":")[0] for e in rep.errors) == ["a", "c"]
+    run = _rows(cfg, "SELECT * FROM check_runs ORDER BY run_id DESC")[0]
+    assert run["checks_run"] == 1 and "a:" in run["error"] and "c:" in run["error"]
+
+
+def test_unserialisable_evidence_is_that_checks_error_and_records_nothing(cfg):
+    good = Finding("a", "AAA", "pe", "2026-02-02", None, "hold", "fine", {})
+    bad = Finding("a", "AAA", "pe", "2026-02-03", None, "hold", "x", {1: object(), "k": 2, (1, 2): 3})  # json refuses a tuple key
+    rep = _run(cfg, {"a": lambda ctx: [good, bad]})
+    assert len(rep.errors) == 1 and rep.errors[0].startswith("a: ")
+    assert _rows(cfg) == []                                  # the good one was rolled back with the bad one
+
+
+def test_a_finding_under_another_checks_name_is_an_error(cfg):
+    rep = _run(cfg, {"a": lambda ctx: [_finding("zzz")]})
+    assert len(rep.errors) == 1 and "a: ValueError" in rep.errors[0]
+    assert _rows(cfg) == []
+
+
+def test_run_times_come_from_the_injected_clock(cfg):
+    _run(cfg, {})
+    run = _rows(cfg, "SELECT * FROM check_runs")[0]
+    assert run["started_at"] == "2026-03-01T12:00:00Z"
+    assert "2026-03-01T12:00:00Z" <= run["finished_at"] < "2026-03-01T12:01:00Z"
+
+
+def test_the_report_counts_open_holds_across_checks(cfg):
+    _run(cfg, {"a": lambda ctx: [_finding("a")], "b": lambda ctx: [_finding("b")]})
+    rep = _run(cfg, {"a": lambda ctx: [], "b": lambda ctx: [_finding("b")]}, when=T0 + timedelta(days=1), only=["a"])
+    assert rep.holds == 0 and rep.open_holds == 1
+
+
+def test_open_findings_come_most_recently_seen_first(cfg):
+    _run(cfg, {"a": lambda ctx: [_finding("a")]})
+    _run(cfg, {"b": lambda ctx: [_finding("b")]}, when=T0 + timedelta(days=1))
+    s = Store.open(cfg.db_path, migrate=False)
+    names = [r["check_name"] for r in s.check_open_findings()]
+    s.close()
+    assert names == ["b", "a"]
 
 
 def test_fdc_check_prints_one_line_of_counts(cfg, capsys):
@@ -159,5 +214,5 @@ def test_fdc_check_prints_one_line_of_counts(cfg, capsys):
     check.CHECKS["b"] = lambda ctx: []
     rc = cli.main(["--root", str(cfg.root), "check", "--only", "a"])
     out = capsys.readouterr().out
-    assert rc == 0 and re.search(r"check: 1 holds?, 0 warnings?, 0 errors? \(run \d{8}T\d{6}Z\)", out), out
+    assert rc == 0 and re.search(r"check: 1 holds found, 1 open, 0 warnings, 0 errors \(run \d{8}T\d{6}Z\)", out), out
     assert [r["check_name"] for r in _rows(cfg)] == ["a"]

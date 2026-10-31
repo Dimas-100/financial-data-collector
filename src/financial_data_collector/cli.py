@@ -226,9 +226,9 @@ def cmd_check(root: Path, args) -> int:
 
     cfg = load_config(root)
     rep = check.run_check(cfg, fetch=http.fetch, only=args.only)
-    holds, warns, errs = rep.holds, rep.warns, len(rep.errors)
-    line = (f"check: {holds} hold{'' if holds == 1 else 's'}, {warns} warning{'' if warns == 1 else 's'}, "
-            f"{errs} error{'' if errs == 1 else 's'} (run {rep.run_id})")
+    errs = len(rep.errors)
+    line = (f"check: {rep.holds} holds found, {rep.open_holds} open, {rep.warns} warnings, "
+            f"{errs} errors (run {rep.run_id})")
     ui.console.print(Text(line, style="dark_orange" if errs else ""))
     for e in rep.errors:
         ui.console.print(Text(f"  {e}", style="dark_orange"))

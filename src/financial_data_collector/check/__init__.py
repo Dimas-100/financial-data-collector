@@ -8,7 +8,8 @@ found, and clears a check's earlier findings that it no longer finds.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from .. import http
@@ -41,14 +42,16 @@ class CheckReport:
     run_id: str
     holds: int
     warns: int
-    errors: list[str]              # one "name: ExceptionType: message" per check that raised
+    errors: list[str]              # one "name: ExceptionType: message" per check that failed
     checks_run: int = 0
+    open_holds: int = 0            # holds open after this run (any check's), not just those found by it
 
 
 def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = None, now: datetime | None = None,
               only: list[str] | None = None, store: Store | None = None) -> CheckReport:
     """Run the registered checks (or just `only`), record the run and its findings. A check that raises is
-    reported in `errors` and leaves its own open findings as they were; the others still run. Pass `store` to
+    reported in `errors` and leaves its own open findings as they were; the others still run. That covers what a
+    check returns too: anything but a list of Findings under its own name is that check's error. Pass `store` to
     use a connection that is already open (the sync does); otherwise one is opened and closed here."""
     now = now or datetime.now(timezone.utc)
     names = list(CHECKS)
@@ -59,6 +62,7 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
         names = [n for n in names if n in only]
     run_id = now.strftime("%Y%m%dT%H%M%SZ")
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    t0 = time.monotonic()
     own = store is None
     st = store or Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
     try:
@@ -68,16 +72,26 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
         for name in names:
             try:
                 found = CHECKS[name](ctx)
+                if found is None or isinstance(found, (str, bytes)):
+                    raise TypeError(f"returned {type(found).__name__}, not a list of Finding")
+                found = list(found)
+                for f in found:
+                    if not isinstance(f, Finding):
+                        raise TypeError(f"returned a {type(f).__name__}, not a Finding")
+                    if f.check_name != name:
+                        raise ValueError(f"returned a finding for check {f.check_name!r}")
+                st.check_record(name, found, stamp)     # one transaction: an error leaves its findings as they were
             except Exception as e:      # one broken check must not hide the others; its findings stay as they were
                 errors.append(f"{name}: {type(e).__name__}: {e}")
                 continue
-            st.check_record(run_id, name, found, stamp)
             holds += sum(1 for f in found if f.severity == "hold")
             warns += sum(1 for f in found if f.severity == "warn")
-        st.check_log_run(run_id, started_at=stamp, finished_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                         derive_run_id=st.check_derive_run_id(), checks_run=len(names) - len(errors),
-                         holds=holds, warns=warns, error="; ".join(errors) or None)
-        return CheckReport(run_id=run_id, holds=holds, warns=warns, errors=errors, checks_run=len(names) - len(errors))
+        finished = (now + timedelta(seconds=time.monotonic() - t0)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ran = len(names) - len(errors)
+        st.check_log_run(run_id, started_at=stamp, finished_at=finished, derive_run_id=st.check_derive_run_id(),
+                         checks_run=ran, holds=holds, warns=warns, error="; ".join(errors) or None)
+        return CheckReport(run_id=run_id, holds=holds, warns=warns, errors=errors, checks_run=ran,
+                           open_holds=st.check_open_count("hold"))
     finally:
         if own:
             st.close()

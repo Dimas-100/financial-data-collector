@@ -284,7 +284,7 @@ def test_sync_runs_check_last_and_a_failing_check_does_not_fail_the_sync(project
     rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     last = rep.steps[-1]
     assert last.step == "check" and last.status == "ok" and rep.exit_code == 0
-    assert "0 holds, 0 warnings, 1 errors" in last.message and "boom: RuntimeError" in last.message
+    assert "0 holds found, 0 open, 0 warnings, 1 errors" in last.message and "boom: RuntimeError" in last.message
     s = Store.open(project.db_path, migrate=False)
     run = s.query("SELECT * FROM check_runs")[0]
     s.close()

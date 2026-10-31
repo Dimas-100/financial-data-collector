@@ -646,18 +646,23 @@ class Store:
 
     # ---- the checker (prefix check_) ----------------------------------------
     def check_open_findings(self, check_name: str | None = None) -> list[sqlite3.Row]:
-        """Findings not yet cleared, newest first; just one check's when named."""
+        """Findings not yet cleared, most recently seen first; just one check's when named."""
         sql = "SELECT * FROM check_findings WHERE cleared_at IS NULL"
         params: tuple = ()
         if check_name is not None:
             sql, params = sql + " AND check_name = ?", (check_name,)
-        return self.query(sql + " ORDER BY id DESC", params)
+        return self.query(sql + " ORDER BY last_seen DESC, id DESC", params)
 
-    def check_record(self, run_id: str, check_name: str, findings: "Iterable[Finding]", now: str) -> None:
+    def check_open_count(self, severity: str) -> int:
+        """How many findings of this severity are open now, from every check."""
+        return self.query("SELECT COUNT(*) FROM check_findings WHERE cleared_at IS NULL AND severity = ?",
+                          (severity,))[0][0]
+
+    def check_record(self, check_name: str, findings: "Iterable[Finding]", now: str) -> None:
         """Record what one check found. A finding seen before gets its last_seen (and message, severity,
         evidence) updated and is reopened if it had been cleared; a new one is added. Then this check's open
-        findings that were not in `findings` are cleared. Other checks' findings are not touched.
-        (`run_id` names the run for the caller's logs; findings keep their own first_seen / last_seen.)"""
+        findings that were not in `findings` are cleared. Other checks' findings are not touched. All of it is
+        one transaction: if anything raises (a None field, evidence that is not JSON), nothing changes."""
         findings = list(findings)
         with self.conn:
             for f in findings:
@@ -678,6 +683,8 @@ class Store:
 
     def check_log_run(self, run_id: str, *, started_at: str, finished_at: str, derive_run_id: str | None,
                       checks_run: int, holds: int, warns: int, error: str | None) -> None:
+        """One row per run. `holds` and `warns` mean FOUND BY THIS RUN (by the checks that ran in it); what is
+        open overall is in check_findings (`check_open_count`)."""
         with self.conn:
             self.conn.execute(
                 "INSERT OR REPLACE INTO check_runs (run_id, started_at, finished_at, derive_run_id, checks_run, "
