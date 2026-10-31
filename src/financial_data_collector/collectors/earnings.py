@@ -45,6 +45,7 @@ class EarningsResult:
     estimates: int                      # estimate_snapshots rows inserted or changed
     message: str = ""
     failed: bool = False                # a part raised: the company is not marked and is asked again
+    again: bool = False                 # no estimates today, but some on its last snapshot day: not marked, asked again
 
 
 def report_dates(recent: dict) -> list[tuple[str, str]]:
@@ -189,7 +190,8 @@ def collect_earnings(
 ) -> list[EarningsResult]:
     """Ask SEC and Yahoo about each stock or foreign filer in the universe not yet asked about today (a New York day),
     merge the dates and store them with the day's estimates. A company is marked asked only when no part raised (SEC,
-    Yahoo or the writes), so an outage is tried again; whatever did arrive is still stored. A CIK shared by several
+    Yahoo or the writes), so an outage is tried again; whatever did arrive is still stored. A company that got no
+    estimates but had some on its last snapshot day is not marked either: it is asked again next sync. A CIK shared by several
     symbols is asked of SEC once a run."""
     today = now.astimezone(NEW_YORK).date()
     day = today.isoformat()
@@ -239,21 +241,28 @@ def collect_earnings(
         yahoo_asked += 1
         dates: list[YahooEarning] = []
         estimates: list[Estimate] = []
+        blank = ""
         try:
             dates = yahoo.earnings_dates(symbol, YAHOO_LIMIT)
         except Exception as e:
             problems.append(say("Yahoo earnings dates", e))
         try:
             estimates = _estimates(yahoo.estimates(symbol))
+            # Yahoo going blank on a company it had estimates for is more likely a failed ask it did not report: the
+            # day is not given up, the next sync asks again.
+            before = None if estimates else store.estimates_before(symbol, day)
+            if before:
+                blank = f"no estimates today, had some on {before}"
         except Exception as e:
             problems.append(say("Yahoo estimates", e))
         changed = written = 0
         try:
             changed = store.replace_earnings(symbol, merge(symbol, sec, dates, store.earnings_events_of(symbol), today))
             written = store.write_estimates(symbol, day, estimates, stamp, SOURCE)
-            if not problems:
+            if not problems and not blank:
                 store.mark_earnings_fetch(symbol, day)          # only after the writes: a failed one is retried
         except Exception as e:
             problems.append(say("store", e))
-        results.append(EarningsResult(symbol, changed, written, "; ".join(problems), failed=bool(problems)))
+        results.append(EarningsResult(symbol, changed, written, "; ".join(problems) or blank, failed=bool(problems),
+                                      again=bool(blank) and not problems))
     return results

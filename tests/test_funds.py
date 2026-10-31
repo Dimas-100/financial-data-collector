@@ -253,6 +253,20 @@ def test_no_figures_writes_nothing_and_is_still_marked(store, cfg):
     assert yahoo_client.calls == ["SPY"]                                 # marked: not asked again today
 
 
+def test_no_figures_after_a_day_with_figures_is_not_marked_and_is_asked_again(store, cfg):
+    _security(store, "SPY", "etf")
+    _collect(store, ["SPY"], cfg, _FakeYahoo({"SPY": SPY_INFO}), now=NOW.replace(day=28))
+    blank = _FakeYahoo({"SPY": None})
+    (r,) = _collect(store, ["SPY"], cfg, blank)
+    assert r.again and not r.failed and r.source is None and r.written == 0
+    assert r.message == "no figures today, had them on 2026-10-28; asked again next sync"
+    assert store.query("SELECT last_fund_fetch FROM securities WHERE symbol='SPY'")[0][0] == "2026-10-28"
+    _collect(store, ["SPY"], cfg, blank, now=NOW.replace(hour=16))
+    assert blank.calls == ["SPY", "SPY"]                                   # not marked: asked again
+    _collect(store, ["SPY"], cfg, _FakeYahoo({"SPY": SPY_INFO}), now=NOW.replace(hour=18))
+    assert _snapshot(store, "SPY") is not None and len(store.query("SELECT 1 FROM fund_snapshots")) == 2
+
+
 def test_sleeps_only_between_calls(store, cfg):
     for symbol in ("SPY", "QQQ", "VFIAX"):
         _security(store, symbol, "etf")
@@ -314,22 +328,76 @@ def test_default_client_is_a_yfinance_client(monkeypatch):
     assert isinstance(yahoo.default_client(), yahoo.YfinanceClient)
 
 
-def test_yfinance_client_restores_the_logger_level(monkeypatch):
+def _yfinance_logger_state():
+    logger = logging.getLogger("yfinance")
+    return logger.level, logger.propagate, list(logger.handlers)
+
+
+def test_yfinance_client_restores_the_logger(monkeypatch):
     class _Ticker:
         def __init__(self, symbol):
             self.symbol = symbol
 
         @property
         def info(self):
-            assert logging.getLogger("yfinance").level == logging.CRITICAL      # silenced while asking
+            assert logging.getLogger("yfinance").propagate is False             # kept off the console while asking
             raise RuntimeError("boom")
 
     monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=_Ticker))
     logger = logging.getLogger("yfinance")
     logger.setLevel(logging.WARNING)
-    with pytest.raises(RuntimeError):
+    before = _yfinance_logger_state()
+    with pytest.raises(RuntimeError, match="boom"):
         yahoo.YfinanceClient().fund_info("BRK.B")
-    assert logger.level == logging.WARNING
+    assert _yfinance_logger_state() == before
+
+
+def _logging_yfinance(monkeypatch, info):
+    """A fake yfinance whose `info` logs an error on the yfinance logger, as yfinance 1.7 does on a failed request
+    (hide_exceptions), and then answers `info`."""
+    class _Ticker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        @property
+        def info(self):
+            logging.getLogger("yfinance").error("401 Client Error: Unauthorized ... Invalid Crumb")
+            return info
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=_Ticker))
+
+
+@pytest.mark.parametrize("info", [{}, {"symbol": "SPY"}])
+def test_an_error_yfinance_logged_raises_instead_of_reading_as_nothing(monkeypatch, caplog, info):
+    _logging_yfinance(monkeypatch, info)
+    before = _yfinance_logger_state()
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(RuntimeError, match="Invalid Crumb"):
+            yahoo.YfinanceClient().fund_info("SPY")
+    assert caplog.records == []                                            # nothing reached the console
+    assert _yfinance_logger_state() == before
+
+
+def test_a_logged_error_fails_the_fund_and_marks_nothing(monkeypatch, store, cfg):
+    _logging_yfinance(monkeypatch, {})
+    _security(store, "SPY", "etf")
+    (r,) = _collect(store, ["SPY"], cfg, yahoo.YfinanceClient())
+    assert r.failed and "Invalid Crumb" in r.message and not r.again
+    assert store.query("SELECT last_fund_fetch FROM securities WHERE symbol='SPY'")[0][0] is None
+
+
+def test_a_warning_yfinance_logged_is_not_an_error(monkeypatch):
+    class _Ticker:
+        def __init__(self, symbol):
+            pass
+
+        @property
+        def info(self):
+            logging.getLogger("yfinance").warning("something odd")
+            return {"yield": 0.01}
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=_Ticker))
+    assert yahoo.YfinanceClient().fund_info("SPY") == {"yield": 0.01}
 
 
 def test_yfinance_client_returns_the_info_dict_or_none(monkeypatch):
@@ -378,6 +446,14 @@ def test_the_funds_step_is_an_error_only_when_every_symbol_failed(tmp_path):
     half = _FakeYahoo({"SPY": SPY_INFO, "XLK": OSError("down")})                   # the rest answer None: no figures
     rep = sync.run_sync(cfg, only=["funds"], fetch=_no_network, now=NOW, yahoo=half, sleep=lambda s: None)
     assert rep.steps[0].status == "ok" and "1 failed" in rep.steps[0].message
+
+
+def test_the_funds_step_names_a_fund_that_went_blank(tmp_path):
+    cfg = _sync_cfg(tmp_path)
+    sync.run_sync(cfg, only=["funds"], fetch=_no_network, now=NOW.replace(day=28), yahoo=_FakeYahoo({"SPY": SPY_INFO}),
+                  sleep=lambda s: None)
+    rep = sync.run_sync(cfg, only=["funds"], fetch=_no_network, now=NOW, yahoo=_FakeYahoo({}), sleep=lambda s: None)
+    assert "SPY (no figures today, had them on 2026-10-28; asked again next sync)" in rep.steps[0].message
 
 
 def test_run_sync_uses_the_default_client_when_none_is_given(tmp_path, monkeypatch):

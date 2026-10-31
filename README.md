@@ -93,7 +93,10 @@ year-to-date; fourth quarters are derived from the full year. A quarterly row wh
 any computed value carries `has_derived_items = 1`; `financial_line_items.is_derived` says which ones.
 Funds (ETFs, mutual funds) get positions, prices and a daily `fund_snapshots` row; they file no statements.
 Stocks (and foreign filers) are asked about once a New York day for their earnings history and estimates; the
-`earnings` step also records SEC's industry code in `securities.sic`.
+`earnings` step also records SEC's industry code in `securities.sic`. yfinance reports a failed request by logging it
+and answering empty, so an error it logs while asking counts as a failed ask, asked again at the next sync; a fund that
+comes back with no figures, or a company with no estimates, after a day it had some is asked again too, not given up
+for the day.
 
 **Sectors.** Each stock and foreign filer gets a `sector` (one of the eleven) and a `sector_source` saying where it came from: the sibling feed's, else the SEC SIC code's (`seeds/sic_sector.csv`). The sector's benchmark is `[benchmarks] sectors`. Funds have no sector. The pass reads only stored data and the sibling file, so it runs at the end of the `earnings` step on every sync.
 

@@ -428,6 +428,26 @@ def test_estimates_drop_an_unknown_period_and_non_numbers(store, cfg):
     assert r.estimates == 2
 
 
+def test_no_estimates_after_a_day_with_estimates_is_not_marked_and_is_asked_again(store, cfg):
+    _collect(store, cfg, _Fetch({}), _FakeYahoo({"SMPL": SMPL_DATES}, {"SMPL": SMPL_ESTIMATES}),
+             now=NOW.replace(day=29))
+    blank = _FakeYahoo({"SMPL": SMPL_DATES})
+    (r,) = _collect(store, cfg, _Fetch({}), blank)
+    assert r.again and not r.failed and r.message == "no estimates today, had some on 2026-10-29"
+    assert _marked(store) == "2026-10-29"
+    _collect(store, cfg, _Fetch({}), blank, now=NOW.replace(hour=16))
+    assert [c for c in blank.calls if c[0] == "estimates"] == [("estimates", "SMPL")] * 2
+
+
+def test_no_estimates_ever_is_marked(store, cfg):
+    (r,) = _collect(store, cfg, _Fetch({}), _FakeYahoo({"SMPL": SMPL_DATES}))
+    assert not r.again and _marked(store) == "2026-10-30"
+    store.write_estimates("SMPL", "2026-10-29", [Estimate("0q", None, None, None, None)], STAMP)
+    store.mark_earnings_fetch("SMPL", None)
+    (r,) = _collect(store, cfg, _Fetch({}), _FakeYahoo({"SMPL": SMPL_DATES}))
+    assert not r.again and _marked(store) == "2026-10-30"                 # its last day held no figure either
+
+
 @pytest.mark.parametrize("sic, want", [("3571", 3571), (3571, 3571), ("", None), (None, None), ("n/a", None)])
 def test_sic_is_an_int_or_none(store, cfg_with_agent, sic, want):
     data = dict(EARN, sic=sic)
@@ -479,7 +499,7 @@ def _fake_yfinance(monkeypatch, *, dates=None, estimate=None, raises=None):
             asked.append(symbol)
 
         def get_earnings_dates(self, limit):
-            assert logging.getLogger("yfinance").level == logging.CRITICAL
+            assert logging.getLogger("yfinance").propagate is False          # kept off the console while asking
             asked.append(limit)
             if raises:
                 raise raises
@@ -524,13 +544,52 @@ def test_yfinance_client_reads_estimates(monkeypatch):
     assert yahoo.YfinanceClient().estimates("AAPL") == []
 
 
-def test_yfinance_client_restores_the_logger_level_after_a_failed_ask(monkeypatch):
+def test_yfinance_client_restores_the_logger_after_a_failed_ask(monkeypatch):
     _fake_yfinance(monkeypatch, raises=RuntimeError("boom"))
     logger = logging.getLogger("yfinance")
     logger.setLevel(logging.WARNING)
+    before = (logger.level, logger.propagate, list(logger.handlers))
     with pytest.raises(RuntimeError):
         yahoo.YfinanceClient().earnings_dates("AAPL", 24)
-    assert logger.level == logging.WARNING
+    assert (logger.level, logger.propagate, list(logger.handlers)) == before
+
+
+def _logging_yfinance(monkeypatch):
+    """A fake yfinance that, like yfinance 1.7 on a failed request, logs the error and answers an empty frame or None."""
+    pd = pytest.importorskip("pandas")
+
+    class _Ticker:
+        def __init__(self, symbol):
+            pass
+
+        def get_earnings_dates(self, limit):
+            logging.getLogger("yfinance").error("AAPL: 503 Server Error")
+            return None
+
+        @property
+        def earnings_estimate(self):
+            logging.getLogger("yfinance").error("503 Server Error: Service Unavailable")
+            return pd.DataFrame()
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=_Ticker))
+
+
+def test_an_error_logged_asking_for_estimates_raises(monkeypatch, caplog):
+    _logging_yfinance(monkeypatch)
+    logger = logging.getLogger("yfinance")
+    before = (logger.level, logger.propagate, list(logger.handlers))
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(RuntimeError, match="503"):
+            yahoo.YfinanceClient().estimates("AAPL")
+        assert yahoo.YfinanceClient().earnings_dates("AAPL", 24) == []     # None stays []: the merge keeps the stored
+    assert caplog.records == []
+    assert (logger.level, logger.propagate, list(logger.handlers)) == before
+
+
+def test_a_logged_estimates_error_fails_the_company_and_marks_nothing(monkeypatch, store, cfg):
+    _logging_yfinance(monkeypatch)
+    (r,) = _collect(store, cfg, _Fetch({}), yahoo.YfinanceClient())
+    assert r.failed and "Yahoo estimates" in r.message and "503" in r.message and _marked(store) is None
 
 
 # ---- in a sync ----------------------------------------------------------------------------------------------------
@@ -576,6 +635,17 @@ def test_the_earnings_step_names_failures_and_is_an_error_only_when_all_failed(t
                         yahoo=_FakeYahoo(), sleep=lambda s: None)
     step = rep.steps[0]
     assert step.status == "error" and "1 failed: SMPL (SEC" in step.message and AGENT not in step.message
+
+
+def test_the_earnings_step_names_a_company_that_went_blank(tmp_path):
+    cfg = _sync_cfg(tmp_path, None)
+    sync.run_sync(cfg, only=["earnings"], fetch=_Fetch({}), now=NOW.replace(day=29),
+                  yahoo=_FakeYahoo({"SMPL": SMPL_DATES}, {"SMPL": SMPL_ESTIMATES}), sleep=lambda s: None)
+    rep = sync.run_sync(cfg, only=["earnings"], fetch=_Fetch({}), now=NOW, yahoo=_FakeYahoo({"SMPL": SMPL_DATES}),
+                        sleep=lambda s: None)
+    step = rep.steps[0]
+    assert step.status == "ok"
+    assert step.message.endswith("; 1 asked again next sync: SMPL (no estimates today, had some on 2026-10-29)")
 
 
 def test_steps_include_earnings_after_funds():

@@ -33,6 +33,7 @@ class FundResult:
     written: int                        # 1 when a row was inserted or changed, else 0
     message: str = ""
     failed: bool = False                # Yahoo (or the proxy's ask) raised: the fund is not marked and is asked again
+    again: bool = False                 # no figures today, but a snapshot on its last day: not marked, asked again
 
 
 def _number(value: object) -> float | None:
@@ -85,7 +86,8 @@ def collect_funds(
 ) -> list[FundResult]:
     """Ask Yahoo about each fund in the universe not yet asked about today (a New York day), and store a snapshot.
     A fund is marked asked only when the ask did not raise, so an outage is tried again; a fund with no figures is
-    marked too, so a day's run makes one call per fund. A fund whose own figures lack a P/E and a yield takes its
+    marked too, so a day's run makes one call per fund, unless it has a snapshot from an earlier day (then it is
+    asked again next sync). A fund whose own figures lack a P/E and a yield takes its
     `[fund_proxies]` ETF's, keeping its own expense ratio."""
     day = now.astimezone(NEW_YORK).date().isoformat()
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -123,10 +125,18 @@ def collect_funds(
         except Exception as e:      # one fund Yahoo will not answer must not stop the rest
             results.append(FundResult(symbol, None, 0, redact(f"{type(e).__name__}: {e}", secrets), failed=True))
             continue
-        store.mark_fund_fetch(symbol, day)
         if all(v is None for v in figures.values()):
+            # Yahoo going blank on a fund it had figures for is more likely a failed ask it did not report than a
+            # fund that lost them, so the day is not given up: the next sync asks again.
+            before = store.fund_snapshot_before(symbol, day)
+            if before:
+                results.append(FundResult(symbol, None, 0, "; ".join(
+                    [f"no figures today, had them on {before}; asked again next sync", *notes]), again=True))
+                continue
+            store.mark_fund_fetch(symbol, day)
             results.append(FundResult(symbol, None, 0, "; ".join(["no figures", *notes])))
             continue
+        store.mark_fund_fetch(symbol, day)
         written = store.write_fund_snapshot(FundSnapshot(symbol, day, source=source, **figures), stamp)
         results.append(FundResult(symbol, source, written, "; ".join(notes)))
     return results

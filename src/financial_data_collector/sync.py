@@ -164,12 +164,15 @@ def _step_earnings(store: Store, cfg: Config, *, fetch, now, yahoo, sleep, progr
     changed = sum(r.events for r in results)
     written = sum(r.estimates for r in results)
     failed = [r for r in results if r.failed]
+    again = [r for r in results if r.again]
     # Sectors need no network (stored SEC codes and the sibling feed), so the pass runs even when no company was asked.
     sectors_changed = sectors_mod.assign_sectors(store, cfg)
     msg = (f"{len(results)} companies asked, {changed} events changed, {written} estimate rows written, "
            f"{sectors_changed} sectors changed")
     if failed:
         msg += f"; {len(failed)} failed: " + ", ".join(f"{r.symbol} ({r.message})" for r in failed)
+    if again:
+        msg += f"; {len(again)} asked again next sync: " + ", ".join(f"{r.symbol} ({r.message})" for r in again)
     if not cfg.sec_user_agent:       # the Yahoo part still ran; the message says what was left out
         msg = earnings_mod.SEC_SKIPPED + msg
     # No company to ask (all asked today, or none typed a stock yet) is skipped, not ok: it says nothing about the

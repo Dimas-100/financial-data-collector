@@ -493,6 +493,13 @@ class Store:
                  snap.source, fetched_at))
         return 1 if self.conn.total_changes > before else 0
 
+    def fund_snapshot_before(self, symbol: str, day: str) -> str | None:
+        """The fund's newest snapshot day before `day`, or None. A row is written only when Yahoo gave a figure, so a
+        day here is a day Yahoo had some."""
+        row = self.conn.execute("SELECT MAX(date) FROM fund_snapshots WHERE symbol = ? AND date < ?",
+                                (symbol, day)).fetchone()
+        return row[0] if row else None
+
     # ---- earnings -----------------------------------------------------------
     _EARNINGS_COLUMNS = ("symbol, report_date, time_of_day, accession, eps_expected, eps_reported, surprise_pct, "
                          "date_source, time_source, eps_source")
@@ -541,6 +548,15 @@ class Store:
                 [(symbol, day, e.period, e.eps_avg, e.eps_low, e.eps_high, e.analysts, source, fetched_at)
                  for e in estimates])
         return self.conn.total_changes - before
+
+    def estimates_before(self, symbol: str, day: str) -> str | None:
+        """The company's last estimate snapshot day before `day` when that day holds at least one figure, else None."""
+        row = self.conn.execute(
+            "SELECT date FROM estimate_snapshots WHERE symbol = ? AND date = "
+            "(SELECT MAX(date) FROM estimate_snapshots WHERE symbol = ? AND date < ?) "
+            "AND (eps_avg IS NOT NULL OR eps_low IS NOT NULL OR eps_high IS NOT NULL) LIMIT 1",
+            (symbol, symbol, day)).fetchone()
+        return row[0] if row else None
 
     # ---- SEC --------------------------------------------------------------
     def write_sec_facts(self, cik: str, facts: Iterable[Fact]) -> int:

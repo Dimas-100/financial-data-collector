@@ -41,17 +41,50 @@ def finite(value: object) -> float | None:
     return float(value)
 
 
+class _Kept(logging.Handler):
+    """Keeps the error lines yfinance logs during one ask, instead of printing them."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.ERROR)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
 @contextmanager
-def _quiet() -> Iterator[None]:
-    """yfinance logs each failed call as an error of its own; those lines are silenced while asking, since a failure
-    comes back to the collector as an exception or None. The logger's level is put back afterwards."""
+def _quiet() -> Iterator[list[logging.LogRecord]]:
+    """yfinance (1.7) hides a failed request: with its default `hide_exceptions` it logs the error on the `yfinance`
+    logger and hands back {} or an empty frame, which would read as "Yahoo has nothing". While asking, that logger's
+    lines go only to a handler that keeps the errors (nothing reaches the console) and the caller decides what one
+    means. The logger's handlers, level and propagation are put back afterwards."""
     logger = logging.getLogger("yfinance")
-    level = logger.level
-    logger.setLevel(logging.CRITICAL)
+    handlers, level, propagate = logger.handlers[:], logger.level, logger.propagate
+    kept = _Kept()
+    logger.handlers = [kept]
+    logger.setLevel(logging.ERROR)
+    logger.propagate = False
     try:
-        yield
+        yield kept.records
     finally:
+        logger.handlers = handlers
         logger.setLevel(level)
+        logger.propagate = propagate
+
+
+def _text(record: logging.LogRecord) -> str:
+    try:
+        return record.getMessage()
+    except Exception:           # a malformed log call must not hide the error it reports
+        return str(record.msg)
+
+
+def _fail_on(errors: list[logging.LogRecord], what: str) -> None:
+    """An error yfinance logged during the ask means the answer is not Yahoo's "nothing" but a failed request: raise,
+    so the collector does not mark the symbol and asks again. The text is cut (Yahoo may send a whole page) and is
+    redacted by the collector."""
+    if errors:
+        raise RuntimeError(f"yfinance logged an error asking {what}: " + "; ".join(_text(r) for r in errors)[:300])
 
 
 def _empty(frame: object) -> bool:
@@ -59,16 +92,20 @@ def _empty(frame: object) -> bool:
 
 
 class YfinanceClient:
-    """The real client. Every ask runs with yfinance's own error logging silenced (see `_quiet`)."""
+    """The real client. Every ask runs with yfinance's own error logging kept off the console (see `_quiet`); an error
+    it logged while asking for a fund's info or a company's estimates raises."""
 
     def fund_info(self, symbol: str) -> dict | None:
         import yfinance as yf
-        with _quiet():
-            return yf.Ticker(to_yfinance(symbol)).info or None
+        with _quiet() as errors:
+            info = yf.Ticker(to_yfinance(symbol)).info
+        _fail_on(errors, "for the fund's info")
+        return info or None
 
     def earnings_dates(self, symbol: str, limit: int) -> list[YahooEarning]:
         """`get_earnings_dates` has a tz-aware index and the columns `EPS Estimate`, `Reported EPS` and `Surprise(%)`
-        (percent); NaN becomes None."""
+        (percent); NaN becomes None. A failed ask is logged and comes back as None, which is [] here: the merge then
+        keeps what was stored, so nothing is lost."""
         import yfinance as yf
         with _quiet():
             frame = yf.Ticker(to_yfinance(symbol)).get_earnings_dates(limit=limit)
@@ -81,8 +118,9 @@ class YfinanceClient:
     def estimates(self, symbol: str) -> list[Estimate]:
         """`earnings_estimate` has a row per period and the columns `avg`, `low`, `high`, `numberOfAnalysts`."""
         import yfinance as yf
-        with _quiet():
+        with _quiet() as errors:
             frame = yf.Ticker(to_yfinance(symbol)).earnings_estimate
+        _fail_on(errors, "for the estimates")
         if _empty(frame):
             return []
         out = []
