@@ -311,3 +311,17 @@ class Targets:
     last_revised: str | None
     file_name: str
     problems: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SplitLine:
+    """One line of a weekly split: whole dollars of an account's waiting cash toward one holding. `target_gap` is the
+    dollars between the holding and its target before the band's tilt; `tilt` the factor its band gave; `reasons`
+    the band's reason codes, then the split's own (`trades_as_contributions`, `no_scores`, `look_through_assumed`,
+    `sleeve_cut:<label>`, `cap_cut:<symbol>`, `band_top`, `folded`)."""
+    symbol: str
+    dollars: int
+    target_gap: float
+    band: str
+    tilt: float
+    reasons: tuple[str, ...]
