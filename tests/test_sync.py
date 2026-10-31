@@ -59,7 +59,9 @@ def test_full_sync_then_noop(project, fixtures: Path):
     rep2 = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert rep2.steps[1].rows == 0
     c2 = _counts(project)
-    assert {k: v for k, v in c2.items() if k != "sync_runs"} == {k: v for k, v in c1.items() if k != "sync_runs"}
+    logs = ("sync_runs", "check_runs")                   # each run logs itself; the data rows must not change
+    assert {k: v for k, v in c2.items() if k not in logs} == {k: v for k, v in c1.items() if k not in logs}
+    assert c2["check_runs"] == c1["check_runs"] + 1
     assert rep2.steps[4].message.startswith("0 fetched")
 
 
@@ -288,7 +290,7 @@ def test_sync_runs_check_last_and_a_failing_check_does_not_fail_the_sync(project
     s = Store.open(project.db_path, migrate=False)
     run = s.query("SELECT * FROM check_runs")[0]
     s.close()
-    assert run["run_id"] == rep.run_id and run["derive_run_id"] is None     # a run where a check failed covers no derive
+    assert run["run_id"].startswith(rep.run_id[:-1]) and run["derive_run_id"] is None     # a run where a check failed covers no derive
 
 
 def test_check_is_not_a_network_step_and_goes_stale_in_two_days():

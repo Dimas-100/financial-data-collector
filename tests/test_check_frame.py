@@ -131,7 +131,7 @@ def test_check_run_records_the_derive_it_covered(cfg):
     s.close()
     rep = _run(cfg, {"a": lambda ctx: [_finding()]})
     run = _rows(cfg, "SELECT * FROM check_runs")[0]
-    assert run["run_id"] == rep.run_id == "20260301T120000Z"
+    assert run["run_id"] == rep.run_id and re.fullmatch(r"20260301T120000\.000Z-[0-9a-f]{6}", rep.run_id)
     assert run["derive_run_id"] == "20260301T100000Z"
     assert (run["checks_run"], run["holds"], run["warns"], run["error"]) == (1, 1, 0, None)
 
@@ -214,7 +214,7 @@ def test_fdc_check_prints_one_line_of_counts(cfg, capsys):
     check.CHECKS["b"] = lambda ctx: []
     rc = cli.main(["--root", str(cfg.root), "check", "--only", "a"])
     out = capsys.readouterr().out
-    assert rc == 0 and re.search(r"check: 1 holds found, 1 open, 0 warnings, 0 errors \(run \d{8}T\d{6}Z\)", out), out
+    assert rc == 0 and re.search(r"check: 1 holds found, 1 open, 0 warnings, 0 errors \(run \d{8}T\d{6}\.\d{3}Z-[0-9a-f]{6}\)", out), out
     assert [r["check_name"] for r in _rows(cfg)] == ["a"]
 
 
@@ -281,3 +281,13 @@ def test_a_checks_error_text_is_redacted_before_it_is_kept(cfg):
     for text in (rep.errors[0], run):
         assert "a: RuntimeError" in text and "failed" in text
         assert cfg.tiingo_token not in text and cfg.sec_user_agent not in text and "pw@" not in text
+
+
+def test_two_runs_in_the_same_second_keep_two_rows_and_run_ids_sort_by_time(cfg):
+    a = _run(cfg, {})
+    b = _run(cfg, {})
+    c = _run(cfg, {}, when=T0 + timedelta(milliseconds=5))
+    d = _run(cfg, {}, when=T0 + timedelta(seconds=1))
+    ids = [r[0] for r in _rows(cfg, "SELECT run_id FROM check_runs")]
+    assert len(ids) == 4 and a.run_id != b.run_id
+    assert max(a.run_id, b.run_id) < c.run_id < d.run_id

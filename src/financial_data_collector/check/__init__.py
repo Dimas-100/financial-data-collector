@@ -8,6 +8,7 @@ found, and clears a check's earlier findings that it no longer finds.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -66,6 +67,12 @@ class CheckReport:
     open_holds: int = 0            # holds open after this run (any check's), not just those found by it
 
 
+def new_run_id(now: datetime) -> str:
+    """A check run's id: its start to the millisecond, then six random hex digits, so two runs in the same
+    millisecond (or one beside the sync's own check step) keep a row each. Ids sort by start time."""
+    return f"{now.strftime('%Y%m%dT%H%M%S')}.{now.microsecond // 1000:03d}Z-{secrets.token_hex(3)}"
+
+
 def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = None, now: datetime | None = None,
               only: list[str] | None = None, store: Store | None = None,
               sleep: Callable[[float], None] = time.sleep) -> CheckReport:
@@ -81,7 +88,7 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
         if unknown:
             raise ConfigError(f"unknown check(s): {', '.join(unknown)}; valid: {', '.join(CHECKS) or 'none'}")
         names = [n for n in names if n in only]
-    run_id = now.strftime("%Y%m%dT%H%M%SZ")
+    run_id = new_run_id(now)
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     t0 = time.monotonic()
     own = store is None
