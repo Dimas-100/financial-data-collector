@@ -11,7 +11,7 @@ from . import migrate as _migrate
 from .adapters.base import dedupe_key
 from .connections.names import slug_for
 from .models import (
-    AccountRef, ConceptRule, Fact, LineItem, MacroObservation, PriceBar, Snapshot, TransactionRow,
+    AccountRef, ConceptRule, Fact, LineItem, MacroObservation, PriceBar, Snapshot, TransactionRow, is_final,
 )
 
 COUNT_TABLES = (
@@ -360,16 +360,22 @@ class Store:
     def last_price_date(self, symbol: str) -> str | None:
         return self.conn.execute("SELECT MAX(date) FROM prices WHERE symbol = ?", (symbol,)).fetchone()[0]
 
-    def write_prices(self, symbol: str, bars: Iterable[PriceBar], source: str) -> int:
+    def write_prices(self, symbol: str, bars: Iterable[PriceBar], source: str, *,
+                     fetched_at: datetime | None = None) -> int:
+        """Upsert bars. fetched_at says when they were fetched: a bar fetched before its close is not final
+        (a later fetch overwrites it). None = the caller doesn't know the time, so the bars are written final."""
         bars = list(bars)
+        stamp = fetched_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if fetched_at else None
         with self.conn:
             self.conn.executemany(
-                """INSERT INTO prices (symbol, date, close, adj_close, dividend, split_factor, source)
-                   VALUES (?,?,?,?,?,?,?)
+                """INSERT INTO prices (symbol, date, close, adj_close, dividend, split_factor, source, final, fetched_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(symbol, date) DO UPDATE SET
                      close = excluded.close, adj_close = excluded.adj_close, dividend = excluded.dividend,
-                     split_factor = excluded.split_factor, source = excluded.source""",
-                [(symbol, b.date, b.close, b.adj_close, b.dividend, b.split_factor, source) for b in bars],
+                     split_factor = excluded.split_factor, source = excluded.source,
+                     final = excluded.final, fetched_at = excluded.fetched_at""",
+                [(symbol, b.date, b.close, b.adj_close, b.dividend, b.split_factor, source,
+                  1 if fetched_at is None or is_final(b.date, fetched_at) else 0, stamp) for b in bars],
             )
             if bars:
                 self.conn.execute("UPDATE securities SET price_source = ? WHERE symbol = ?", (source, symbol))
@@ -513,9 +519,12 @@ class Store:
             self.conn.executemany(f"INSERT INTO {table} ({cols}) VALUES ({marks})", rows)
         return len(rows)
 
-    def prices_series(self, symbol: str) -> list[tuple[str, float, float, float]]:
+    def prices_series(self, symbol: str, *, final_only: bool = False) -> list[tuple[str, float, float, float]]:
+        """Daily bars. The default keeps everything stored (the cockpit's prices.json); final_only drops a
+        bar still waiting for its close, which is what a valuation must not use."""
+        where = " AND final = 1" if final_only else ""
         return [tuple(r) for r in self.query(
-            "SELECT date, close, dividend, split_factor FROM prices WHERE symbol = ? ORDER BY date", (symbol,))]
+            f"SELECT date, close, dividend, split_factor FROM prices WHERE symbol = ?{where} ORDER BY date", (symbol,))]
 
     def ttm_by_cik(self) -> dict[str, list[dict]]:
         out: dict[str, list[dict]] = {}

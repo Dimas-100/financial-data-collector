@@ -94,7 +94,7 @@ def rebuild(store: Store) -> int:
         ttm = ttm_by_cik.get(cik)
         if not ttm:
             continue
-        built = build(symbol, store.prices_series(symbol), ttm)
+        built = build(symbol, store.prices_series(symbol, final_only=True), ttm)
         if built:
             symbols += 1
             rows.extend(built)

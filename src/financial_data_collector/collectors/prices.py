@@ -5,12 +5,12 @@ import json
 import math
 import time
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Callable
 
 from ..config import Config
 from ..http import Fetch, HttpError
-from ..models import PriceBar
+from ..models import PriceBar, is_final  # noqa: F401  (is_final is part of this module's interface)
 from ..store import Store
 from ..symbols import to_tiingo, to_yfinance
 
@@ -87,6 +87,7 @@ def collect_prices(
     *,
     fetch: Fetch,
     today: date,
+    now: datetime | None = None,
     yf: Callable[[str, str], list[PriceBar]] = yfinance_bars,
     sleep: Callable[[float], None] = time.sleep,
     progress: Callable[[str], None] | None = None,
@@ -122,7 +123,7 @@ def collect_prices(
                 notes.append(f"yfinance: {type(e).__name__}: {e}")
                 failed = True
         if bars and source:
-            n = store.write_prices(symbol, bars, source)
+            n = store.write_prices(symbol, bars, source, fetched_at=now)
             results.append(PriceResult(symbol, source, n, "; ".join(notes)))
         elif failed:
             results.append(PriceResult(symbol, None, 0, "; ".join(notes), failed=True))

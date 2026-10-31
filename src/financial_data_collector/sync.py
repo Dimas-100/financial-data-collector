@@ -82,7 +82,7 @@ def _step_ingest(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple
 
 def _step_prices(store: Store, cfg: Config, *, fetch, now, yf, sleep, progress: Progress, **_) -> tuple[int, str, str]:
     universe = build_universe(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir)
-    kwargs = {"fetch": fetch, "today": now.date(), "sleep": sleep, "progress": progress}
+    kwargs = {"fetch": fetch, "today": now.date(), "now": now, "sleep": sleep, "progress": progress}
     if yf is not None:
         kwargs["yf"] = yf
     results = prices_mod.collect_prices(store, universe, cfg, **kwargs)

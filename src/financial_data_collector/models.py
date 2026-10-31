@@ -6,6 +6,8 @@ so it can take part in a primary key.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,17 @@ class PriceBar:
     adj_close: float
     dividend: float = 0.0
     split_factor: float = 1.0
+
+
+_NEW_YORK = ZoneInfo("America/New_York")
+_FINAL_AFTER = time(16, 15)  # the close at 16:00 plus a quarter hour for the day's last prints to settle
+
+
+def is_final(bar_date: str, fetched_at: datetime) -> bool:
+    """A bar is the day's final close when it was fetched on a later New York day, or after 16:15 on its own day."""
+    ny = fetched_at.astimezone(_NEW_YORK)
+    day = ny.date().isoformat()
+    return day > bar_date or (day == bar_date and ny.time() >= _FINAL_AFTER)
 
 
 @dataclass(frozen=True)

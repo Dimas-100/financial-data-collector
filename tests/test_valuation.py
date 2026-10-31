@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from financial_data_collector import statements
@@ -88,4 +89,20 @@ def test_rebuild_covers_every_share_class_of_a_cik(tmp_path: Path, fixtures: Pat
     s.replace_line_items("0000000001", statements.rebuild(facts, s.concept_rules()))
     assert V.rebuild(s) == 2
     assert [r[0] for r in s.query("SELECT symbol FROM valuation_latest ORDER BY 1")] == ["BRK.A", "BRK.B"]
+    s.close()
+
+
+def test_valuation_ignores_non_final_bars(tmp_path: Path, fixtures: Path):
+    s = Store.open(tmp_path / "w.db")
+    facts = parse_company_facts(json.loads((fixtures / "sec" / "companyfacts_SAMPLE.json").read_text()))
+    s.upsert_security("AAPL", "APPLE INC", "stock", "2026-01-01")
+    s.set_security_cik("AAPL", "0000000001", "Sample Corp")
+    s.write_sec_facts("0000000001", facts)
+    s.replace_line_items("0000000001", statements.rebuild(facts, s.concept_rules()))
+    s.write_prices("AAPL", [PriceBar("2026-01-15", 100.0, 100.0)], "tiingo")
+    s.write_prices("AAPL", [PriceBar("2026-02-02", 110.0, 110.0)], "yfinance",
+                   fetched_at=datetime(2026, 2, 2, 19, 37, tzinfo=timezone.utc))        # 14:37 in New York: still intraday
+    V.rebuild(s)
+    rows = s.query("SELECT date, status, status_reason FROM valuation_daily")
+    assert [tuple(r) for r in rows] == [("2026-01-15", "ok", None)]
     s.close()
