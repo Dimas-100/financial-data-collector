@@ -227,7 +227,9 @@ or a `close` hold, since every one of these is built on the close) makes it `hel
 `unsupported` with why ("earnings not positive", "free cash flow not positive", "no revenue", "no dividend").
 
 A row's `status` is `ok`, `held`, `unsupported` or `not_enough_history`; `inputs` names the `valuation_daily` columns
-it was built from (`,close,` for the price shape, `,pe,` for P/E, `,market_cap,` for EV/EBIT); `sources` is a JSON list of where each number came from (`price`, `filing`,
+it was built from (`,close,` for the price shape; a company history score names its own column and the close it is
+built on, `,pe,close,` for P/E, `,market_cap,close,` for EV/EBIT, so a `close` hold opened after the build holds it in
+the view as it would have at build time); `sources` is a JSON list of where each number came from (`price`, `filing`,
 `feed`, `config`, `derived`); `checked_at` is the finish time of the check run that covered the data. Read the view
 `valuation_scores`: it applies, in the way `valuation_latest` does, a hold opened after the build. An open hold on the
 symbol covering the row's date whose field is `score:<metric>`, one of the row's inputs, or `*` (on a price row only

@@ -21,9 +21,11 @@ from . import sources
 HIGH_IS_PREMIUM = ("pe", "p_fcf", "ps", "ev_ebit")
 HIGH_IS_CHEAP = ("dividend_yield",)
 HISTORY_METRICS = ("pe", "p_fcf", "ps", "ev_ebit", "dividend_yield")
+# Each metric's own column plus the close it is built on, so a `close` hold opened after the build blanks the row in
+# the valuation_scores view as the build itself does (engine.statement_holds).
 INPUTS: dict[str, tuple[str, ...]] = {
-    "pe": ("pe",), "p_fcf": ("p_fcf",), "ps": ("ps",), "ev_ebit": ("market_cap",),
-    "dividend_yield": ("dividend_yield",),
+    "pe": ("pe", "close"), "p_fcf": ("p_fcf", "close"), "ps": ("ps", "close"), "ev_ebit": ("market_cap", "close"),
+    "dividend_yield": ("dividend_yield", "close"),
 }
 NOT_COMPUTED = {                      # why an `ok` row has no value when no hold blanked it
     "pe": "earnings not positive",

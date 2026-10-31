@@ -118,7 +118,7 @@ def test_pe_today_low_against_five_years_is_cheap(store, cfg):
     dates = _company(store, row=lambda i, d: {"pe": 12.0} if i == 1299 else None)
     r = _run(store, cfg)["pe"]
     assert (r["status"], r["band"], r["percentile_5y"], r["value"]) == ("ok", "cheap", 0.0, 12.0)
-    assert r["date"] == END and r["inputs"] == ",pe," and r["status_reason"] is None
+    assert r["date"] == END and r["inputs"] == ",pe,close," and r["status_reason"] is None
     src = json.loads(r["sources"])
     assert {s["kind"] for s in src} >= {"price", "derived", "config"}
     assert src[0] == {"kind": "price", "label": "tiingo close", "date": END, "ref": "2026-10-30T12:00:00Z"}
@@ -135,8 +135,8 @@ def test_every_history_metric_gets_a_row_with_its_inputs(store, cfg):
     _statements(store, {"2026-03-31": 200.0, "2026-06-30": 200.0})
     rows = _run(store, cfg)
     assert set(HISTORY) <= set(rows)
-    want = {"pe": ",pe,", "p_fcf": ",p_fcf,", "ps": ",ps,", "ev_ebit": ",market_cap,",
-            "dividend_yield": ",dividend_yield,"}
+    want = {"pe": ",pe,close,", "p_fcf": ",p_fcf,close,", "ps": ",ps,close,", "ev_ebit": ",market_cap,close,",
+            "dividend_yield": ",dividend_yield,close,"}
     for m in HISTORY:
         assert rows[m]["status"] == "ok" and rows[m]["band"] == "usual" and rows[m]["percentile_5y"] == 50.0
         assert rows[m]["inputs"] == want[m]
@@ -226,6 +226,29 @@ def test_a_close_hold_on_the_newest_day_holds_every_history_metric(store, cfg):
     rows = _run(store, cfg)
     for m in HISTORY:
         assert (rows[m]["status"], rows[m]["status_reason"]) == ("held", "close looks wrong")
+
+
+def test_view_blanks_history_rows_under_a_close_hold_opened_after_the_build(store, cfg):   # R7
+    _company(store)
+    _statements(store, {"2026-03-31": 200.0, "2026-06-30": 200.0})
+    assert all(r["status"] == "ok" for m, r in _run(store, cfg).items() if m in HISTORY)
+    _hold(store, "closes", "AAA", "close", END, END, "close looks wrong")
+    view = _scores(store, "AAA", "valuation_scores")
+    for m in HISTORY:
+        assert (view[m]["status"], view[m]["value"], view[m]["percentile_5y"], view[m]["band"]) ==                ("held", None, None, None)
+        assert view[m]["status_reason"] == "close looks wrong" and view[m]["hold_ids"]
+    raw = _scores(store, "AAA")
+    assert all(raw[m]["status"] == "ok" and raw[m]["value"] is not None for m in HISTORY)    # raw is never changed
+
+
+def test_view_a_statements_star_hold_after_the_build_blanks_history_rows_not_price_rows(store, cfg):
+    _company(store)
+    _statements(store, {"2026-03-31": 200.0, "2026-06-30": 200.0})
+    _run(store, cfg)
+    _hold(store, "fresh", "AAA", "*", "2026-10-01", None, "statements are stale")
+    view = _scores(store, "AAA", "valuation_scores")
+    assert all(view[m]["status"] == "held" for m in HISTORY)
+    assert view["vs_200d"]["status"] == "ok"                                       # inputs ',close,': a price row
 
 
 def test_a_hold_on_an_unrelated_field_does_not_hold_the_metric(store, cfg):
