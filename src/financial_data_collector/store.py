@@ -1005,6 +1005,11 @@ class Store:
         """The run_id of the newest derive step that finished ok: the derive a check run looked at."""
         return self._newest_derive_run_id()
 
+    def check_score_rows(self) -> list[sqlite3.Row]:
+        """Every row of valuation_scores_raw (what the engine wrote, not the view that applies holds), by symbol and metric."""
+        return self.query("SELECT symbol, date, metric, value, percentile_5y, band, status, sources "
+                          "FROM valuation_scores_raw ORDER BY symbol, metric")
+
     def check_valuation_columns(self) -> list[str]:
         """The column names of valuation_daily: what a finding's `field` may name (besides '*')."""
         return [r["name"] for r in self.conn.execute("PRAGMA table_info(valuation_daily)")]

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from . import check as check_mod, heartbeat, http, sectors as sectors_mod, statements
+from .check.engine import ENGINE_CHECKS
 from .collectors import earnings as earnings_mod, funds as funds_mod, prices as prices_mod, yahoo as yahoo_mod
 from .collectors.macro import MacroError, collect_macro, start_date as macro_start
 from .collectors.sec_facts import FUND_TYPES, collect_sec
@@ -253,15 +254,21 @@ def _step_check(store: Store, cfg: Config, *, fetch, now, sleep, progress: Progr
     return rep.holds + rep.warns, msg, "ok"
 
 
-def _step_engine(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple[int, str, str]:
+def _step_engine(store: Store, cfg: Config, *, progress: Progress, fetch=http.fetch, now=None, sleep=time.sleep,
+                 **_) -> tuple[int, str, str]:
     # After the check: the engine builds only from a derive a full, error-free check run has covered, so a sync whose
     # check failed (or was left out) skips it and the previous scores stay, with their older checked_at.
     progress("scores")
     rep = engine_mod.run(store, cfg)
     if rep.skipped:
         return 0, rep.skipped, "skipped"
-    return (rep.scores + rep.moves,
-            f"{rep.symbols} symbols, {rep.scores} scores ({rep.held} held), {rep.moves} moves", "ok")
+    msg = f"{rep.symbols} symbols, {rep.scores} scores ({rep.held} held), {rep.moves} moves"
+    # What was just written is examined at once by the checker's engine checks. A partial run: it never stamps
+    # checked_at (only a full, error-free run records the derive it covered).
+    progress("checking scores")
+    chk = check_mod.run_check(cfg, fetch=fetch, now=now, store=store, sleep=sleep, only=list(ENGINE_CHECKS))
+    msg += f"; checks: {chk.holds} holds, {chk.warns} warnings, {len(chk.errors)} errors"
+    return rep.scores + rep.moves, msg, "ok"
 
 
 _RUNNERS: dict[str, Callable] = {

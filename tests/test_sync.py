@@ -56,14 +56,14 @@ def test_full_sync_then_noop(project, fixtures: Path):
     c1 = _counts(project)
     assert c1["position_snapshots"] > 0 and c1["prices"] > 0 and c1["sec_facts"] == 35
     assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 11
-    assert c1["valuation_scores_raw"] > 0 and rep.steps[-1].message.endswith("0 moves")
+    assert c1["valuation_scores_raw"] > 0 and rep.steps[-1].message.endswith("0 moves; checks: 0 holds, 0 warnings, 0 errors")
     assert "without data" in rep.steps[2].message          # KO, VTI, BRK.B had no bars
     rep2 = sync.run_sync(project, fetch=fetch, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert rep2.steps[1].rows == 0
     c2 = _counts(project)
     logs = ("sync_runs", "check_runs")                   # each run logs itself; the data rows must not change
     assert {k: v for k, v in c2.items() if k not in logs} == {k: v for k, v in c1.items() if k not in logs}
-    assert c2["check_runs"] == c1["check_runs"] + 1
+    assert c2["check_runs"] == c1["check_runs"] + 2          # the check step, then the engine's re-check of its scores
     assert rep2.steps[4].message.startswith("0 fetched")
 
 
@@ -349,9 +349,9 @@ def test_sync_check_step_when_sec_has_no_submissions_is_an_info_finding_and_no_e
     assert last.status == "ok" and "0 errors" in last.message
     s = Store.open(project.db_path, migrate=False)
     rows = s.check_open_findings("filings")
-    run = s.check_last_run()
+    full = s.query("SELECT derive_run_id FROM check_runs WHERE checks_run > 1")       # the engine's re-check runs `scores` alone
     s.close()
-    assert run["derive_run_id"] == rep.run_id                   # a clean run of every check covers the sync's derive
+    assert [r[0] for r in full] == [rep.run_id]                 # a clean run of every check covers the sync's derive
     assert [(r["symbol"], r["severity"]) for r in rows] == [("AAPL", "info")]
 
 
@@ -428,3 +428,50 @@ def test_derive_does_not_reshape_a_company_the_sec_step_typed_a_foreign_filer(pr
 def test_steps_include_funds_after_sec():
     assert sync.STEPS[sync.STEPS.index("sec") + 1] == "funds" and "funds" in sync.NETWORK_STEPS
     assert sync.STALE_HOURS["funds"] == 48
+
+
+def test_engine_step_rechecks_what_it_wrote_and_does_not_stamp_checked_at(project):
+    from financial_data_collector.derive import valuation as V
+    from financial_data_collector.models import PriceBar
+    covered_at = "2026-03-01T11:30:00Z"
+    s = Store.open(project.db_path)
+    s.upsert_security("AAA", asset_type="stock", first_seen="2025-01-01")
+    day = datetime(2026, 2, 27)
+    bars = []
+    while len(bars) < 30:
+        if day.weekday() < 5:
+            bars.append(PriceBar(day.strftime("%Y-%m-%d"), 100.0, 100.0, 0.0, 1.0))
+        day -= timedelta(days=1)
+    s.write_prices("AAA", bars[::-1], "tiingo", fetched_at=datetime(2026, 2, 28, 12, 0, tzinfo=timezone.utc))
+    s.replace_rows("valuation_daily", V.COLUMNS, [tuple(
+        {"symbol": "AAA", "date": "2026-02-27", "close": 100.0, "status": "ok"}.get(c) for c in V.COLUMNS)])
+    s.log_run("r1", "derive", "ok", 0, "", "2026-03-01T11:00:00Z", "2026-03-01T11:01:00Z", "manual")
+    s.check_log_run("c1", started_at=covered_at, finished_at=covered_at, derive_run_id="r1", checks_run=9, holds=0,
+                    warns=0, error=None)
+    latest = s.query("SELECT checked_at FROM valuation_latest WHERE symbol = 'AAA'")[0][0]
+    s.close()
+    assert latest == covered_at
+
+    rep = sync.run_sync(project, now=NOW, sleep=lambda s: None, only=["engine"])
+    (step,) = rep.steps
+    assert step.status == "ok" and step.message.endswith("; checks: 0 holds, 0 warnings, 0 errors"), step.message
+    s = Store.open(project.db_path, migrate=False)
+    try:
+        runs = s.query("SELECT checks_run, derive_run_id FROM check_runs ORDER BY run_id")
+        assert sorted(tuple(r) for r in runs) == [(1, None), (9, "r1")]            # the re-check ran `scores` alone, covering no derive
+        assert {r[0] for r in s.query("SELECT checked_at FROM valuation_scores_raw")} == {covered_at}
+        assert s.query("SELECT checked_at FROM valuation_latest WHERE symbol = 'AAA'")[0][0] == covered_at
+        assert s.engine_coverage()["check_run_id"] == "c1"
+    finally:
+        s.close()
+
+
+def test_engine_step_skipped_runs_no_check(project):
+    s = Store.open(project.db_path)
+    s.log_run("r1", "derive", "ok", 0, "", "2026-03-01T11:00:00Z", "2026-03-01T11:01:00Z", "manual")
+    s.close()
+    (step,) = sync.run_sync(project, now=NOW, sleep=lambda s: None, only=["engine"]).steps
+    assert step.status == "skipped" and "checks:" not in step.message
+    s = Store.open(project.db_path, migrate=False)
+    assert s.query("SELECT COUNT(*) FROM check_runs")[0][0] == 0
+    s.close()

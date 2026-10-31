@@ -315,3 +315,15 @@ def test_fdc_check_summary_does_not_wait(cfg, monkeypatch):
 
     monkeypatch.setattr(H, "wait_for_turn", lambda *a, **k: pytest.fail("waited"))
     assert cli.main(["--root", str(cfg.root), "check", "--summary"]) == 0
+
+
+def test_a_finding_on_a_score_metric_is_accepted(cfg):
+    rep = _run(cfg, {"a": lambda ctx: [_finding("a", field="score:pe"),
+                                       _finding("a", symbol="BBB", field="score:off_high_52w")]})
+    assert (rep.holds, rep.errors) == (2, [])
+
+
+def test_a_finding_on_an_unknown_field_is_still_an_error(cfg):
+    for bad in ("pe_5y", "score:", "score:nope", "off_high_52w"):       # the bare metric is not a field
+        rep = _run(cfg, {"a": lambda ctx, bad=bad: [_finding("a", field=bad)]})
+        assert len(rep.errors) == 1 and "not a valuation_daily column" in rep.errors[0], bad

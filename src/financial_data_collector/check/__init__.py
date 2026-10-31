@@ -16,6 +16,7 @@ from typing import Any, Callable
 from .. import http
 from ..config import Config, ConfigError
 from ..connections.redact import redact
+from ..models import SCORE_METRICS
 from ..store import Store
 from .findings import Finding
 
@@ -79,7 +80,7 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
     """Run the registered checks (or just `only`), record the run and its findings. A check that raises is
     reported in `errors` and leaves its own open findings as they were; the others still run. That covers what a
     check returns too: anything but a list of Findings under its own name, each naming a valuation_daily column
-    (or "*"), is that check's error. Pass `store` to
+    (or "*", or "score:<metric>" for a score), is that check's error. Pass `store` to
     use a connection that is already open (the sync does); otherwise one is opened and closed here."""
     now = now or datetime.now(timezone.utc)
     names = list(CHECKS)
@@ -98,7 +99,7 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
                            now=now, sleep=sleep)
         holds = warns = 0
         errors: list[str] = []
-        fields = set(st.check_valuation_columns()) | {"*"}
+        fields = set(st.check_valuation_columns()) | {"*"} | {"score:" + m for m in SCORE_METRICS}
         for name in names:
             try:
                 found = CHECKS[name](ctx)
@@ -111,7 +112,7 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
                     if f.check_name != name:
                         raise ValueError(f"returned a finding for check {f.check_name!r}")
                     if f.field not in fields:       # a hold names a column the view can blank; anything else blanks nothing
-                        raise ValueError(f"returned a finding for {f.field!r}, which is not a valuation_daily column or '*'")
+                        raise ValueError(f"returned a finding for {f.field!r}, which is not a valuation_daily column, '*' or 'score:<metric>'")
                 st.check_record(name, found, stamp)     # one transaction: an error leaves its findings as they were
             except Exception as e:      # one broken check must not hide the others; its findings stay as they were
                 # the text reaches check_runs.error and the sync's message: no key or agent may ride along
@@ -133,4 +134,4 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
             st.close()
 
 
-from . import offline, filings, outside as outside_mod  # noqa: E402,F401  (register the checks in CHECKS; last, because they import from here)
+from . import offline, filings, outside as outside_mod, engine  # noqa: E402,F401  (register the checks in CHECKS; last, because they import from here)

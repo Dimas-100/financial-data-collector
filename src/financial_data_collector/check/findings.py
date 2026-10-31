@@ -9,7 +9,8 @@ SEVERITIES = ("hold", "warn", "info")
 
 @dataclass(frozen=True)
 class Finding:
-    """One problem a check found. `field` is a valuation_daily column name, or "*" for every value column.
+    """One problem a check found. `field` is a valuation_daily column name, "*" for every value column, or "score:<metric>"
+    for one valuation score (the `scores` check).
     `date_from`..`date_to` is the span of days it covers (`date_to` None = still going). `evidence` is plain
     data (numbers, dates, names) that explains the finding; it is stored as JSON."""
     check_name: str

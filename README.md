@@ -146,11 +146,19 @@ thresholds are in `[check]` of `config.toml`. What it looks at:
   cannot give one (a P/E with no EPS);
 - **filings**: a filing SEC lists for a company that the warehouse does not have (without `SEC_USER_AGENT`, SEC is
   not asked: one note, and the open holds stay);
-- **prices2** and **figures**: a second price source and outside statement figures (Yahoo, Tiingo), compared with ours.
+- **prices2** and **figures**: a second price source and outside statement figures (Yahoo, Tiingo), compared with ours;
+- **scores**: the valuation engine's scores (`valuation_scores_raw`). One hold per score that is `ok` with no `sources` (or
+  unreadable ones), has a source link that was not built (every link `https://`; a filing's exactly
+  `https://www.sec.gov/Archives/edgar/data/<CIK>/<accession without dashes>/<accession>-index.htm`), a `percentile_5y`
+  outside 0..100, or a band its percentile does not give by the checker's own rule and the `[engine]` thresholds (P/E, P/FCF,
+  P/S, EV/EBIT: high is premium; yield: high is cheap; every other metric, and any row that is not `ok`, has no band). Its
+  findings name the field `score:<metric>`, which the `valuation_scores` view blanks. A row it cannot read is a finding,
+  never an error. The `engine` step runs this check again alone right after it writes (its message ends "; checks: N holds,
+  N warnings, N errors"); that partial run never stamps `checked_at`.
 
 It records into two tables. `check_runs` has one row per run (when, how many checks, how many holds and warnings it
 found, and any check that raised). `check_findings` has one row per problem: `check_name`, `symbol`, `field` (a
-`valuation_daily` column, or `*` for every value column), the days it covers (`date_from`, `date_to`), `severity`
+`valuation_daily` column, `*` for every value column, or `score:<metric>` for one valuation score), the days it covers (`date_from`, `date_to`), `severity`
 (`hold`, `warn` or `info`), a plain-words `message`, `evidence` as JSON, and `first_seen` / `last_seen` / `cleared_at`.
 A finding the checks stop finding is cleared (never deleted); one that returns is reopened.
 

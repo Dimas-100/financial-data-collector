@@ -367,7 +367,7 @@ def test_engine_step_message_counts_moves(store, cfg):
     store.mark_benchmarks(["SPY"])
     _cover(store)
     rows, msg, status = sync._step_engine(store, cfg, progress=lambda d: None)
-    assert (rows, msg, status) == (6, "1 symbols, 4 scores (0 held), 2 moves", "ok")
+    assert (rows, msg, status) == (6, "1 symbols, 4 scores (0 held), 2 moves; checks: 0 holds, 0 warnings, 0 errors", "ok")
 
 
 # ---- the sources test, over a full fixture --------------------------------------------------------------------------
@@ -429,3 +429,13 @@ def test_every_ok_row_has_a_source_and_every_link_is_built(store, cfg, tmp_path)
                 if s["kind"] == "filing":
                     assert s["url"] == sources.filing_url(CIK, s["ref"])
     assert {"price", "filing", "feed", "config", "derived"} <= seen
+
+
+def test_the_independent_scores_check_finds_nothing_in_what_the_engine_built(store, cfg, tmp_path):
+    from datetime import datetime, timezone
+    from financial_data_collector.check import CheckContext, engine as check_engine
+    _full_fixture(store, cfg, tmp_path)
+    assert engine.run(store, cfg).skipped is None
+    assert store.query("SELECT COUNT(*) FROM valuation_scores_raw WHERE band IS NOT NULL")[0][0] > 0
+    ctx = CheckContext(store=store, cfg=cfg, fetch=None, outside=None, now=datetime(2026, 10, 30, tzinfo=timezone.utc))
+    assert check_engine.scores(ctx) == []
