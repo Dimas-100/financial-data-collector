@@ -12,8 +12,8 @@ from ..config import Config, ConfigError
 from ..http import Fetch, HttpError
 from ..models import ConceptRule, Fact, LineItem
 from ..store import Store
-from ..symbols import canonical, is_money_market
-from .sec_cik import load_cik_map, lookup
+from ..symbols import canonical, is_money_market, to_sec
+from .sec_cik import load_cik_map, load_fund_tickers, lookup
 
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 PAUSE_SECONDS = 1.0
@@ -105,6 +105,14 @@ def _looks_like_mutual_fund(symbol: str) -> bool:
     return len(symbol) == 5 and symbol.endswith("X") and symbol.isalpha()
 
 
+def _fund_tickers(cfg: Config, fetch: Fetch, now: datetime) -> tuple[frozenset[str], str]:
+    """SEC's fund list and "" , or an empty list and why it could not be had: the step goes on without it."""
+    try:
+        return load_fund_tickers(cfg.cache_dir / "company_tickers_mf.json", fetch, cfg.sec_user_agent, now), ""
+    except (HttpError, ValueError, KeyError, TypeError, IndexError) as e:
+        return frozenset(), f"{type(e).__name__}: {e}"
+
+
 def _is_fresh(last: str | None, now: datetime, max_age_hours: int) -> bool:
     if not last:
         return False
@@ -137,6 +145,8 @@ def collect_sec(
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     forced = {canonical(s) for s in cfg.classify}   # [classify] decides these types: nothing here re-types them
     results: list[SecResult] = []
+    fund_tickers: frozenset[str] | None = None     # fetched only once a symbol with no CIK needs it
+    fund_list_error = ""
     securities = store.securities()
     for i, row in enumerate(securities, start=1):
         symbol, asset_type, cik = row["symbol"], row["asset_type"], row["cik"]
@@ -148,9 +158,20 @@ def collect_sec(
         if not cik:
             hit = lookup(cik_map, symbol)
             if hit is None:
-                if asset_type == "unknown" and _looks_like_mutual_fund(symbol) and symbol not in forced:
-                    store.set_asset_type(symbol, "mutual_fund")
-                results.append(SecResult(symbol, None, message="no CIK in SEC ticker map"))
+                message = "no CIK in SEC ticker map"
+                if asset_type == "unknown" and symbol not in forced:
+                    if fund_tickers is None:
+                        fund_tickers, fund_list_error = _fund_tickers(cfg, fetch, now)
+                    # a fund that is a series of a trust (most ETFs) is on SEC's fund list, never its company map
+                    kind = "mutual_fund" if _looks_like_mutual_fund(symbol) else None
+                    if to_sec(symbol) in fund_tickers:
+                        kind = kind or "etf"
+                        message += f"; on SEC's fund list: {kind}"
+                    elif kind is None and fund_list_error:
+                        message += f"; SEC fund list unavailable ({fund_list_error})"
+                    if kind:
+                        store.set_asset_type(symbol, kind)
+                results.append(SecResult(symbol, None, message=message))
                 continue
             cik, name = hit
             sec_name = name

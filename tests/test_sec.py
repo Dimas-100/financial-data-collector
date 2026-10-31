@@ -313,3 +313,71 @@ def test_a_classify_override_is_never_retyped_by_a_404_or_by_no_operating_facts(
     sec_facts.collect_sec(store, cfg, fetch=answer(no_operating), now=NOW + timedelta(days=2),
                           rebuild=lambda f, r: [], sleep=lambda s: None)
     assert store.query("SELECT asset_type FROM securities WHERE symbol='AAPL'")[0][0] == "stock"
+
+
+def _fund_list_fetcher(fixtures: Path, fund_list=True):
+    calls = []
+
+    def fetch(url, headers):
+        calls.append(url)
+        if url == sec_cik.CIK_URL:
+            return (fixtures / "sec" / "company_tickers.json").read_bytes()
+        if url == sec_cik.FUND_TICKERS_URL and fund_list:
+            return (fixtures / "sec" / "company_tickers_mf.json").read_bytes()
+        if url == sec_facts.FACTS_URL.format(cik="0000000001"):
+            return (fixtures / "sec" / "companyfacts_SAMPLE.json").read_bytes()
+        raise HttpError(404, url)
+
+    fetch.calls = calls
+    return fetch
+
+
+def test_load_fund_tickers_caches(fixtures: Path, tmp_path: Path):
+    fetch = _fund_list_fetcher(fixtures)
+    cache = tmp_path / "cache" / "company_tickers_mf.json"
+    assert sec_cik.load_fund_tickers(cache, fetch, "ua", NOW) == frozenset({"VEA", "VFIAX", "IVV"})
+    os.utime(cache, (NOW.timestamp(), NOW.timestamp()))
+    sec_cik.load_fund_tickers(cache, fetch, "ua", NOW + timedelta(days=6))
+    assert fetch.calls == [sec_cik.FUND_TICKERS_URL]                    # fresh cache, no refetch
+
+
+def test_collect_sec_types_a_fund_on_sec_fund_list_with_no_cik(project, fixtures: Path):
+    # An ETF that is a series of a trust is on SEC's fund list, not its company map: with no CIK it used to stay unknown
+    cfg, store = project
+    for sym in ("VEA", "VFIAX", "IVV"):
+        store.upsert_security(sym, first_seen="2026-01-01")
+    cfg.classify = {"IVV": "stock"}
+    results = sec_facts.collect_sec(store, cfg, fetch=_fund_list_fetcher(fixtures), now=NOW, rebuild=lambda f, r: [],
+                                    sleep=lambda s: None)
+    kinds = {r[0]: r[1] for r in store.query("SELECT symbol, asset_type FROM securities")}
+    assert kinds["VEA"] == "etf" and kinds["VFIAX"] == "mutual_fund"
+    assert kinds["IVV"] == "unknown"                                    # [classify] decides it, not the fund list
+    assert kinds["ZZZZ"] == "unknown"                                   # on neither list
+    by = {r.symbol: r.message for r in results}
+    assert by["VEA"] == "no CIK in SEC ticker map; on SEC's fund list: etf"
+    assert by["ZZZZ"] == "no CIK in SEC ticker map"
+    assert store.query("SELECT cik FROM securities WHERE symbol='VEA'")[0][0] is None
+    again = sec_facts.collect_sec(store, cfg, fetch=_fund_list_fetcher(fixtures), now=NOW, rebuild=lambda f, r: [],
+                                  sleep=lambda s: None)
+    assert "VEA" not in {r.symbol for r in again} and "VFIAX" not in {r.symbol for r in again}   # funds now
+
+
+def test_collect_sec_keeps_going_when_the_fund_list_fails(project, fixtures: Path):
+    cfg, store = project
+    store.upsert_security("VEA", first_seen="2026-01-01")
+    fetch = _fund_list_fetcher(fixtures, fund_list=False)
+    results = sec_facts.collect_sec(store, cfg, fetch=fetch, now=NOW, rebuild=lambda f, r: [], sleep=lambda s: None)
+    by = {r.symbol: r.message for r in results}
+    assert store.query("SELECT asset_type FROM securities WHERE symbol='VEA'")[0][0] == "unknown"
+    assert by["VEA"].startswith("no CIK in SEC ticker map; SEC fund list unavailable")
+    assert by["AAPL"] == ""                                             # the companies still collected
+    assert fetch.calls.count(sec_cik.FUND_TICKERS_URL) == 1            # asked once per run, not per symbol
+
+
+def test_collect_sec_asks_for_the_fund_list_only_when_a_symbol_needs_it(project, fixtures: Path):
+    cfg, store = project
+    store.conn.execute("DELETE FROM securities WHERE symbol = 'ZZZZ'")
+    store.conn.commit()
+    fetch = _fund_list_fetcher(fixtures)
+    sec_facts.collect_sec(store, cfg, fetch=fetch, now=NOW, rebuild=lambda f, r: [], sleep=lambda s: None)
+    assert sec_cik.FUND_TICKERS_URL not in fetch.calls

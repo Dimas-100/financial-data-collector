@@ -97,6 +97,10 @@ Quarterly cash-flow items are computed from year-to-date filings where companies
 year-to-date; fourth quarters are derived from the full year. A quarterly row whose line items include
 any computed value carries `has_derived_items = 1`; `financial_line_items.is_derived` says which ones.
 Funds (ETFs, mutual funds) get positions, prices and a daily `fund_snapshots` row; they file no statements.
+A broker file does not say what a symbol is, so the `sec` step types it: a symbol of unknown type that SEC's company
+ticker map does not list but its fund ticker list (`company_tickers_mf.json`, cached a week) does is an `etf`, or a
+`mutual_fund` when it is five letters ending in X. Most ETFs are a series of a trust and are only on the fund list.
+`[classify]` in `config.toml` overrides any of this.
 Stocks (and foreign filers) are asked about once a New York day for their earnings history and estimates; the
 `earnings` step also records SEC's industry code in `securities.sic`. yfinance reports a failed request by logging it
 and answering empty, so an error it logs while asking counts as a failed ask, asked again at the next sync; a fund that
