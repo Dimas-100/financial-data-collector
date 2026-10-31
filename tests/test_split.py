@@ -391,6 +391,50 @@ def test_fund_without_a_file_is_assumed_at_the_largest_weight():
     assert _line(plan, "VFIAX").reasons == ("disagree",)
 
 
+def test_cap_counts_money_already_in_a_fund_without_a_file():
+    # The reviewer's case. Household (household_of): VFIAX 5000 (fund, no file), AAPL 450, VOO 100 (file: AAPL 7%),
+    # KO 4150, cash 300 -> total 10000. Cap AAPL 5% = 500. Used: 450 direct + 7 via VOO + 5000 x 0.07 (VFIAX at the
+    # largest AAPL weight on file) = 807 > 500 -> room 0. AAPL (coef 1) and VFIAX (coef 0.07) are frozen at 0.
+    # KO 20% of base 1000: gap 200, top 250 -> 250; 50 waits.
+    positions = [{"account": "Sample Roth", "symbol": "VFIAX", "market_value": 5000.0},
+                 {"account": "Sample Brokerage", "symbol": "AAPL", "market_value": 450.0},
+                 {"account": "Sample Brokerage", "symbol": "VOO", "market_value": 100.0},
+                 {"account": "Sample Brokerage", "symbol": "KO", "market_value": 4150.0}]
+    hh = household_of(positions, {"Sample Brokerage": 300.0}, {"VOO": {"AAPL": 0.07}}, frozenset({"VOO", "VFIAX"}))
+    assert hh.total == pytest.approx(10_000.0)
+    assert hh.fund_values == pytest.approx({"VFIAX": 5000.0, "VOO": 100.0})
+    assert hh.direct["VFIAX"] == 5000.0 and "VOO" not in hh.direct              # direct/indirect keep their meaning
+    entries = [_e("AAPL", 50), _e("VFIAX", 30), _e("KO", 20)]
+    plan = _plan(entries, 300, hh=hh, held={"AAPL": 450.0}, caps=[Cap("AAPL", 5.0)])
+    assert _d(plan) == {"KO": 250}
+    assert _notes(plan) == [("AAPL", "cap_cut:AAPL"), ("VFIAX", "cap_cut:AAPL")]
+    assert plan.waits == 50.0
+    # Without the assumption the same cap would have had 500 - 457 = 43 of room: the held fund is what closes it.
+    # A file that does not name the capped name assumes 0: VFIAX's 5000 adds nothing to a KO cap.
+    plan = _plan([_e("KO", 45)], 300, hh=hh, caps=[Cap("KO", 43.0)])           # 4300 - 4150 = 150 of room
+    assert _d(plan) == {"KO": 150}
+    assert _line(plan, "KO").reasons == ("disagree", "cap_cut:KO")
+
+
+def test_cap_on_a_fund_counts_the_funds_own_value():
+    # Cap VOO 10% of a 10000 household = 1000. VOO (file: AAPL 7%) held 950, which household_of keeps out of
+    # `direct` (its file spreads it); the cap still counts it through fund_values: room 50. VOO 60% of 1000: gap 600
+    # -> 50 (cut); KO 10%: gap 100, top 125. Weights 600 / 100: inc 257.14 / 42.86, the cap stops VOO at
+    # k = 50 / 257.14; KO alone then reaches its top 125. 300 - 175 = 125 waits. SPY (no file) names no VOO: adds 0.
+    positions = [{"account": "Sample Brokerage", "symbol": "VOO", "market_value": 950.0},
+                 {"account": "Sample Brokerage", "symbol": "SPY", "market_value": 9050.0}]
+    hh = household_of(positions, {}, {"VOO": {"AAPL": 0.07}}, frozenset({"VOO", "SPY"}))
+    assert hh.total == 10_000.0 and "VOO" not in hh.direct
+    plan = _plan([_e("VOO", 60), _e("KO", 10)], 300, hh=hh, caps=[Cap("VOO", 10.0)])
+    assert _d(plan) == {"KO": 125, "VOO": 50}
+    assert _line(plan, "VOO").reasons == ("disagree", "cap_cut:VOO")
+    assert plan.waits == 125.0
+    # A cap on a fund with no file: its own value is its direct holding, counted once (not twice). SPY 9050 against a
+    # 91% cap (9100): room 50.
+    plan = _plan([_e("SPY", 60)], 300, hh=hh, caps=[Cap("SPY", 91.0)])
+    assert _d(plan) == {"SPY": 50}
+
+
 def test_a_name_that_is_not_a_fund_is_not_limited_by_another_names_cap():
     hh = _hh(direct={"AAPL": 5000.0}, look_through={"VOO": {"AAPL": 0.07}}, funds={"VOO"})
     plan = _plan([_e("KO", 20)], 100, hh=hh, caps=[Cap("AAPL", 1.0)])
@@ -481,6 +525,18 @@ def test_fold_never_passes_a_top():
     assert _notes(plan) == [("KO", "under_min"), ("JNJ", "under_min")]
 
 
+def test_cash_guard_drops_a_line_it_trims_under_the_minimum():
+    # The guard is never reached through plan_split (floors cannot pass the cash); fed 60 + 12 against 70 of cash it
+    # trims the smallest first: KO 12 -> 10 (still >= 10, kept). Against 65: KO 12 -> 5, under 10, dropped; 60 stays.
+    from financial_data_collector.derive.split import _within_cash
+    dollars = {"SPY": 60, "KO": 12}
+    assert _within_cash(dollars, ["KO", "SPY"], 70.0, 10) == ["KO", "SPY"] and dollars == {"SPY": 60, "KO": 10}
+    dollars = {"SPY": 60, "KO": 12}
+    assert _within_cash(dollars, ["KO", "SPY"], 65.0, 10) == ["SPY"] and dollars["SPY"] == 60
+    dollars = {"SPY": 60, "KO": 12}
+    assert _within_cash(dollars, ["KO", "SPY"], 72.0, 10) == ["KO", "SPY"] and dollars == {"SPY": 60, "KO": 12}
+
+
 THREE = [_e("SPY", 40), _e("KO", 30), _e("JNJ", 20)]
 THREE_HELD = {"SPY": 66.67, "KO": 77.78, "JNJ": 88.89}   # gaps 333.33 / 222.22 / 111.11; tops 433.33 / 297.22 / 161.11
 
@@ -535,9 +591,10 @@ def test_wide_sweep_never_passes_cash_tops_or_groups():
 
 
 def test_zero_cash():
-    for cash in (0, 0.0, -5.0):
-        plan = _plan([_e("SPY", 40)], cash)
+    for cash in (0, 0.0, -5.0, 0.004):
+        plan = _plan([_e("KO", 50, rule="hold"), _e("SPY", 40), _e("AAPL", 10)], cash)
         assert plan.lines == () and plan.waits == 0.0
+        assert _notes(plan) == [("KO", "hold"), ("SPY", "no_cash"), ("AAPL", "no_cash")]
     # No eligible entry: everything waits.
     plan = _plan([_e("KO", 50, rule="hold")], 100.0)
     assert plan.lines == () and plan.waits == 100.0 and _notes(plan) == [("KO", "hold")]

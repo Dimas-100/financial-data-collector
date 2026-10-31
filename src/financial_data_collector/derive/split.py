@@ -8,7 +8,7 @@ target gap and band, inside every band top, sleeve max and cap. Pure: no SQL, no
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..models import SplitLine, TargetEntry, Targets
 
@@ -100,12 +100,14 @@ _FILL_RULES = ("trades", "contributions")
 @dataclass(frozen=True)
 class Household:
     """Every counted account together: `total` (positions plus cash), each name's `direct` dollars, its `indirect`
-    dollars through funds with a look-through file, the look-through itself and which symbols are funds."""
+    dollars through funds with a look-through file, the look-through itself, which symbols are funds, and the
+    dollars held in each fund (`fund_values`, with a file or not) for the caps."""
     total: float
     direct: dict[str, float]
     indirect: dict[str, float]
     look_through: dict[str, dict[str, float]]
     funds: frozenset[str]
+    fund_values: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -122,19 +124,23 @@ def household_of(positions: list[dict], cash: dict[str, float], look_through: di
     """The household from the counted accounts' positions (`account`, `symbol`, `market_value`) and cash.
 
     A fund with a look-through file adds value x weight to each name it holds (`indirect`); the rest of the fund adds
-    to no name. A fund without a file, and anything that is not a fund, counts as a direct holding of itself."""
+    to no name. A fund without a file, and anything that is not a fund, counts as a direct holding of itself. Every
+    fund's held dollars are also kept in `fund_values`."""
     direct: dict[str, float] = {}
     indirect: dict[str, float] = {}
+    fund_values: dict[str, float] = {}
     total = sum(float(v or 0.0) for v in cash.values())
     for row in positions:
         symbol, value = row["symbol"], float(row.get("market_value") or 0.0)
         total += value
+        if symbol in fund_symbols:
+            fund_values[symbol] = fund_values.get(symbol, 0.0) + value
         if symbol in fund_symbols and symbol in look_through:
             for name, weight in look_through[symbol].items():
                 indirect[name] = indirect.get(name, 0.0) + value * weight
         else:
             direct[symbol] = direct.get(symbol, 0.0) + value
-    return Household(total, direct, indirect, dict(look_through), frozenset(fund_symbols))
+    return Household(total, direct, indirect, dict(look_through), frozenset(fund_symbols), fund_values)
 
 
 def _account_entries(account: str, targets: Targets) -> list[TargetEntry]:
@@ -143,6 +149,27 @@ def _account_entries(account: str, targets: Targets) -> list[TargetEntry]:
     return [e for e in targets.entries
             if (e.kind == "pct_of_brokerage" and account == "brokerage")
             or (e.kind != "pct_of_brokerage" and e.account == account)]
+
+
+def _assumed_weight(household: Household, name: str) -> float:
+    """The largest weight of `name` in any look-through file on record (0 when no file lists it): what a fund
+    without a file is taken to hold of it."""
+    return max((float(w.get(name, 0.0)) for w in household.look_through.values()), default=0.0)
+
+
+def cap_used(household: Household, name: str) -> float:
+    """Dollars of `name` the household already holds, for a cap: held directly, through funds with a file, its own
+    value when `name` is itself a fund with a file (`direct` leaves such a fund out), and every held fund without a
+    file taken at the assumed weight of `name` (conservative: missing look-through never makes room)."""
+    used = household.direct.get(name, 0.0) + household.indirect.get(name, 0.0)
+    if name in household.funds and name in household.look_through:
+        used += household.fund_values.get(name, 0.0)
+    weight = _assumed_weight(household, name)
+    if weight > 0:
+        for fund, value in household.fund_values.items():
+            if fund != name and fund in household.funds and fund not in household.look_through:
+                used += value * weight
+    return used
 
 
 @dataclass
@@ -189,7 +216,7 @@ def _groups(account: str, base: float, held: dict[str, float], household: Househ
             elif s in household.funds and s in household.look_through:
                 c = float(household.look_through[s].get(name, 0.0))
             elif s in household.funds:
-                c = max((float(w.get(name, 0.0)) for w in household.look_through.values()), default=0.0)
+                c = _assumed_weight(household, name)
                 if c > 0 and "look_through_assumed" not in lines[s].reasons:
                     lines[s].reasons.append("look_through_assumed")
             else:
@@ -198,7 +225,7 @@ def _groups(account: str, base: float, held: dict[str, float], household: Househ
                 coef[s] = c
         if not coef:
             continue
-        room = cap.high / 100 * household.total - (household.direct.get(name, 0.0) + household.indirect.get(name, 0.0))
+        room = cap.high / 100 * household.total - cap_used(household, name)
         groups.append(_Group(f"cap_cut:{name}", max(room, 0.0), coef))
     return groups
 
@@ -247,6 +274,20 @@ def _fill(cash: float, lines: dict[str, _Line], groups: list[_Group]) -> tuple[d
     return x, stops
 
 
+def _within_cash(dollars: dict[str, int], kept: list[str], cash: float, min_line: int) -> list[str]:
+    """Guard: trims the lines (smallest first) until they sum to at most the cash, and drops a line it trims under
+    `min_line` (its dollars wait). Floors of shares that sum to at most the cash cannot pass it, so this never cuts
+    in practice. Changes `dollars` in place; returns the lines kept."""
+    over = sum(dollars[s] for s in kept) - int(math.floor(cash + 1e-9))
+    for s in sorted(kept, key=lambda s: (dollars[s], s)):
+        if over <= 0:
+            break
+        cut = min(over, dollars[s])
+        dollars[s] -= cut
+        over -= cut
+    return [s for s in kept if dollars[s] >= min_line]
+
+
 def plan_split(account: str, cash: float, base: float, held: dict[str, float], household: Household,
                targets: Targets, bands: dict[str, tuple[str, tuple[str, ...]]], tilt: dict[str, float],
                min_line: int) -> SplitPlan:
@@ -257,9 +298,10 @@ def plan_split(account: str, cash: float, base: float, held: dict[str, float], h
     without one is `usual` (`no_scores`). tilt: the factor per band. A percent entry's gap is target% x base - held
     and its top max% x base - held; a ratio entry's gap is target x via-funds - direct (household-wide) and its top
     max x via-funds - direct. Money goes by gap x tilt, never past a top, a sleeve's max (its members in this account)
-    or a cap (the name household-wide, funds through their look-through). Whole dollars (floored); a line under
-    `min_line` is folded into the largest line as far as that line's room allows; the rest waits. Never more than
-    the cash, never a `hold` or unknown-rule entry.
+    or a cap (the name household-wide, funds through their look-through; see `cap_used`). Whole dollars (floored);
+    a line under `min_line` is folded into the largest line as far as that line's room allows; the rest waits. Never
+    more than the cash, never a `hold` or unknown-rule entry. With no cash (0.005 or less) every entry that could
+    have had money is noted `no_cash`.
     """
     cash_in = max(float(cash), 0.0)
     entries = _account_entries(account, targets)
@@ -324,15 +366,7 @@ def plan_split(account: str, cash: float, base: float, held: dict[str, float], h
         if add > 0:
             dollars[r] += add
             folded = r
-    # Never more than the cash. Floors of shares that sum to at most the cash cannot pass it; this only guards.
-    over = sum(dollars[s] for s in kept) - int(math.floor(cash_in + 1e-9))
-    for s in sorted(kept, key=lambda s: (dollars[s], s)):
-        if over <= 0:
-            break
-        cut = min(over, dollars[s])
-        dollars[s] -= cut
-        over -= cut
-    kept = [s for s in kept if dollars[s] > 0]
+    kept = _within_cash(dollars, kept, cash_in, min_line)
 
     out = []
     for s in kept:
@@ -347,8 +381,12 @@ def plan_split(account: str, cash: float, base: float, held: dict[str, float], h
         if i in reason_of:
             notes.append({"symbol": s, "reason": reason_of[i]})
         elif s not in kept:
-            # A group or its top left it at nothing: that is why; else its share was under the minimum.
-            why = stops[s][0] if floors[s] == 0 and stops[s] else "under_min"
+            # No cash: that is why. A group or its top left it at nothing: that is why. Else its share was under
+            # the minimum.
+            if cash_in <= TOL:
+                why = "no_cash"
+            else:
+                why = stops[s][0] if floors[s] == 0 and stops[s] else "under_min"
             notes.append({"symbol": s, "reason": why})
     waits = round(cash_in - sum(line.dollars for line in out), 2)
     return SplitPlan(tuple(out), waits, tuple(notes))
