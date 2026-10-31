@@ -268,11 +268,72 @@ def test_figure_15pct_apart_warns_40pct_holds_on_that_field(store, cfg):
     assert by["revenue_ttm"].evidence["ours"] == 1000.0 and by["revenue_ttm"].evidence["theirs"] == 2000.0
 
 
-def test_free_cash_flow_never_holds_at_any_size(store, cfg):
+def test_yahoos_levered_free_cash_flow_is_not_compared(store, cfg):
+    # info's freeCashflow is a levered figure (after interest), not operating cash flow less capital spending: comparing
+    # it with ours put every large company 70-1900% apart.
     _held(store)
     _valuation(store, fcf_ttm=1.0, p_fcf=50.0)
-    [f] = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, None, None, 1000.0)}))
-    assert (f.field, f.severity) == ("fcf_ttm", "warn")
+    assert _figures(store, cfg, FakeOutside(figs={"AAA": F(None, None, None, 1000.0)})) == []
+
+
+CQ = outside.CashFlowQuarter
+FOUR = ("2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30")
+
+
+def _quarters(ocf=(40.0, 30.0, 20.0, 10.0), ppe=(-5.0, -5.0, -5.0, -5.0), capex=None, ends=FOUR):
+    capex = capex or (None,) * 4
+    return tuple(CQ(e, o, p, c) for e, o, p, c in zip(ends, ocf, ppe, capex))
+
+
+def test_free_cash_flow_is_yahoos_four_quarters_ending_on_our_period(store, cfg):
+    _held(store)
+    _valuation(store, fcf_ttm=80.0, p_fcf=20.0, ttm_period_end="2026-06-30")        # 100 of cash flow less 20 of PPE
+    assert _figures(store, cfg, FakeOutside(figs={"AAA": F(None, None, None, -3.0, _quarters())})) == []
+    _valuation(store, fcf_ttm=200.0, p_fcf=8.0, ttm_period_end="2026-06-30")
+    found = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, None, None, -3.0, _quarters())}))
+    by = {f.field: f for f in found}
+    assert set(by) == {"fcf_ttm", "p_fcf"} and {f.severity for f in found} == {"hold"}   # the same definition: may hold
+    ev = by["fcf_ttm"].evidence
+    assert (ev["ours"], ev["theirs"], ev["capex_line"], ev["quarters"]) == (200.0, 80.0, "Purchase Of PPE", list(FOUR))
+    assert "built on fcf_ttm" in by["p_fcf"].message
+    assert "four quarters to 2026-06-30" in by["fcf_ttm"].message
+
+
+def test_a_quarter_label_a_few_days_off_our_period_end_still_matches(store, cfg):
+    _held(store)
+    _valuation(store, fcf_ttm=80.0, ttm_period_end="2026-06-26")         # a 52-53 week year: SEC's end is a Sunday
+    assert _figures(store, cfg, FakeOutside(figs={"AAA": F(None, None, None, None, _quarters())})) == []
+
+
+def test_capital_expenditure_without_ppe_purchases_only_warns(store, cfg):
+    # Yahoo's Capital Expenditure can hold more than purchases of property and equipment (equipment leased to others,
+    # intangibles): a definition difference, never a hold.
+    _held(store)
+    _valuation(store, fcf_ttm=80.0, p_fcf=20.0)
+    q = _quarters(ppe=(None,) * 4, capex=(-15.0,) * 4)                  # Yahoo: 100 - 60 = 40
+    [f] = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, None, None, None, q)}))
+    assert (f.field, f.severity, f.evidence["capex_line"]) == ("fcf_ttm", "warn", "Capital Expenditure")
+    assert "capital expenditure" in f.message
+
+
+def test_quarters_that_do_not_reach_our_period_end_are_not_compared(store, cfg):
+    _held(store)
+    _valuation(store, fcf_ttm=80.0, ttm_period_end="2026-09-30")
+    [f] = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, None, None, None, _quarters())}))
+    assert (f.field, f.severity) == ("fcf_ttm", "info")
+    assert f.message == "not compared: Yahoo's newest quarter ends 2026-06-30, ours 2026-09-30"
+
+
+@pytest.mark.parametrize("q", [
+    _quarters(ocf=(40.0, None, 20.0, 10.0)),                                    # a quarter Yahoo leaves blank
+    _quarters(ends=("2026-06-30", "2026-03-31", "2025-12-31")[:3] + ("2025-03-31",)),   # a quarter missing between
+    _quarters()[:3],                                                            # only three quarters
+])
+def test_four_quarters_not_all_there_are_not_compared(store, cfg, q):
+    _held(store)
+    _valuation(store, fcf_ttm=80.0)
+    [f] = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, None, None, None, q)}))
+    assert (f.field, f.severity) == ("fcf_ttm", "info") and f.message.startswith("not compared: ")
 
 
 def test_tiny_eps_only_warns(store, cfg):
@@ -325,10 +386,10 @@ def test_figures_inside_the_warn_band_are_fine(store, cfg):
 def test_figures_map_to_their_columns(store, cfg):
     _held(store)
     _valuation(store, market_cap=100.0, eps_ttm=100.0, revenue_ttm=100.0, fcf_ttm=100.0)
-    found = _figures(store, cfg, FakeOutside(figs={"AAA": F(1.0, 1.0, 1.0, 1.0)}))
+    q = _quarters(ocf=(1.0, 0.0, 0.0, 0.0), ppe=(0.0,) * 4)
+    found = _figures(store, cfg, FakeOutside(figs={"AAA": F(1.0, 1.0, 1.0, 1.0, q)}))
     by = {f.field: f for f in found}
     assert {"eps_ttm", "market_cap", "revenue_ttm", "fcf_ttm"} <= set(by)
-    assert by["fcf_ttm"].severity == "warn"              # never a hold: Yahoo's free cash flow is defined differently
 
 
 def test_figures_only_for_stocks_whose_values_are_ok(store, cfg):
@@ -373,7 +434,7 @@ def test_the_yahoo_source_has_the_two_calls():
     assert callable(src.quote) and callable(src.figures)
 
 
-def _fake_yfinance(monkeypatch, frame=None, info=None):
+def _fake_yfinance(monkeypatch, frame=None, info=None, cashflow=None):
     import logging
     import sys
     import types
@@ -383,6 +444,7 @@ def _fake_yfinance(monkeypatch, frame=None, info=None):
         def __init__(self, symbol):
             calls.append(("Ticker", symbol))
             self.info = info
+            self.quarterly_cashflow = cashflow
 
         def history(self, **kw):
             calls.append(("history", kw))
@@ -417,6 +479,20 @@ def test_yahoo_figures_map_the_info_keys_and_drop_junk(monkeypatch):
     assert outside.YahooSource().figures("AAA") == F(2.5, 1e9, None, None)
     _fake_yfinance(monkeypatch, info={})
     assert outside.YahooSource().figures("AAA") is None
+
+
+def test_yahoo_figures_read_the_quarterly_cash_flow_newest_first(monkeypatch):
+    import pandas as pd
+    cols = pd.DatetimeIndex(["2026-03-31", "2026-06-30"])
+    frame = pd.DataFrame([[10.0, 12.0], [-2.0, float("nan")], [-3.0, -4.0], [8.0, 8.0]], columns=cols,
+                         index=["Operating Cash Flow", "Purchase Of PPE", "Capital Expenditure", "Free Cash Flow"])
+    _fake_yfinance(monkeypatch, info={"marketCap": 1e9}, cashflow=frame)
+    figs = outside.YahooSource().figures("AAA")
+    assert figs.quarters == (CQ("2026-06-30", 12.0, None, -4.0), CQ("2026-03-31", 10.0, -2.0, -3.0))
+    _fake_yfinance(monkeypatch, info={}, cashflow=frame)                       # quarters alone are an answer
+    assert outside.YahooSource().figures("AAA").quarters[0].period_end == "2026-06-30"
+    _fake_yfinance(monkeypatch, info={"marketCap": 1e9}, cashflow=pd.DataFrame())
+    assert outside.YahooSource().figures("AAA").quarters == ()
 
 
 def test_yahoo_calls_silence_the_yfinance_logger(monkeypatch):
