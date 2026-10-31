@@ -67,3 +67,104 @@ def test_universe_symbols_is_pure(tmp_path: Path):
     assert U.build_universe(s, wl, classify={"BTC": "crypto"}) == ["AAPL", "VTI"]
     assert s.query("SELECT COUNT(*) FROM securities")[0][0] == 5
     s.close()
+
+
+# ---- parking a symbol nothing knows --------------------------------------------------------------------
+
+def _no_bars_runs(cfg, store, symbol, n):
+    from datetime import date
+    from financial_data_collector.collectors import prices as P
+
+    def fetch(url, headers):
+        return b"[]"
+
+    for _ in range(n):
+        P.collect_prices(store, [symbol], cfg, fetch=fetch, today=date(2026, 1, 15),
+                         yf=lambda s, start: [], sleep=lambda s: None)
+
+
+def _cfg(tmp_path: Path):
+    from financial_data_collector import config as C
+    C.init_project(tmp_path)
+    (tmp_path / ".env").write_text("TIINGO_API_TOKEN=tok\n")
+    return C.load_config(tmp_path)
+
+
+def test_symbol_with_no_cik_no_bars_no_position_parks_after_three_runs(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    store = Store.open(cfg.db_path)
+    store.upsert_security("PRIVCO", first_seen="2026-01-01")
+    wl = tmp_path / "watchlist.txt"
+    wl.write_text("PRIVCO\n")
+    _no_bars_runs(cfg, store, "PRIVCO", U.PARK_AFTER - 1)
+    assert {r["symbol"]: r for r in store.securities()}["PRIVCO"]["parked_reason"] is None
+    assert "PRIVCO" in U.universe_symbols(store, wl)
+    _no_bars_runs(cfg, store, "PRIVCO", 1)
+    sec = {r["symbol"]: r for r in store.securities()}
+    assert sec["PRIVCO"]["parked_reason"] == "no price from any provider, no CIK, not held"
+    assert "PRIVCO" not in U.universe_symbols(store, wl)
+    assert "PRIVCO" not in U.build_universe(store, wl)   # the watchlist does not bring it back
+    store.close()
+
+
+def test_a_held_or_cik_symbol_is_not_parked(tmp_path: Path):
+    from financial_data_collector.models import AccountRef, PositionRow, Snapshot
+    cfg = _cfg(tmp_path)
+    store = Store.open(cfg.db_path)
+    store.upsert_security("HELDCO", first_seen="2026-01-01")
+    store.upsert_security("CIKCO", first_seen="2026-01-01")
+    store.set_security_cik("CIKCO", "0000000001", "Cik Co")
+    acct = AccountRef("Brokerage")
+    store.write_snapshot(Snapshot("2026-01-02", "csv", [PositionRow(acct, "HELDCO", None, 1.0, 10.0, 10.0)], []))
+    _no_bars_runs(cfg, store, "HELDCO", 4)
+    _no_bars_runs(cfg, store, "CIKCO", 4)
+    assert all(r["parked_reason"] is None for r in store.securities())
+    store.close()
+
+
+def test_a_parked_symbol_that_appears_in_a_position_is_unparked(tmp_path: Path):
+    from financial_data_collector.models import AccountRef, PositionRow, Snapshot
+    store = Store.open(tmp_path / "w.db")
+    store.upsert_security("PRIVCO", first_seen="2026-01-01")
+    store.park("PRIVCO", "no price from any provider, no CIK, not held")
+    assert {r["symbol"]: r for r in store.securities()}["PRIVCO"]["parked_reason"] is not None
+    store.write_snapshot(Snapshot("2026-01-02", "csv",
+                                  [PositionRow(AccountRef("Brokerage"), "PRIVCO", None, 1.0, 10.0, 10.0)], []))
+    row = {r["symbol"]: r for r in store.securities()}["PRIVCO"]
+    assert row["parked_reason"] is None and row["miss_runs"] == 0
+    store.close()
+
+
+def test_one_good_bar_resets_the_miss_count(tmp_path: Path):
+    from datetime import date
+    from financial_data_collector.collectors import prices as P
+    from financial_data_collector.models import PriceBar
+    cfg = _cfg(tmp_path)
+    store = Store.open(cfg.db_path)
+    store.upsert_security("PRIVCO", first_seen="2026-01-01")
+    _no_bars_runs(cfg, store, "PRIVCO", 2)
+    assert {r["symbol"]: r for r in store.securities()}["PRIVCO"]["miss_runs"] == 2
+    P.collect_prices(store, ["PRIVCO"], cfg, fetch=lambda u, h: b"[]", today=date(2026, 1, 15),
+                     yf=lambda s, start: [PriceBar("2026-01-14", 5.0, 5.0)], sleep=lambda s: None)
+    assert {r["symbol"]: r for r in store.securities()}["PRIVCO"]["miss_runs"] == 0
+    _no_bars_runs(cfg, store, "PRIVCO", 1)   # nothing new now: not a miss, history exists
+    assert {r["symbol"]: r for r in store.securities()}["PRIVCO"]["miss_runs"] == 0
+    store.close()
+
+
+def test_a_provider_failure_is_not_a_miss(tmp_path: Path):
+    from datetime import date
+    from financial_data_collector.collectors import prices as P
+    cfg = _cfg(tmp_path)
+    store = Store.open(cfg.db_path)
+    store.upsert_security("PRIVCO", first_seen="2026-01-01")
+
+    def boom(symbol, start):
+        raise RuntimeError("down")
+
+    for _ in range(4):
+        P.collect_prices(store, ["PRIVCO"], cfg, fetch=lambda u, h: b"[]", today=date(2026, 1, 15),
+                         yf=boom, sleep=lambda s: None)
+    row = {r["symbol"]: r for r in store.securities()}["PRIVCO"]
+    assert row["miss_runs"] == 0 and row["parked_reason"] is None
+    store.close()

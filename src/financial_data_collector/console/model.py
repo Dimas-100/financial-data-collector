@@ -233,6 +233,11 @@ def _sources(cfg: Config, facts: Mapping, status: Mapping[str, Mapping]) -> list
                               "present"))
     else:
         rows.append(SourceRow("watchlist", str(cfg.watchlist), "", "missing"))
+    parked: dict[str, list[str]] = {}
+    for symbol, reason in facts.get("parked", []):
+        parked.setdefault(reason, []).append(symbol)
+    for reason, symbols in parked.items():
+        rows.append(SourceRow(f"Parked: {', '.join(symbols)} ({reason})", "", "", "parked"))
     if cfg.investing_dir is None:
         rows.append(SourceRow("research tickers", "", "", "off"))
     else:

@@ -13,6 +13,7 @@ from ..http import Fetch, HttpError
 from ..models import PriceBar, is_final  # noqa: F401  (is_final is part of this module's interface)
 from ..store import Store
 from ..symbols import to_tiingo, to_yfinance
+from ..universe import PARK_AFTER, PARK_REASON
 
 TIINGO_URL = "https://api.tiingo.com/tiingo/daily/{sym}/prices?startDate={start}&columns=date,close,adjClose,divCash,splitFactor"
 TIINGO_PAUSE_SECONDS = 0.5
@@ -124,6 +125,7 @@ def collect_prices(
                 failed = True
         if bars and source:
             n = store.write_prices(symbol, bars, source, fetched_at=now)
+            store.reset_miss(symbol)
             results.append(PriceResult(symbol, source, n, "; ".join(notes)))
         elif failed:
             results.append(PriceResult(symbol, None, 0, "; ".join(notes), failed=True))
@@ -132,5 +134,8 @@ def collect_prices(
             results.append(PriceResult(symbol, None, 0, "no new bars"))
         else:
             notes.append("no bars from any provider")
+            if store.count_miss(symbol) >= PARK_AFTER and store.is_parkable(symbol):
+                store.park(symbol, PARK_REASON)
+                notes.append("parked")
             results.append(PriceResult(symbol, None, 0, "; ".join(notes)))
     return results

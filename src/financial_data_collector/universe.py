@@ -8,6 +8,10 @@ from pathlib import Path
 from .store import Store, today
 from .symbols import canonical, is_money_market
 
+# A symbol with no CIK, no position and no bars from any provider for this many runs in a row is parked:
+# left out of the universe until a position for it shows up.
+PARK_AFTER = 3
+PARK_REASON = "no price from any provider, no CIK, not held"
 _SKIP_TYPES = {"money_market", "crypto"}
 _TICKER_LINE = re.compile(r"^ticker:\s*([A-Za-z][A-Za-z0-9./-]*)", re.MULTILINE)
 # investing/pipeline/_scan_metrics.AUTO_PROMOTE_COUNT: scan names seen this often graduate to the basket
@@ -67,11 +71,14 @@ def read_watchlist(path: Path) -> list[str]:
 def universe_symbols(store: Store, watchlist_path: Path, classify: dict[str, str] | None = None,
                      investing_dir: Path | None = None) -> list[str]:
     """The symbols the collector follows, computed without writing: the securities on record plus the watchlist
-    and research names, [classify] overrides applied to the answer, money markets and skipped kinds left out.
+    and research names, [classify] overrides applied to the answer, money markets, skipped kinds and parked symbols left out.
     What the console counts; works on a read-only store."""
     kinds: dict[str, tuple[str, str | None]] = {}
+    parked: set[str] = set()
     for row in store.securities():
         kinds[row["symbol"]] = (row["asset_type"], row["description"])
+        if row["parked_reason"]:
+            parked.add(row["symbol"])
     for sym in read_watchlist(watchlist_path) + read_investing_tickers(investing_dir):
         kinds.setdefault(sym, ("unknown", None))
     for sym, asset_type in (classify or {}).items():
@@ -79,7 +86,7 @@ def universe_symbols(store: Store, watchlist_path: Path, classify: dict[str, str
         if sym in kinds:
             kinds[sym] = (asset_type, kinds[sym][1])
     return sorted(sym for sym, (asset_type, description) in kinds.items()
-                  if asset_type not in _SKIP_TYPES and not is_money_market(sym, description))
+                  if sym not in parked and asset_type not in _SKIP_TYPES and not is_money_market(sym, description))
 
 
 def build_universe(store: Store, watchlist_path: Path, classify: dict[str, str] | None = None,

@@ -179,3 +179,15 @@ def test_runs_window_keeps_the_last_days_but_never_fewer_than_the_minimum():
         ["28", "27", "26", "25", "24", "23", "22", "22", "21", "20"]
     assert M.recent_window([], NOW) == []
     assert M.RUNS_DAYS == 7 and M.RUNS_MIN == 10
+
+
+def test_sources_list_parked_symbols_with_their_reason(project):
+    s = Store.open(project.db_path, migrate=False)
+    try:
+        s.upsert_security("PRIVCO", first_seen="2026-01-01")
+        s.park("PRIVCO", "no price from any provider, no CIK, not held")
+    finally:
+        s.close()
+    ov = M.load_overview(project, now=NOW, heartbeat_read=lambda p: None)
+    names = [x.name for x in ov.sources]
+    assert "Parked: PRIVCO (no price from any provider, no CIK, not held)" in names

@@ -166,3 +166,18 @@ def test_collect_sec_reports_progress(project, fixtures: Path):
     sec_facts.collect_sec(store, cfg, fetch=_fetcher(fixtures), now=NOW, rebuild=lambda f, r: [], sleep=lambda s: None,
                           progress=seen.append)
     assert seen[0].startswith("1/") and any(s.endswith(" AAPL") for s in seen)
+
+
+def test_collect_sec_skips_a_parked_symbol(project, fixtures: Path):
+    cfg, store = project
+    store.upsert_security("BRK.B", first_seen="2026-01-01")     # would be found in the CIK map
+    store.park("BRK.B", "no price from any provider, no CIK, not held")
+
+    def fetch(url, headers):
+        if url == sec_cik.CIK_URL:
+            return (fixtures / "sec" / "company_tickers.json").read_bytes()
+        raise HttpError(404, url)
+
+    results = sec_facts.collect_sec(store, cfg, fetch=fetch, now=NOW, rebuild=lambda f, r: [], sleep=lambda s: None)
+    assert "BRK.B" not in {r.symbol for r in results}   # never even looked up
+    assert store.query("SELECT cik FROM securities WHERE symbol = 'BRK.B'")[0][0] is None

@@ -170,6 +170,33 @@ class Store:
         with self.conn:
             self.conn.execute("UPDATE securities SET asset_type = ? WHERE symbol = ?", (asset_type, symbol))
 
+    # ---- parking: symbols nothing knows ----------------------------------
+    def count_miss(self, symbol: str) -> int:
+        """One more run in which no provider had a bar for the symbol; returns the new count."""
+        with self.conn:
+            self.conn.execute("UPDATE securities SET miss_runs = miss_runs + 1 WHERE symbol = ?", (symbol,))
+        row = self.conn.execute("SELECT miss_runs FROM securities WHERE symbol = ?", (symbol,)).fetchone()
+        return row[0] if row else 0
+
+    def reset_miss(self, symbol: str) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE securities SET miss_runs = 0 WHERE symbol = ?", (symbol,))
+
+    def park(self, symbol: str, reason: str) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE securities SET parked_reason = ? WHERE symbol = ?", (reason, symbol))
+
+    def unpark(self, symbol: str) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE securities SET parked_reason = NULL, miss_runs = 0 WHERE symbol = ?", (symbol,))
+
+    def is_parkable(self, symbol: str) -> bool:
+        """No CIK and no row in positions_latest: nothing in the warehouse says this symbol is real."""
+        row = self.conn.execute(
+            "SELECT 1 FROM securities s WHERE s.symbol = ? AND s.cik IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM positions_latest p WHERE p.symbol = s.symbol)", (symbol,)).fetchone()
+        return row is not None
+
     # ---- positions / cash / transactions --------------------------------
     def _stale_accounts(self, snap: Snapshot) -> set[int]:
         """Account ids in this snapshot that already hold a NEWER same-day, same-source snapshot.
@@ -207,6 +234,8 @@ class Store:
                     continue
                 asset_type = "crypto" if p.account.account_type == "crypto" else None
                 self._ensure_security(p.symbol, p.description, asset_type, snap.as_of_date)
+                self.conn.execute(  # a position is proof the symbol is real
+                    "UPDATE securities SET parked_reason = NULL, miss_runs = 0 WHERE symbol = ?", (p.symbol,))
                 self.conn.execute(
                     """INSERT INTO position_snapshots
                        (as_of_date, account_id, symbol, quantity, price, market_value, cost_basis_total,
@@ -507,6 +536,8 @@ class Store:
             "prices": {"symbols": p["symbols"], "latest": p["latest"]},
             "sec": {"companies": companies, "latest_filed": latest_filed},
             "accounts_by_origin": by_origin,
+            "parked": [(r["symbol"], r["parked_reason"]) for r in self.query(
+                "SELECT symbol, parked_reason FROM securities WHERE parked_reason IS NOT NULL ORDER BY symbol")],
             "connections": [dict(r) for r in self.connections(active_only=True)],
         }
 

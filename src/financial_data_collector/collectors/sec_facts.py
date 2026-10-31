@@ -98,7 +98,7 @@ def collect_sec(
     securities = store.securities()
     for i, row in enumerate(securities, start=1):
         symbol, asset_type, cik = row["symbol"], row["asset_type"], row["cik"]
-        if asset_type in _FUND_TYPES or is_money_market(symbol, row["description"]):
+        if asset_type in _FUND_TYPES or is_money_market(symbol, row["description"]) or row["parked_reason"]:
             continue
         if progress:
             progress(f"{i}/{len(securities)} {symbol}")
