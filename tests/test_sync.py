@@ -589,6 +589,18 @@ def test_engine_step_runs_the_score_recheck_then_the_split_then_the_split_rechec
     assert len(step.message.splitlines()) == 1
 
 
+def test_every_engine_check_name_is_rerun_by_the_engine_step(project, tmp_path: Path, monkeypatch):
+    from financial_data_collector import check as check_mod
+    from financial_data_collector.models import ENGINE_CHECK_NAMES
+    cfg = _with_allocation(project, tmp_path)
+    _covered_derive(cfg)
+    ran = []
+    real_check = check_mod.run_check
+    monkeypatch.setattr(check_mod, "run_check", lambda *a, **k: (ran.extend(k["only"]), real_check(*a, **k))[1])
+    sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"])
+    assert sorted(ran) == sorted(ENGINE_CHECK_NAMES), ran
+
+
 def test_engine_step_skips_the_split_when_the_score_recheck_fails(project, tmp_path: Path, monkeypatch):
     from financial_data_collector import check as check_mod
     from financial_data_collector.derive import split

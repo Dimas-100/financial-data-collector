@@ -19,7 +19,7 @@ import re
 from ..models import ENGINE_CHECK_NAMES, FUND_TYPES, SCORE_METRICS
 from . import CHECKS, CheckContext, Finding
 
-ENGINE_CHECKS = ENGINE_CHECK_NAMES      # what the sync runs again right after the engine has written
+ENGINE_CHECKS = ENGINE_CHECK_NAMES      # the checks the engine step runs again: `scores` right after the engine writes, `split` right after the split writes
 
 PREMIUM_HIGH = ("pe", "p_fcf", "ps", "ev_ebit")     # a high percentile of these is dear
 CHEAP_HIGH = ("dividend_yield",)                   # a high percentile of the yield is cheap

@@ -25,6 +25,7 @@ TARGETS = {
         {"ticker": "VOO", "target": 50},
         {"ticker": "KO", "target": 5, "rebalance": "hold"},
         {"ticker": "JNJ", "target": 5, "rebalance": "contributions"},
+        {"ticker": "XOM", "target": 5, "rebalance": "Hold"},
     ],
     "roth": [
         {"ticker": "voo", "target": 40},
@@ -132,6 +133,39 @@ def test_a_pct_of_brokerage_entry_counts_under_brokerage_wherever_it_is_filed(st
     assert check_split.split(_ctx(store, cfg)) == []
 
 
+def test_a_pct_of_brokerage_entry_is_known_only_under_brokerage(store, cfg):
+    _open(store, [("GLD", 30)], account="roth")                # GLD is pct_of_brokerage, filed under roth
+    f = _one(store, cfg)
+    assert f.severity == "hold" and f.symbol == "roth" and f.evidence["no_target"] == ["GLD"]
+
+
+def test_a_pct_of_brokerage_hold_name_holds_under_both_accounts(tmp_path, store, cfg):
+    path = tmp_path / "t2.json"
+    path.write_text(json.dumps({"roth": [{"ticker": "GLD", "target": 10, "type": "pct_of_brokerage",
+                                          "rebalance": "hold"}]}), encoding="utf-8")
+    for account in ("roth", "brokerage"):
+        with store.conn:
+            store.conn.execute("DELETE FROM allocation_lines_raw")
+            store.conn.execute("DELETE FROM allocation_proposals_raw")
+        _open(store, [("GLD", 30)], account=account)
+        f = _one(store, _with_targets(cfg, path))
+        assert f.evidence == {"hold_names": ["GLD"]}, account
+
+
+def test_cash_that_is_not_a_number_holds_the_proposal(store, cfg):
+    pid = _open(store, [("VOO", 60)])
+    with store.conn:
+        store.conn.execute("UPDATE allocation_proposals_raw SET cash = 'lots' WHERE id = ?", (pid,))
+    f = _one(store, cfg)
+    assert f.severity == "hold" and f.field == f"proposal:{pid}" and "cash is unreadable" in f.message
+
+
+def test_a_line_to_a_name_with_an_unknown_rebalance_rule_is_held(store, cfg):
+    _open(store, [("VOO", 60), ("XOM", 10)])                    # "Hold" is not exactly hold: the split gives it nothing
+    f = _one(store, cfg)
+    assert f.severity == "hold" and f.evidence == {"unknown_rule": ["XOM"]} and "XOM" in f.message
+
+
 def test_tickers_are_read_through_canonical(store, cfg):
     _open(store, [("VOO", 30)], account="roth")                # the file says "voo"
     assert check_split.split(_ctx(store, cfg)) == []
@@ -178,7 +212,7 @@ def test_without_targets_the_other_rules_still_hold(store, cfg, tmp_path):
 def test_several_faults_on_one_proposal_are_one_finding(store, cfg):
     _open(store, [("KO", 12.5, []), ("SPY", 200)], cash=100.0)
     f = _one(store, cfg)
-    for part in ("more than the cash", "whole number", "holds", "no target", "no sources"):
+    for part in ("more than the cash", "whole number", "marks hold", "no target", "no sources"):
         assert part in f.message
     assert f.severity == "hold"
 

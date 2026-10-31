@@ -21,6 +21,7 @@ from . import CHECKS, CheckContext, Finding
 
 _NOT_ACCOUNTS = ("sleeves", "caps", "planned")
 _KINDS = ("pct_of_account", "pct_of_brokerage", "direct_passive_ratio")
+_RULES = ("trades", "contributions", "hold")      # a missing `rebalance` is `trades`; any other spelling gets no money
 _BROKERAGE = "brokerage"
 _HALF_CENT = 0.005
 
@@ -29,12 +30,16 @@ def _finite(x: object) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
-def _read_targets(path: Path | None) -> tuple[dict[str, set[str]], dict[str, set[str]]] | None:
-    """(known symbols, hold symbols) per account name, or None when the file is not configured, missing or unreadable.
+def _read_targets(path: Path | None) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, set[str]]] | None:
+    """(known, hold, unknown-rule symbols) per account name, or None when the file is not configured, missing or
+    unreadable.
 
-    Known: an entry with a valid type and a finite target, filed under the account; for `brokerage` also every
-    `pct_of_brokerage` entry wherever it is filed. Hold: any entry whose `rebalance` is exactly "hold", the same way
-    (a hold name is held back even when its entry would not be used)."""
+    Known: an entry with a valid type and a finite target. A `pct_of_brokerage` entry is known under `brokerage`
+    only (it measures, and takes money from, that account), wherever it is filed; any other entry under the account
+    it is filed in. Hold: any entry whose `rebalance` is exactly "hold", under the account it is filed in and also
+    under `brokerage` when it is a `pct_of_brokerage` entry (a hold name is held back even when its entry would not
+    be used). Unknown rule: a `rebalance` that is present but not trades, contributions or hold (the split gives
+    such a name nothing), placed like a hold name."""
     if path is None or not Path(path).is_file():
         return None
     try:
@@ -45,6 +50,7 @@ def _read_targets(path: Path | None) -> tuple[dict[str, set[str]], dict[str, set
         return None
     known: dict[str, set[str]] = {}
     held: dict[str, set[str]] = {}
+    odd: dict[str, set[str]] = {}
     for key, value in doc.items():
         if not isinstance(key, str) or key.startswith("_") or key in _NOT_ACCOUNTS or not isinstance(value, list):
             continue
@@ -56,14 +62,15 @@ def _read_targets(path: Path | None) -> tuple[dict[str, set[str]], dict[str, set
                 continue
             kind = raw.get("type", "pct_of_account")
             usable = kind in _KINDS and _finite(raw.get("target"))
-            homes = [key] + ([_BROKERAGE] if kind == "pct_of_brokerage" and key != _BROKERAGE else [])
-            for home in homes:
-                if usable:
-                    known.setdefault(home, set()).add(symbol)
-                if raw.get("rebalance") == "hold":
-                    held.setdefault(home, set()).add(symbol)
-                    known.setdefault(home, set()).add(symbol)      # a hold name is on file: one fault, not two
-    return known, held
+            if usable:
+                known.setdefault(_BROKERAGE if kind == "pct_of_brokerage" else key, set()).add(symbol)
+            rule = raw.get("rebalance")
+            if rule == "hold" or (rule is not None and rule not in _RULES):
+                homes = [key] + ([_BROKERAGE] if kind == "pct_of_brokerage" and key != _BROKERAGE else [])
+                for home in homes:
+                    (held if rule == "hold" else odd).setdefault(home, set()).add(symbol)
+                    known.setdefault(home, set()).add(symbol)      # on file: one fault, not two
+    return known, held, odd
 
 
 def _source_problem(sources: object) -> bool:
@@ -96,7 +103,10 @@ def split(ctx: CheckContext) -> list[Finding]:
             if not (_finite(d) and d == int(d) and d >= 1):
                 bad_amount.append(str(line.get("symbol")))
         cash = p.get("cash")
-        if _finite(cash) and total > cash + _HALF_CENT:
+        if not _finite(cash):
+            holds.append("the cash is unreadable (not a number)")
+            evidence["cash"] = str(cash)
+        elif total > cash + _HALF_CENT:
             holds.append(f"lines add up to {total:g}, more than the cash {cash:g}")
             evidence.update(cash=cash, lines_total=total)
         if bad_amount:
@@ -110,13 +120,18 @@ def split(ctx: CheckContext) -> list[Finding]:
         if names is None:
             warns.append("cannot check hold names: the targets file is missing or unreadable")
         else:
-            known, held = names
+            known, held, odd = names
             key = p.get("account_key")
             on_hold = sorted({str(l.get("symbol")) for l in lines if l.get("symbol") in held.get(key, ())})
+            odd_rule = sorted({str(l.get("symbol")) for l in lines if l.get("symbol") in odd.get(key, ())})
             no_target = sorted({str(l.get("symbol")) for l in lines if l.get("symbol") not in known.get(key, ())})
             if on_hold:
-                holds.append(f"a line to a name the targets file holds: {', '.join(on_hold)}")
+                holds.append(f"a line to a name the targets file marks hold: {', '.join(on_hold)}")
                 evidence["hold_names"] = on_hold
+            if odd_rule:
+                holds.append(f"a line to a name whose rebalance rule is not trades, contributions or hold: "
+                             f"{', '.join(odd_rule)}")
+                evidence["unknown_rule"] = odd_rule
             if no_target:
                 holds.append(f"a line to a name with no target in this account: {', '.join(no_target)}")
                 evidence["no_target"] = no_target
