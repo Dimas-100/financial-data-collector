@@ -526,8 +526,8 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
     above that proposal's cash makes a new proposal for all of it that replaces it, cash at least $1 below closes it as
     spent (placed, in full or in part), anything between changes nothing; with none open, cash `min_new` or more above
     the baseline (0 before any proposal; after a spent one, the lower of its closing cash and the lowest balance since
-    that day) opens one. An account named twice on one label, with no entries in the targets file, or with no cash row
-    is left alone (an open proposal of it stays open, said in the notes), as is an open proposal whose name is no longer
+    that day) opens one. An account named twice on one label, with no entries in the targets file, with no cash row,
+    or whose cash row is older than its newest positions (an account with no positions: any row counts) is left alone (an open proposal of it stays open, said in the notes), as is an open proposal whose name is no longer
     configured. An open proposal's lines are never rewritten; the same cash writes nothing. `now` stamps created_at /
     closed_at, `checked_at` is the covering check run's finish. Notes name targets-file account names, never a label."""
     alloc = cfg.allocation
@@ -551,6 +551,9 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
     household = household_of(kept, kept_cash, look_through, funds)
     kept_labels = {r["account"] for r in kept}
     positions_labels = {r["account"] for r in positions}
+    positions_date: dict[str, str] = {}
+    for r in positions:
+        positions_date[r["account"]] = max(r["as_of_date"], positions_date.get(r["account"], ""))
 
     hh_notes = _household_notes(n_left_out, n_stale_cash, alloc.household_days)
     run_notes: list[str] = list(hh_notes)
@@ -581,6 +584,10 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
             run_notes.append(f"{key}: no cash row{stays}")
             continue
         cash_date, amount = cash_rows[label]
+        if label in positions_date and cash_date < positions_date[label]:
+            # A cash row older than the account's positions may not show what was just placed: it decides nothing.
+            run_notes.append(f"{key}: cash row older than its positions")
+            continue
         cash = float(amount or 0.0)
         current = store.open_proposal(key)
         if current is not None:

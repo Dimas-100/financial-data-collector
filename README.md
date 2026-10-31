@@ -365,9 +365,10 @@ For each account named there, the waiting cash is the account's newest USD cash 
   between changes nothing;
 - after a spent proposal, the next one needs the cash `min_new` above the lowest balance since then, and covers all
   of the cash, so money you left waiting joins the next deposit;
-- an account with no entries in the targets file ("no targets for <name>"), with no cash row, or named twice on one
-  account gets no proposal; one it already has stays open, as does one whose name left `[allocation.accounts]`, and
-  the step's notes say so by the targets-file name.
+- an account with no entries in the targets file ("no targets for <name>"), with no cash row, with a cash row older
+  than its newest positions (it may not show what you just placed; an account with no positions counts any row), or
+  named twice on one account gets no proposal; one it already has stays open, as does one whose name left
+  `[allocation.accounts]`, and the step's notes say so by the targets-file name.
 
 Caps and the direct/via-funds ratio are measured on the household: every investment account (one with positions)
 whose newest positions are within `household_days` of the newest of any account, with its cash when its cash row

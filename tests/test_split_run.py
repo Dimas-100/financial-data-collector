@@ -628,3 +628,37 @@ def test_open_proposal_keys(store: Store):
     assert store.open_proposal_keys() == ["brokerage", "roth"]
     store.close_proposal(pid, closed_at=NOW, closed_cash=0.0)
     assert store.open_proposal_keys() == ["roth"]
+
+
+# ---- fix round 1, item 7: an account's cash older than its positions decides nothing
+
+def test_cash_older_than_positions_keeps_an_open_proposal_open(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    before = _all_rows(store)
+    _day(store, "2026-11-02", None)                                # new positions, no new cash row: cash still 10-30
+    store.write_snapshot(Snapshot("2026-10-30", "fidelity_csv",
+                                  [PositionRow(ACCT, s, None, 1.0, v, v) for s, v in B_POSITIONS], [CashRow(ACCT, 0.0)]))
+    rep = _run(store, cfg, 3)                                      # 0 would be spent, were the row as new as the positions
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+    assert "brokerage: cash row older than its positions" in rep.notes
+    assert not any("Sample" in n for n in rep.notes)
+    assert store.open_proposal("brokerage")["id"] == before[0][0]
+    assert store.query("SELECT COUNT(*) FROM allocation_proposals_raw")[0][0] == 1
+
+
+def test_cash_older_than_positions_opens_nothing(store: Store, tmp_path: Path):
+    _types(store)
+    _day(store, "2026-10-29", 500.0)
+    _day(store, "2026-10-30", None)                                # positions a day newer than the cash
+    rep = _run(store, _cfg(tmp_path), 2)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+    assert "brokerage: cash row older than its positions" in rep.notes
+    assert _all_rows(store) == []
+
+
+def test_an_account_without_positions_decides_on_any_cash_row(store: Store, tmp_path: Path):
+    _types(store)
+    store.write_snapshot(Snapshot("2026-10-20", "fidelity_csv", [], [CashRow(ACCT, 500.0)]))
+    rep = _run(store, _cfg(tmp_path), 2)
+    assert rep.opened == 1 and not any("older than its positions" in n for n in rep.notes)
