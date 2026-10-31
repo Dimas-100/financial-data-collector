@@ -3,14 +3,27 @@
 `holding_band`: one band (`cheap`, `usual` or `premium`) for a holding, read from its primary valuation scores and
 leaning careful; the rows are the symbol's `valuation_scores` view rows as dicts. `household_of` and `plan_split`:
 the household's holdings with fund look-through, and the split of one account's waiting cash in whole dollars by
-target gap and band, inside every band top, sleeve max and cap. Pure: no SQL, no store, no files.
+target gap and band, inside every band top, sleeve max and cap. Those are pure: no SQL, no store, no files.
+
+`run` is the lifecycle, called by the engine step after the scores (only when its gate is open): for each account
+named in config `[allocation.accounts]` it reads the waiting cash, the targets file and the scores (through Store
+reads) and opens, replaces or closes that account's proposal. Proposals are a record: a run only adds one or closes
+one, never rewrites an open one, and a run with the same cash writes nothing. A proposal, never an order.
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
-from ..models import SplitLine, TargetEntry, Targets
+from ..models import FUND_TYPES, AllocationProposal, SplitLine, TargetEntry, Targets
+from . import sources
+from .targets import read_look_through, read_targets
+
+if TYPE_CHECKING:
+    from ..config import Config
+    from ..store import Store
 
 PRIMARY_COMPANY = ("pe", "p_fcf", "ev_ebit", "ps")
 PRIMARY_FUND = ("pe", "dividend_yield")
@@ -390,3 +403,173 @@ def plan_split(account: str, cash: float, base: float, held: dict[str, float], h
             notes.append({"symbol": s, "reason": why})
     waits = round(cash_in - sum(line.dollars for line in out), 2)
     return SplitPlan(tuple(out), waits, tuple(notes))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The lifecycle: open, replace and close proposals as each account's waiting cash moves
+# ---------------------------------------------------------------------------------------------------------------------
+
+_STAMP = "%Y-%m-%dT%H:%M:%SZ"     # Store.utcnow's format: created_at and closed_at
+_CMP_EPS = 1e-6                   # dollars: 525.0 counts as 500 + 25 whatever the float leftovers
+
+
+@dataclass(frozen=True)
+class SplitReport:
+    """What one run did: proposals opened (none was open), replaced (more cash over an open one) and closed as
+    spent; notes for the step (counts and targets-file account names only, never a label); or why it was skipped."""
+    opened: int
+    replaced: int
+    spent: int
+    notes: tuple[str, ...]
+    skipped: str | None
+
+
+def _stamp(now: datetime) -> str:
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(timezone.utc).strftime(_STAMP)
+
+
+def household_rows(positions: list[dict], cash: dict[str, tuple[str, float]], days: int
+                   ) -> tuple[list[dict], dict[str, float], set[str]]:
+    """The household's accounts (Call 9): those whose newest positions snapshot is within `days` of the newest any
+    account has (the newest cash date when there are no positions at all). Returns their positions, the cash of the
+    kept accounts whose own cash row is that fresh too, and the labels left out (a stale snapshot or stale cash)."""
+    newest_of: dict[str, str] = {}
+    for r in positions:
+        if r["as_of_date"] > newest_of.get(r["account"], ""):
+            newest_of[r["account"]] = r["as_of_date"]
+    dates = list(newest_of.values()) or [d for d, _ in cash.values()]
+    if not dates:
+        return list(positions), {}, set()
+    cutoff = (date.fromisoformat(max(dates)) - timedelta(days=days)).isoformat()
+    left_out = {a for a, d in newest_of.items() if d < cutoff}
+    left_out |= {label for label, (d, _) in cash.items() if d < cutoff}
+    kept = [r for r in positions if r["account"] not in left_out]
+    kept_cash = {label: float(amount or 0.0) for label, (_, amount) in cash.items() if label not in left_out}
+    return kept, kept_cash, left_out
+
+
+def _left_out_note(n: int, days: int) -> str:
+    return f"{n} account{'' if n == 1 else 's'} older than {days} days left out"
+
+
+def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: str, cash: float, targets: Targets,
+                  household: Household, positions: list[dict], types: dict[str, str],
+                  extra_notes: list[dict]) -> AllocationProposal:
+    """One account's proposal for all of `cash`: plan_split over its own positions, the household and the bands
+    from its entries' scores, with every line's sources (its targets entry, the score rows that decided its band,
+    its tilt) and the proposal's (the cash row, the targets file)."""
+    alloc = cfg.allocation
+    held: dict[str, float] = {}
+    for r in positions:
+        if r["account"] == label:
+            held[r["symbol"]] = held.get(r["symbol"], 0.0) + float(r.get("market_value") or 0.0)
+    base = sum(held.values()) + cash
+    symbols = sorted({e.symbol for e in _account_entries(key, targets)})
+    rows_of = store.split_scores(symbols)
+    bands: dict[str, tuple[str, tuple[str, ...]]] = {}
+    deciding: dict[str, tuple[dict, ...]] = {}
+    for s in symbols:
+        if rows_of.get(s):              # no score row at all: plan_split says `no_scores`
+            band, reasons, rows = holding_band(rows_of[s], types.get(s) in FUND_TYPES)
+            bands[s], deciding[s] = (band, reasons), rows
+    plan = plan_split(key, cash, base, held, household, targets, bands, alloc.tilt, alloc.min_line)
+
+    line_sources = []
+    for line in plan.lines:
+        src = [sources.feed(targets.file_name, targets.last_revised, f"{key}/{line.symbol}")]
+        src += [sources.derived(f"valuation_scores {r['metric']}", f"{line.symbol} {r['metric']}", r.get("date"))
+                for r in deciding.get(line.symbol, ())]
+        src.append(sources.config(f"[allocation] tilt.{line.band}", line.tilt))
+        line_sources.append(tuple(src))
+    notes = (list(plan.notes) + [{"symbol": None, "reason": f"targets: {p}"} for p in targets.problems]
+             + extra_notes)
+    proposal_sources = (sources.derived("cash_balances", key, cash_date),
+                        sources.feed(targets.file_name, targets.last_revised, key))
+    return AllocationProposal(key, cash_date, cash, len(plan.lines), plan.waits, plan.lines, tuple(line_sources),
+                              tuple(notes), proposal_sources)
+
+
+def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> SplitReport:
+    """Open, replace or close each configured account's proposal as its waiting cash moved (Call 12).
+
+    Skipped, touching nothing, when there is no targets file, it cannot be read, or `[allocation.accounts]` is
+    empty. For each account (by targets-file name, sorted), its newest USD cash row: with an open proposal, cash
+    `min_new` or more above that proposal's cash makes a new proposal for all of it that replaces it, cash at least
+    $1 below closes it as spent (placed, in full or in part), anything between changes nothing; with none open,
+    cash `min_new` or more above the baseline (0 before any proposal; after a spent one, the lower of its closing
+    cash and the lowest balance since that day) opens one. An open proposal's lines are never rewritten; the same
+    cash writes nothing. `now` stamps created_at / closed_at, `checked_at` is the covering check run's finish."""
+    alloc = cfg.allocation
+    try:
+        targets = read_targets(alloc.targets)
+    except ValueError as e:
+        return SplitReport(0, 0, 0, (), f"targets file unreadable: {e}")
+    if targets is None:
+        return SplitReport(0, 0, 0, (), "no targets file")
+    if not alloc.accounts:
+        return SplitReport(0, 0, 0, (), "no accounts in [allocation.accounts]")
+
+    stamp = _stamp(now)
+    positions = store.split_positions()
+    cash_rows = store.split_cash()
+    kept, kept_cash, left_out = household_rows(positions, cash_rows, alloc.household_days)
+    look_through = read_look_through(alloc.fund_holdings)
+    symbols = {r["symbol"] for r in positions} | {e.symbol for e in targets.entries} | set(look_through)
+    types = store.split_asset_types(sorted(symbols))
+    funds = frozenset(s for s, t in types.items() if t in FUND_TYPES)
+    household = household_of(kept, kept_cash, look_through, funds)
+
+    run_notes: list[str] = []
+    household_notes: list[dict] = []
+    if left_out:
+        note = _left_out_note(len(left_out), alloc.household_days)
+        run_notes.append(note)
+        household_notes.append({"symbol": None, "reason": note})
+
+    # Two targets-file names on one fdc account would each propose the same cash: neither gets a proposal.
+    keys_of: dict[str, list[str]] = {}
+    for key, label in alloc.accounts.items():
+        keys_of.setdefault(label, []).append(key)
+    shared = {k for keys in keys_of.values() if len(keys) > 1 for k in keys}
+    for keys in sorted(sorted(ks) for ks in keys_of.values() if len(ks) > 1):
+        run_notes.append(f"{', '.join(keys)}: one account named more than once in [allocation.accounts]; no proposal")
+
+    opened = replaced = spent = 0
+    for key, label in sorted(alloc.accounts.items()):
+        if key in shared:
+            continue
+        if label not in cash_rows:
+            run_notes.append(f"{key}: no cash row")
+            continue
+        cash_date, amount = cash_rows[label]
+        cash = float(amount or 0.0)
+        current = store.open_proposal(key)
+        if current is not None:
+            if cash <= current["cash"] - 1.0 + _CMP_EPS:
+                store.close_proposal(current["id"], closed_at=stamp, closed_cash=cash)
+                spent += 1
+                continue
+            if cash < current["cash"] + alloc.min_new - _CMP_EPS:
+                continue                                        # under min_new more: the open one stands
+        else:
+            baseline = 0.0
+            last = store.last_spent_proposal(key)
+            if last is not None:
+                low = store.split_cash_low_since(label, last["closed_at"][:10])
+                baseline = float(last["closed_cash"]) if low is None else min(float(last["closed_cash"]), float(low))
+            if cash < baseline + alloc.min_new - _CMP_EPS:
+                continue
+        extra = list(household_notes)
+        if label in left_out:
+            extra.append({"symbol": None, "reason":
+                          f"this account is older than {alloc.household_days} days and left out of the household"})
+        proposal = _new_proposal(store, cfg, key, label, cash_date, cash, targets, household, positions, types, extra)
+        store.write_proposal(proposal, created_at=stamp, checked_at=checked_at,
+                             replaces=current["id"] if current is not None else None)
+        if current is not None:
+            replaced += 1
+        else:
+            opened += 1
+    return SplitReport(opened, replaced, spent, tuple(run_notes), None)

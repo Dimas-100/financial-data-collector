@@ -202,3 +202,320 @@ def test_counts_include_the_new_tables(store: Store):
     store.write_proposal(_proposal(), created_at=NOW, checked_at=None, replaces=None)
     c = store.counts()
     assert c["allocation_proposals_raw"] == 1 and c["allocation_lines_raw"] == 2
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The lifecycle (Task 5): split.run opens, replaces and closes proposals as each account's waiting cash moves
+# ---------------------------------------------------------------------------------------------------------------------
+
+import dataclasses
+from datetime import datetime, timezone
+
+from financial_data_collector import config as C
+from financial_data_collector.config import AllocationSettings
+from financial_data_collector.derive import split as S
+
+TARGETS_DOC = {
+    "last_revised": "2026-10-01",
+    "brokerage": [
+        {"ticker": "VOO", "type": "pct_of_account", "target": 50.0},
+        {"ticker": "AAPL", "type": "pct_of_account", "target": 20.0, "rebalance": "contributions"},
+        {"ticker": "KO", "type": "pct_of_account", "target": 30.0, "rebalance": "hold"},
+    ],
+    "roth": [
+        {"ticker": "VFIAX", "type": "pct_of_account", "target": 90.0},
+        {"ticker": "GLD", "type": "pct_of_account", "target": 5.0, "rebalance": "sometimes"},
+    ],
+}
+B_POSITIONS = (("VOO", 300.0), ("AAPL", 100.0), ("KO", 100.0))
+R_POSITIONS = (("VFIAX", 1000.0),)
+
+
+def _cfg(tmp_path: Path, doc=TARGETS_DOC, **kw):
+    C.init_project(tmp_path)
+    cfg = C.load_config(tmp_path)
+    targets = tmp_path / "sizing-targets.json"
+    if doc is not None:
+        targets.write_text(doc if isinstance(doc, str) else json.dumps(doc), encoding="utf-8")
+    settings = dict(targets=targets, accounts={"brokerage": "Sample Brokerage", "roth": "Sample Roth"})
+    settings.update(kw)
+    return dataclasses.replace(cfg, allocation=AllocationSettings(**settings))
+
+
+def _day(store: Store, day: str, cash: float | None, acct: AccountRef = ACCT, positions=B_POSITIONS) -> None:
+    """A full snapshot of one account on `day`: its positions (1 share at the value) and its cash."""
+    rows = [PositionRow(acct, s, None, 1.0, v, v) for s, v in positions]
+    store.write_snapshot(Snapshot(day, "fidelity_csv", rows, [] if cash is None else [CashRow(acct, cash)]))
+
+
+def _types(store: Store) -> None:
+    for s, t in (("VOO", "etf"), ("VFIAX", "mutual_fund"), ("AAPL", "stock"), ("KO", "stock"), ("GLD", "etf")):
+        store.upsert_security(s, None, t, "2026-10-01")
+        store.set_asset_type(s, t)
+
+
+def _score(store: Store, symbol: str, metric: str, band: str | None, status: str = "ok", value: float = 20.0) -> None:
+    store.conn.execute(
+        "INSERT INTO valuation_scores_raw (symbol, date, metric, value, percentile_5y, band, status, inputs, sources) "
+        "VALUES (?, '2026-10-29', ?, ?, 50.0, ?, ?, '', ?)",
+        (symbol, metric, value, band, status, json.dumps([_src(f"{symbol} {metric}")])))
+    store.conn.commit()
+
+
+def _at(day: int) -> datetime:
+    return datetime(2026, 11, day, 12, 0, tzinfo=timezone.utc)
+
+
+def _run(store: Store, cfg, day: int) -> "S.SplitReport":
+    return S.run(store, cfg, checked_at="2026-11-01T11:00:00Z", now=_at(day))
+
+
+def _all_rows(store: Store) -> list[tuple]:
+    return ([tuple(r) for r in store.query("SELECT * FROM allocation_proposals_raw ORDER BY id")]
+            + [tuple(r) for r in store.query("SELECT * FROM allocation_lines_raw ORDER BY proposal_id, symbol")])
+
+
+@pytest.fixture
+def setup(store: Store, tmp_path: Path):
+    _types(store)
+    for m, b in (("pe", "cheap"), ("p_fcf", "cheap"), ("ev_ebit", "usual")):
+        _score(store, "AAPL", m, b)
+    _day(store, "2026-10-30", 500.0)
+    return store, _cfg(tmp_path)
+
+
+def test_first_deposit_opens_a_proposal(setup):
+    store, cfg = setup
+    rep = _run(store, cfg, 2)
+    assert (rep.opened, rep.replaced, rep.spent, rep.skipped) == (1, 0, 0, None)
+    p = store.open_proposal("brokerage")
+    assert (p["cash_date"], p["cash"], p["created_at"], p["checked_at"]) == \
+           ("2026-10-30", 500.0, "2026-11-02T12:00:00Z", "2026-11-01T11:00:00Z")
+    by = {l["symbol"]: l for l in p["lines"]}
+    assert set(by) == {"VOO", "AAPL"}
+    assert sum(l["dollars"] for l in p["lines"]) + p["waits"] == pytest.approx(500.0)
+    assert p["placed"] == 2 and p["waits"] >= 0
+    assert by["AAPL"]["band"] == "cheap" and by["AAPL"]["tilt"] == 1.5
+    raw = store.query("SELECT reasons FROM allocation_lines_raw WHERE symbol = 'AAPL'")[0][0]
+    assert raw.startswith("missing:ps,cheap_by:pe,p_fcf,quality_unknown")      # the band's codes come first
+    assert by["VOO"]["band"] == "usual" and "no_scores" in by["VOO"]["reasons"]
+    assert by["AAPL"]["sources"] == [
+        {"kind": "feed", "label": "sizing-targets.json", "date": "2026-10-01", "ref": "brokerage/AAPL"},
+        {"kind": "derived", "label": "valuation_scores pe", "date": "2026-10-29", "ref": "AAPL pe"},
+        {"kind": "derived", "label": "valuation_scores p_fcf", "date": "2026-10-29", "ref": "AAPL p_fcf"},
+        {"kind": "derived", "label": "valuation_scores ev_ebit", "date": "2026-10-29", "ref": "AAPL ev_ebit"},
+        {"kind": "config", "label": "[allocation] tilt.cheap", "date": None, "ref": "1.5"},
+    ]
+    assert by["VOO"]["sources"] == [
+        {"kind": "feed", "label": "sizing-targets.json", "date": "2026-10-01", "ref": "brokerage/VOO"},
+        {"kind": "config", "label": "[allocation] tilt.usual", "date": None, "ref": "1.0"},
+    ]
+    assert p["sources"] == [
+        {"kind": "derived", "label": "cash_balances", "date": "2026-10-30", "ref": "brokerage"},
+        {"kind": "feed", "label": "sizing-targets.json", "date": "2026-10-01", "ref": "brokerage"},
+    ]
+    assert {"symbol": "KO", "reason": "hold"} in p["notes"]
+    assert store.open_proposal("roth") is None                     # the roth account has no cash row
+    assert "roth: no cash row" in rep.notes
+
+
+def test_a_first_deposit_under_min_new_waits(store: Store, tmp_path: Path):
+    _types(store)
+    _day(store, "2026-10-30", 24.0)
+    rep = _run(store, _cfg(tmp_path), 2)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+    assert _all_rows(store) == []
+
+
+def test_rerun_same_cash_changes_nothing(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    before = _all_rows(store)
+    rep = _run(store, cfg, 3)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+    assert _all_rows(store) == before                              # created_at included: no churn
+    _score(store, "VOO", "pe", "premium")                          # new scores alone never rewrite an open proposal
+    _run(store, cfg, 4)
+    assert _all_rows(store) == before
+
+
+def test_rise_of_min_new_replaces(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    first = store.open_proposal("brokerage")["id"]
+    _day(store, "2026-11-02", 525.0)
+    rep = _run(store, cfg, 3)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 1, 0)
+    new = store.open_proposal("brokerage")
+    assert new["id"] != first and new["cash"] == 525.0 and new["cash_date"] == "2026-11-02"
+    old = store.query("SELECT status, closed_at, closed_cash FROM allocation_proposals_raw WHERE id = ?", (first,))[0]
+    assert tuple(old) == ("replaced", "2026-11-03T12:00:00Z", 525.0)
+
+
+def test_rise_under_min_new_keeps_the_open_one(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    before = _all_rows(store)
+    _day(store, "2026-11-02", 524.99)
+    rep = _run(store, cfg, 3)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+    _day(store, "2026-11-03", 499.01)                              # less than a dollar down: not placed
+    rep = _run(store, cfg, 4)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+    assert _all_rows(store) == before
+
+
+def test_partial_placement_is_spent_and_leftover_joins_the_next(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    first = store.open_proposal("brokerage")["id"]
+    _day(store, "2026-11-02", 300.0)
+    rep = _run(store, cfg, 3)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 1)
+    spent = store.last_spent_proposal("brokerage")
+    assert (spent["id"], spent["closed_at"], spent["closed_cash"]) == (first, "2026-11-03T12:00:00Z", 300.0)
+    assert store.open_proposal("brokerage") is None
+    _day(store, "2026-11-03", 300.0)
+    before = _all_rows(store)
+    rep = _run(store, cfg, 4)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0) and _all_rows(store) == before
+    _day(store, "2026-11-04", 324.0)                               # 24 above the low: not yet
+    assert _run(store, cfg, 5).opened == 0
+    _day(store, "2026-11-05", 340.0)
+    rep = _run(store, cfg, 6)
+    assert (rep.opened, rep.replaced, rep.spent) == (1, 0, 0)
+    p = store.open_proposal("brokerage")
+    assert p["cash"] == 340.0 and p["cash_date"] == "2026-11-05"   # the leftover 300 joins the new 40
+
+
+def test_a_dip_after_spending_lowers_the_baseline(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    _day(store, "2026-11-02", 300.0)
+    _run(store, cfg, 3)                                            # spent at 300, closed on 2026-11-03
+    _day(store, "2026-11-03", 280.0)                               # more placed by hand: the low is now 280
+    _day(store, "2026-11-04", 310.0)
+    assert _run(store, cfg, 5).opened == 1                         # 310 >= 280 + 25
+    assert store.open_proposal("brokerage")["cash"] == 310.0
+
+
+def test_placed_down_to_zero_then_a_small_deposit(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    _day(store, "2026-11-02", 0.0)
+    assert _run(store, cfg, 3).spent == 1
+    assert store.last_spent_proposal("brokerage")["closed_cash"] == 0.0
+    _day(store, "2026-11-03", 30.0)
+    rep = _run(store, cfg, 4)
+    assert rep.opened == 1
+    p = store.open_proposal("brokerage")
+    assert p["cash"] == 30.0 and sum(l["dollars"] for l in p["lines"]) <= 30
+
+
+def test_no_targets_file_skips_quietly(setup, tmp_path: Path):
+    store, cfg = setup
+    for alloc in (dataclasses.replace(cfg.allocation, targets=tmp_path / "missing.json"),
+                  dataclasses.replace(cfg.allocation, targets=None)):
+        rep = S.run(store, dataclasses.replace(cfg, allocation=alloc), checked_at=None, now=_at(2))
+        assert rep.skipped == "no targets file" and (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+    assert _all_rows(store) == []
+
+
+def test_bad_targets_file_skips_with_reason(store: Store, tmp_path: Path):
+    _types(store)
+    _day(store, "2026-10-30", 500.0)
+    rep = _run(store, _cfg(tmp_path, doc="{ not json"), 2)
+    assert rep.skipped == "targets file unreadable: the targets file is not valid JSON (line 1)"
+    assert _all_rows(store) == []
+
+
+def test_no_accounts_skips(setup):
+    store, cfg = setup
+    cfg = dataclasses.replace(cfg, allocation=dataclasses.replace(cfg.allocation, accounts={}))
+    assert _run(store, cfg, 2).skipped == "no accounts in [allocation.accounts]"
+    assert _all_rows(store) == []
+
+
+def test_a_skip_leaves_an_open_proposal_alone(setup, tmp_path: Path):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    before = _all_rows(store)
+    _day(store, "2026-11-02", 0.0)
+    gone = dataclasses.replace(cfg, allocation=dataclasses.replace(cfg.allocation, targets=tmp_path / "missing.json"))
+    assert _run(store, gone, 3).skipped == "no targets file"
+    assert _all_rows(store) == before
+
+
+def test_an_old_account_is_left_out_of_the_household(store: Store, tmp_path: Path):
+    _types(store)
+    doc = {"last_revised": "2026-10-01",
+           "brokerage": [{"ticker": "VOO", "target": 50.0}, {"ticker": "AAPL", "target": 20.0}],
+           "caps": [{"ticker": "AAPL", "max": 25.0}]}
+    _day(store, "2026-10-30", 500.0)
+    _day(store, "2026-10-10", 0.0, ROTH, (("AAPL", 5000.0),))    # a closed account's last snapshot, 20 days older
+    cfg = _cfg(tmp_path, doc, accounts={"brokerage": "Sample Brokerage"})
+    rep = _run(store, cfg, 2)
+    assert rep.opened == 1 and "1 account older than 7 days left out" in rep.notes
+    p = store.open_proposal("brokerage")
+    assert {"symbol": None, "reason": "1 account older than 7 days left out"} in p["notes"]
+    # Counted, its AAPL would fill the cap; left out, AAPL has room (25% of 1000 less the 100 held).
+    assert "AAPL" in {l["symbol"] for l in p["lines"]}
+    text = json.dumps(_all_rows(store))
+    assert "Sample" not in text
+
+
+def test_a_proposal_account_left_out_of_the_household_still_gets_its_proposal(store: Store, tmp_path: Path):
+    _types(store)
+    _day(store, "2026-10-30", 0.0)
+    _day(store, "2026-10-10", 200.0, ROTH, R_POSITIONS)
+    rep = _run(store, _cfg(tmp_path), 2)
+    assert rep.opened == 1
+    p = store.open_proposal("roth")
+    assert p["cash"] == 200.0 and [l["symbol"] for l in p["lines"]] == ["VFIAX"]
+    reasons = [n["reason"] for n in p["notes"] if n["symbol"] is None]
+    assert "1 account older than 7 days left out" in reasons
+    assert "this account is older than 7 days and left out of the household" in reasons
+    assert {"symbol": "GLD", "reason": "unknown_rule"} in p["notes"]
+    assert any(r.startswith("targets: roth/GLD: rebalance") for r in reasons)    # the file's problems ride along
+    assert store.open_proposal("brokerage") is None                # its cash is 0
+
+
+def test_sources_name_the_file_not_its_path(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    feeds = [s for (src,) in store.query("SELECT sources FROM allocation_proposals_raw UNION ALL "
+                                         "SELECT sources FROM allocation_lines_raw")
+             for s in json.loads(src) if s["kind"] == "feed"]
+    assert feeds and {s["label"] for s in feeds} == {"sizing-targets.json"}
+    assert not any("/" in s["label"] or "\\" in s["label"] for s in feeds)
+    text = json.dumps(_all_rows(store))
+    assert cfg.allocation.targets.parent.name not in text
+    assert "Sample Brokerage" not in text and "Sample Roth" not in text
+
+
+def test_hold_name_never_in_lines(setup):
+    store, cfg = setup
+    _day(store, "2026-11-02", 5000.0)                              # so much cash every top is reached
+    _run(store, cfg, 3)
+    p = store.open_proposal("brokerage")
+    assert "KO" not in {l["symbol"] for l in p["lines"]}
+    assert {"symbol": "KO", "reason": "hold"} in p["notes"]
+    assert sum(l["dollars"] for l in p["lines"]) <= 5000.0
+    words = json.dumps(_all_rows(store)).lower()
+    assert "buy" not in words
+
+
+def test_fund_symbols_come_from_the_asset_type(setup):
+    store, _ = setup
+    assert store.split_asset_types(["VOO", "AAPL", "VFIAX", "NOPE"]) == \
+           {"VOO": "etf", "AAPL": "stock", "VFIAX": "mutual_fund"}
+
+
+def test_one_account_named_twice_gets_no_proposal(setup):
+    store, cfg = setup
+    twice = dataclasses.replace(cfg, allocation=dataclasses.replace(
+        cfg.allocation, accounts={"brokerage": "Sample Brokerage", "roth": "Sample Brokerage"}))
+    rep = _run(store, twice, 2)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+    assert "brokerage, roth: one account named more than once in [allocation.accounts]; no proposal" in rep.notes
+    assert _all_rows(store) == []

@@ -14,12 +14,13 @@ themselves live in pure modules (`shape.py`, `scores.py`, ...) that the per-symb
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from ..config import Config
 from ..models import PriceMove, ScoreRow
 from ..store import Store
 from . import moves, scores, sources
+from . import split as split_mod
 from .adjust import adjusted_closes
 from .shape import INPUTS as PRICE_INPUTS, METRICS as PRICE_METRICS, price_shape
 from .valuation import COLUMNS as VALUATION_COLUMNS
@@ -38,6 +39,7 @@ class EngineReport:
     held: int
     moves: int
     skipped: str | None
+    split: split_mod.SplitReport | None = None      # the weekly split, run after the scores when the gate is open
 
 
 def _covers(hold: dict, day: str) -> bool:
@@ -159,7 +161,7 @@ def _moves(store: Store, cfg: Config, sec, day: str, series: list[tuple], market
     return [moves.add_causes(m, events, reports, headlines, cik, sector_name) for m in found]
 
 
-def run(store: Store, cfg: Config) -> EngineReport:
+def run(store: Store, cfg: Config, now: datetime | None = None) -> EngineReport:
     cov = store.engine_coverage()
     if cov is None:
         derive = store.engine_newest_derive()
@@ -200,4 +202,6 @@ def run(store: Store, cfg: Config) -> EngineReport:
                         sec["sector"] if sector_fund else None)
     store.replace_scores(rows, cov["checked_at"])
     store.replace_moves(found, cov["checked_at"])
-    return EngineReport(len(symbols), len(rows), sum(1 for r in rows if r.status == "held"), len(found), None)
+    # The weekly split, under the same gate: it reads the scores just written (through the view) and the waiting cash.
+    rep = split_mod.run(store, cfg, checked_at=cov["checked_at"], now=now or datetime.now(timezone.utc))
+    return EngineReport(len(symbols), len(rows), sum(1 for r in rows if r.status == "held"), len(found), None, rep)

@@ -376,7 +376,7 @@ def test_engine_step_message_counts_moves(store, cfg):
     store.mark_benchmarks(["SPY"])
     _cover(store)
     rows, msg, status = sync._step_engine(store, cfg, progress=lambda d: None)
-    assert (rows, msg, status) == (6, "1 symbols, 4 scores (0 held), 2 moves; checks: 0 holds, 0 warnings, 0 errors", "ok")
+    assert (rows, msg, status) == (6, "1 symbols, 4 scores (0 held), 2 moves; split: no targets file; checks: 0 holds, 0 warnings, 0 errors", "ok")
 
 
 # ---- the sources test, over a full fixture --------------------------------------------------------------------------

@@ -56,7 +56,7 @@ def test_full_sync_then_noop(project, fixtures: Path):
     c1 = _counts(project)
     assert c1["position_snapshots"] > 0 and c1["prices"] > 0 and c1["sec_facts"] == 35
     assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 11
-    assert c1["valuation_scores_raw"] > 0 and rep.steps[-1].message.endswith("0 moves; checks: 0 holds, 0 warnings, 0 errors")
+    assert c1["valuation_scores_raw"] > 0 and rep.steps[-1].message.endswith("0 moves; split: no targets file; checks: 0 holds, 0 warnings, 0 errors")
     assert "without data" in rep.steps[2].message          # KO, VTI, BRK.B had no bars
     rep2 = sync.run_sync(project, fetch=fetch, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert rep2.steps[1].rows == 0
@@ -475,3 +475,98 @@ def test_engine_step_skipped_runs_no_check(project):
     s = Store.open(project.db_path, migrate=False)
     assert s.query("SELECT COUNT(*) FROM check_runs")[0][0] == 0
     s.close()
+
+
+def _with_allocation(project, tmp_path: Path, targets: bool = True):
+    """The project with an [allocation] table naming an invented targets file and one account."""
+    doc = {"last_revised": "2026-10-01", "brokerage": [{"ticker": "VOO", "target": 60.0}]}
+    path = tmp_path / "sizing-targets.json"
+    if targets:
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    cfg_path = project.root / "config.toml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8") + f'\n[allocation]\ntargets = "{path.as_posix()}"\n'
+                        '\n[allocation.accounts]\nbrokerage = "Sample Brokerage"\n', encoding="utf-8")
+    return C.load_config(project.root)
+
+
+def _brokerage_cash(cfg, day: str, amount: float) -> None:
+    from financial_data_collector.models import AccountRef, CashRow, PositionRow, Snapshot
+    acct = AccountRef("Sample Brokerage", "brokerage", "fidelity", "brokerage")
+    s = Store.open(cfg.db_path)
+    s.write_snapshot(Snapshot(day, "fidelity_csv", [PositionRow(acct, "VOO", None, 1.0, 400.0, 400.0)],
+                              [CashRow(acct, amount)]))
+    s.close()
+
+
+def _proposals(cfg) -> list[tuple]:
+    s = Store.open(cfg.db_path, migrate=False)
+    try:
+        return [tuple(r) for r in s.query("SELECT * FROM allocation_proposals_raw ORDER BY id")]
+    finally:
+        s.close()
+
+
+def test_engine_step_skipped_leaves_proposals_untouched(project, tmp_path: Path):
+    from financial_data_collector.derive import split
+    cfg = _with_allocation(project, tmp_path)
+    _brokerage_cash(cfg, "2026-02-26", 500.0)
+    s = Store.open(cfg.db_path)
+    s.log_run("r1", "derive", "ok", 0, "", "2026-03-01T11:00:00Z", "2026-03-01T11:01:00Z", "manual")
+    s.close()
+    (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
+    assert step.status == "skipped" and "split" not in step.message
+    assert _proposals(cfg) == []                                   # no check covers the derive: no proposal opened
+    s = Store.open(cfg.db_path)
+    split.run(s, cfg, checked_at=None, now=NOW)                    # one open from an earlier, covered run
+    s.close()
+    before = _proposals(cfg)
+    assert len(before) == 1
+    _brokerage_cash(cfg, "2026-02-27", 0.0)                        # placed, but the gate is shut
+    (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
+    assert step.status == "skipped" and _proposals(cfg) == before   # neither closed nor replaced
+
+
+def _covered_derive(cfg) -> None:
+    """One scored stock and a full check run covering the newest derive, so the engine's gate is open."""
+    from financial_data_collector.derive import valuation as V
+    from financial_data_collector.models import PriceBar
+    s = Store.open(cfg.db_path)
+    s.upsert_security("AAA", asset_type="stock", first_seen="2025-01-01")
+    day = datetime(2026, 2, 27)
+    bars = []
+    while len(bars) < 30:
+        if day.weekday() < 5:
+            bars.append(PriceBar(day.strftime("%Y-%m-%d"), 100.0, 100.0, 0.0, 1.0))
+        day -= timedelta(days=1)
+    s.write_prices("AAA", bars[::-1], "tiingo", fetched_at=datetime(2026, 2, 28, 12, 0, tzinfo=timezone.utc))
+    s.replace_rows("valuation_daily", V.COLUMNS, [tuple(
+        {"symbol": "AAA", "date": "2026-02-27", "close": 100.0, "status": "ok"}.get(c) for c in V.COLUMNS)])
+    s.log_run("r1", "derive", "ok", 0, "", "2026-03-01T11:00:00Z", "2026-03-01T11:01:00Z", "manual")
+    s.check_log_run("c1", started_at="2026-03-01T11:30:00Z", finished_at="2026-03-01T11:30:00Z", derive_run_id="r1",
+                    checks_run=9, holds=0, warns=0, error=None)
+    s.close()
+
+
+def test_engine_step_message_names_the_split(project, tmp_path: Path):
+    cfg = _with_allocation(project, tmp_path)
+    _covered_derive(cfg)
+    _brokerage_cash(cfg, "2026-02-27", 500.0)
+    (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
+    assert step.status == "ok" and "; split: 1 new, 0 replaced, 0 spent; checks: " in step.message, step.message
+    (row,) = _proposals(cfg)
+    s = Store.open(cfg.db_path, migrate=False)
+    p = s.open_proposal("brokerage")
+    s.close()
+    assert p["checked_at"] == "2026-03-01T11:30:00Z" and p["created_at"] == "2026-03-01T12:00:00Z"
+    (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
+    assert "; split: 0 new, 0 replaced, 0 spent" in step.message and _proposals(cfg) == [row]
+    _brokerage_cash(cfg, "2026-02-28", 100.0)
+    (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
+    assert "; split: 0 new, 0 replaced, 1 spent" in step.message
+
+
+def test_engine_step_message_says_why_the_split_was_skipped(project, tmp_path: Path):
+    cfg = _with_allocation(project, tmp_path, targets=False)
+    _covered_derive(cfg)
+    (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
+    assert step.status == "ok" and "; split: no targets file; checks: " in step.message, step.message

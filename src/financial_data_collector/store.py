@@ -950,6 +950,15 @@ class Store:
                        "WHERE a.label = ? AND c.currency = 'USD' AND c.as_of_date >= ?", (label, after))
         return r[0][0] if r else None
 
+    def split_asset_types(self, symbols: list[str]) -> dict[str, str]:
+        """Each known symbol's `securities.asset_type`; a symbol not in securities (or with no type) is left out."""
+        out: dict[str, str] = {}
+        for s in sorted(set(symbols)):
+            r = self.query("SELECT asset_type FROM securities WHERE symbol = ? AND asset_type IS NOT NULL", (s,))
+            if r:
+                out[s] = r[0][0]
+        return out
+
     def split_scores(self, symbols: list[str]) -> dict[str, list[dict]]:
         """Each symbol's rows of the valuation_scores view (open holds applied), `sources` parsed; [] for a symbol
         with none."""

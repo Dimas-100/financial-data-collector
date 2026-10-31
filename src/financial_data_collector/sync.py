@@ -259,10 +259,13 @@ def _step_engine(store: Store, cfg: Config, *, progress: Progress, fetch=http.fe
     # After the check: the engine builds only from a derive a full, error-free check run has covered, so a sync whose
     # check failed (or was left out) skips it and the previous scores stay, with their older checked_at.
     progress("scores")
-    rep = engine_mod.run(store, cfg)
+    rep = engine_mod.run(store, cfg, now=now)
     if rep.skipped:
         return 0, rep.skipped, "skipped"
     msg = f"{rep.symbols} symbols, {rep.scores} scores ({rep.held} held), {rep.moves} moves"
+    if rep.split is not None:              # proposals only, never an order; a skipped split never fails the step
+        sp = rep.split
+        msg += f"; split: {sp.skipped or f'{sp.opened} new, {sp.replaced} replaced, {sp.spent} spent'}"
     # What was just written is examined at once by the checker's engine checks. A partial run: it never stamps
     # checked_at (only a full, error-free run records the derive it covered).
     progress("checking scores")
