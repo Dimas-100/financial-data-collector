@@ -89,6 +89,7 @@ waits its turn too. Older history: `fdc query "select * from sync_runs order by 
 | `unexplained_daily` | each day's change in an account that no transaction explains, such as a deposit the balance shows before the activity feed posts it: money moved, not growth |
 | `check_runs`, `check_findings` | the checker's runs and what it found; open `hold` findings blank the matching fields of `valuation_latest` (see "Checker") |
 | `valuation_scores`, `valuation_scores_raw` | the valuation engine's scores: one row per symbol and metric at the symbol's newest final close, with its status, what it was built from (`inputs`, `sources`) and when the checker covered the data (`checked_at`); read the view, which also applies holds opened since (see "Valuation engine") |
+| `price_moves` | drops of a final close in the last year (a day down 4%, a week down 8%, or a day 2.5 of its own standard deviations below the market) with their causes, each from a sourced fact (earnings, an 8-K, the market, the sector, headlines) or "no cause found" (see "Drops and their causes") |
 | `sync_runs`, `sync_status` | what ran, when, and whether it worked |
 
 Quarterly cash-flow items are computed from year-to-date filings where companies only report
@@ -285,6 +286,36 @@ the view as it would have at build time); `sources` is a JSON list of where each
 symbol covering the row's date whose field is `score:<metric>`, one of the row's inputs, or `*` (on a price row only
 from a price check) blanks `value`, `percentile_5y` and `band`, makes an `ok` row `held` with the hold messages as its
 reason, and lists the hold in `hold_ids`. The raw table is never changed by a hold.
+
+### Drops and their causes
+
+The same step writes `price_moves`: every drop of each scored symbol (stocks and funds alike) dated in the last
+`moves_days` (365) calendar days before its newest final close, on the same adjusted closes with held closes left out
+(so a split or an ex-dividend day is never a drop). A row is one of:
+
+- `1d`, trigger `drop_day`: the close fell `drop_day` (4%) or more from the previous held close;
+- `1d`, trigger `excess`: the day's move minus the market fund's (`[benchmarks] market`, SPY) was `excess_sd` (2.5) or
+  more of the symbol's own standard deviations of such daily excess moves below zero, over the 252 bars before (needs
+  120 of them with the market fund's closes on both dates). `excess_sd` is stored on every `1d` row it can compute;
+- `5d`, trigger `drop_week`: the close fell `drop_week` (8%) or more from 5 held bars back, recorded only on the first
+  day it crosses.
+
+Each row carries the market fund's and the sector fund's move between the same two dates (`market_move`,
+`sector_move`; NULL when the fund lacks either close) and its `causes`, a JSON list of `{kind, text, sources}`. A cause
+is stated only from a sourced fact, in this order:
+
+1. `earnings`: a report dated after the start close and up to the day, or on the start day after the close or at an
+   unknown time ("reported earnings on 2026-10-28 after the close: EPS 2.02 vs 1.89 expected (+6.9%)");
+2. `filing`: an 8-K filed from the start day to the day with an item other than 2.02 (results) and 9.01 (exhibits),
+   its items named ("filed an 8-K on 2026-10-28: a director or officer change"), with its SEC link;
+3. `market`: the market fund fell at least two thirds as much ("the market fell 5.0% (SPY)");
+4. `sector`: the sector fund did ("its sector fell 4.1% (XLK, Technology)"); a symbol with no sector has none;
+5. `news`: up to three stored headlines dated from the start day to the day, newest first ("<title> (<outlet>,
+   <date>)"); a headline stays stored after the feed drops it, so an old drop keeps its news;
+6. none of these: `{"kind": "none", "text": "no cause found"}`, never a guess.
+
+`sources` lists the closes used (the symbol's and the funds') and the thresholds that fired. Rows are rebuilt each
+engine run; one already as it should be is not rewritten.
 
 ## Claude Desktop
 

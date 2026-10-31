@@ -134,7 +134,8 @@ def test_price_shape(store, cfg):
     _spy(store)
     _cover(store)
     rep = engine.run(store, cfg)
-    assert rep.skipped is None and rep.symbols == 1 and rep.scores == 4 and rep.held == 0 and rep.moves == 0
+    assert rep.skipped is None and rep.symbols == 1 and rep.scores == 4 and rep.held == 0
+    assert rep.moves == 3              # 125 -> 100 the day after the spike (1d and 5d), 100 -> 95 on the last day (1d)
     rows = _scores(store, "AAA")
     assert set(rows) == set(PRICE_METRICS) and {r["date"] for r in rows.values()} == {END}
     assert rows["off_high_52w"]["value"] == pytest.approx(95 / 125 - 1)
@@ -448,7 +449,7 @@ def test_engine_step_message(store, cfg):
     _spy(store)
     _cover(store)
     rows, msg, status = sync._step_engine(store, cfg, progress=lambda d: None)
-    assert (rows, msg, status) == (4, "1 symbols, 4 scores (0 held), 0 moves", "ok")
+    assert (rows, msg, status) == (7, "1 symbols, 4 scores (0 held), 3 moves", "ok")
 
 
 def test_engine_step_skips_without_coverage(store, cfg):

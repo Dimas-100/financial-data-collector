@@ -81,6 +81,10 @@ SELECT date, close, eps_ttm, pe, ttm_period_end FROM valuation_daily WHERE symbo
 -- the full curve, including days before snapshots existed (basis tells you which)
 SELECT as_of_date, total, fidelity_total, basis FROM portfolio_daily_full ORDER BY as_of_date;
 
+-- last month's drops with their first cause
+SELECT symbol, date, span, ROUND(move * 100, 1) AS pct, triggers, json_extract(causes, '$[0].text') AS first_cause
+FROM price_moves WHERE date >= date('now', '-1 month') ORDER BY date DESC, move;
+
 -- realized gains by year
 SELECT substr(sell_date, 1, 4) AS year, SUM(gain) AS gain, SUM(cost_known = 0) AS sales_with_unknown_cost
 FROM realized_gains GROUP BY 1 ORDER BY 1;

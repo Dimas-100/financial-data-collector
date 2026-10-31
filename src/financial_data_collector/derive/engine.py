@@ -4,8 +4,9 @@ It runs only once a full, error-free check run has covered the newest derive, so
 looked at; until then it writes nothing and says what it waits for. It reads the checker's open holds as missing
 values (closes are adjusted over every final bar, then a held close is left out of every window; a held close on
 the newest day holds every price-shape row), then
-writes one `valuation_scores_raw` row per symbol and metric at the symbol's newest final close, each stamped with the
-covering check run's finish time. Holds opened after the build reach readers through the `valuation_scores` view.
+writes one `valuation_scores_raw` row per symbol and metric at the symbol's newest final close, and the symbol's drops
+of the last `moves_days` with their causes into `price_moves` (`moves.py`), each stamped with the covering check run's
+finish time. Holds opened after the build reach readers through the `valuation_scores` view.
 
 This module is the orchestrator: the coverage gate, the per-symbol loop, the hold helpers and the write. The metrics
 themselves live in pure modules (`shape.py`, `scores.py`, ...) that the per-symbol loop calls.
@@ -13,11 +14,12 @@ themselves live in pure modules (`shape.py`, `scores.py`, ...) that the per-symb
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 from ..config import Config
-from ..models import ScoreRow
+from ..models import PriceMove, ScoreRow
 from ..store import Store
-from . import scores, sources
+from . import moves, scores, sources
 from .adjust import adjusted_closes
 from .shape import INPUTS as PRICE_INPUTS, METRICS as PRICE_METRICS, price_shape
 from .valuation import COLUMNS as VALUATION_COLUMNS
@@ -137,6 +139,22 @@ def _held_price_rows(symbol: str, day: str, newest: tuple, on_day: list[dict]) -
     return [ScoreRow(symbol, day, m, None, None, None, "held", reason, PRICE_INPUTS, src) for m in PRICE_METRICS]
 
 
+def _moves(store: Store, cfg: Config, sec, day: str, series: list[tuple], market, sector,
+           sector_name: str | None) -> list[PriceMove]:
+    """The symbol's drops dated in the `moves_days` calendar days up to `day` (moves.find_moves over its held adjusted
+    closes and the benchmarks'), each with its causes from the stored earnings events, 8-Ks and headlines."""
+    since = (date.fromisoformat(day) - timedelta(days=cfg.engine.moves_days)).isoformat()
+    found = moves.find_moves(sec["symbol"], series, market, sector, since, cfg.engine)
+    if not found:
+        return []
+    start = min(m.start_date for m in found)
+    cik = sec["cik"]
+    events = store.earnings_events_of(sec["symbol"])
+    reports = store.current_reports_of(cik, start, day) if cik else []
+    headlines = store.headlines_of(sec["symbol"], start, day)
+    return [moves.add_causes(m, events, reports, headlines, cik, sector_name) for m in found]
+
+
 def run(store: Store, cfg: Config) -> EngineReport:
     cov = store.engine_coverage()
     if cov is None:
@@ -157,21 +175,25 @@ def run(store: Store, cfg: Config) -> EngineReport:
     insider_of = _insider_feed(cfg)
     symbols = store.engine_symbols()
     rows: list[ScoreRow] = []
+    found: list[PriceMove] = []
     for sec in symbols:
         sym = sec["symbol"]
         bars = store.final_bars(sym)
         day = bars[-1][0]                    # the newest final close, held or not
         holds = store.open_holds(sym)
+        series = held_adjusted_bars(bars, holds)
+        sector_fund = cfg.benchmarks.sectors.get(sec["sector"]) if sec["sector"] else None
         on_day = [h for h in price_holds(holds) if _covers(h, day)]
         if on_day:
             rows += _held_price_rows(sym, day, bars[-1], on_day)
         else:
-            sector_fund = cfg.benchmarks.sectors.get(sec["sector"]) if sec["sector"] else None
-            rows += price_shape(sym, day, held_adjusted_bars(bars, holds), benchmark(cfg.benchmarks.market),
-                                benchmark(sector_fund))
+            rows += price_shape(sym, day, series, benchmark(cfg.benchmarks.market), benchmark(sector_fund))
         if sec["asset_type"] in scores.FUND_TYPES:
             rows += scores.fund_scores(sym, day, store.fund_snapshot_rows(sym), cfg.engine, holds=holds)
         if sec["asset_type"] == "stock" and sec["cik"]:
             rows += _company(store, cfg, sym, sec["cik"], day, bars[-1], holds, insider_of(sym))
+        found += _moves(store, cfg, sec, day, series, benchmark(cfg.benchmarks.market), benchmark(sector_fund),
+                        sec["sector"] if sector_fund else None)
     store.replace_scores(rows, cov["checked_at"])
-    return EngineReport(len(symbols), len(rows), sum(1 for r in rows if r.status == "held"), 0, None)
+    store.replace_moves(found, cov["checked_at"])
+    return EngineReport(len(symbols), len(rows), sum(1 for r in rows if r.status == "held"), len(found), None)

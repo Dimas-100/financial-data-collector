@@ -13,7 +13,7 @@ from .adapters.base import dedupe_key
 from .connections.names import slug_for
 from .models import (
     AccountRef, ConceptRule, CurrentReport, EarningsEvent, Estimate, Fact, FundSnapshot, Headline, LineItem,
-    MacroObservation, PriceBar, ScoreRow, Snapshot, TransactionRow, is_final,
+    MacroObservation, PriceBar, PriceMove, ScoreRow, Snapshot, TransactionRow, is_final,
 )
 
 if TYPE_CHECKING:
@@ -24,7 +24,7 @@ COUNT_TABLES = (
     "prices", "sec_facts", "financial_line_items", "sync_runs", "ingested_files",
     "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily", "connections",
     "unexplained_daily", "macro_observations", "check_runs", "check_findings", "fund_snapshots", "earnings_events",
-    "estimate_snapshots", "current_reports", "news_headlines", "valuation_scores_raw",
+    "estimate_snapshots", "current_reports", "news_headlines", "valuation_scores_raw", "price_moves",
 )
 
 
@@ -902,6 +902,27 @@ class Store:
                                   [k for k in have if k not in want])
             self.conn.executemany(
                 f"INSERT OR REPLACE INTO valuation_scores_raw ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [v for k, v in want.items() if have.get(k) != v])
+        return len(want)
+
+    def replace_moves(self, moves: Iterable[PriceMove], checked_at: str) -> int:
+        """Make price_moves exactly `moves` (each stamped `checked_at`), as replace_scores does: a row already as it
+        should be is not written, a (symbol, date, span) no longer found is deleted. One transaction. Returns how
+        many rows it holds."""
+        cols = ("symbol", "date", "span", "start_date", "move", "market_symbol", "market_move", "sector_symbol",
+                "sector_move", "excess_sd", "triggers", "causes", "sources", "checked_at")
+        want: dict[tuple[str, str, str], tuple] = {}
+        for m in moves:
+            want[(m.symbol, m.date, m.span)] = (
+                m.symbol, m.date, m.span, m.start_date, m.move, m.market_symbol, m.market_move, m.sector_symbol,
+                m.sector_move, m.excess_sd, ",".join(m.triggers), json.dumps(list(m.causes)),
+                json.dumps(list(m.sources)), checked_at)
+        have = {tuple(r[:3]): tuple(r) for r in self.query(f"SELECT {', '.join(cols)} FROM price_moves")}
+        with self.conn:
+            self.conn.executemany("DELETE FROM price_moves WHERE symbol = ? AND date = ? AND span = ?",
+                                  [k for k in have if k not in want])
+            self.conn.executemany(
+                f"INSERT OR REPLACE INTO price_moves ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
                 [v for k, v in want.items() if have.get(k) != v])
         return len(want)
 
