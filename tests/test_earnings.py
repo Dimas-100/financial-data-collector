@@ -641,10 +641,10 @@ def test_the_earnings_step_reports_what_it_did(tmp_path):
     yahoo_client = _FakeYahoo({"SMPL": SMPL_DATES}, {"SMPL": SMPL_ESTIMATES})
     rep = sync.run_sync(cfg, only=["earnings"], fetch=fetch, now=NOW, yahoo=yahoo_client, sleep=lambda s: None)
     step = rep.steps[0]
-    assert (step.step, step.status, step.rows) == ("earnings", "ok", 7)          # 2 events + 4 estimates + 1 sector
-    assert step.message == "1 companies asked, 2 events changed, 4 estimate rows written, 1 sectors changed"
+    assert (step.step, step.status, step.rows) == ("earnings", "ok", 10)         # 2 events + 4 estimates + 1 sector + 3 8-Ks
+    assert step.message == "1 companies asked, 2 events changed, 4 estimate rows written, 1 sectors changed, 3 8-Ks new"
     again = sync.run_sync(cfg, only=["earnings"], fetch=fetch, now=NOW, yahoo=yahoo_client, sleep=lambda s: None)
-    assert again.steps[0].message == "0 companies asked, 0 events changed, 0 estimate rows written, 0 sectors changed"
+    assert again.steps[0].message == "0 companies asked, 0 events changed, 0 estimate rows written, 0 sectors changed, 0 8-Ks new"
     assert again.steps[0].status == "skipped"                          # nothing asked says nothing about the network
     assert len(fetch.calls) == 1
 
@@ -655,7 +655,7 @@ def test_the_earnings_step_without_sec_user_agent_says_so_and_is_ok(tmp_path):
                         sleep=lambda s: None)
     step = rep.steps[0]
     assert step.status == "ok"
-    assert step.message == "SEC part skipped: SEC_USER_AGENT is not set; 1 companies asked, 2 events changed, 0 estimate rows written, 0 sectors changed"
+    assert step.message == "SEC part skipped: SEC_USER_AGENT is not set; 1 companies asked, 2 events changed, 0 estimate rows written, 0 sectors changed, 0 8-Ks new"
 
 
 def test_the_earnings_step_names_failures_and_is_an_error_only_when_all_failed(tmp_path):

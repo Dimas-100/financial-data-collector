@@ -1,0 +1,26 @@
+{
+  "as_of": "2026-10-28T12:00:00+00:00",
+  "by_ticker": {
+    "AAPL": [
+      {
+        "date": "2026-10-27",
+        "published": "2026-10-27T14:30:00+00:00",
+        "title": "Sample Phone Maker opens a new campus",
+        "source": "Sample Wire",
+        "url": "https://news.example.com/campus",
+        "description": "Invented article text that must never be stored.",
+        "tags": ["campus", "expansion"]
+      },
+      {
+        "date": "2026-10-28",
+        "published": "2026-10-28T09:05:00+00:00",
+        "title": "Sample Phone Maker trims its outlook",
+        "source": "Example Daily",
+        "url": "javascript:alert(1)",
+        "description": "More invented text.",
+        "tags": ["guidance"]
+      }
+    ],
+    "SPY": []
+  }
+}

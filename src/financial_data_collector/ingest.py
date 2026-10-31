@@ -5,14 +5,21 @@ what makes re-running sync a no-op.
 """
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 from .adapters import fidelity_history, fidelity_positions, snaptrade
 from .adapters.base import read_text_lines, sha256_file
 from .config import Config
-from .store import RouteConflict, Store
+from .derive.sources import safe_link
+from .models import Headline
+from .store import RouteConflict, Store, utcnow
+from .symbols import canonical
+
+NEWS_FILE = "news.json"
 
 
 @dataclass
@@ -107,3 +114,58 @@ def ingest_snaptrade(store: Store, cfg: Config) -> IngestSummary:
             store.record_file(sha, str(activity), "snaptrade_activity", rows)
             summary.add(IngestResult(str(activity), "snaptrade_activity", rows=rows))
     return summary
+
+
+def news_feed(cfg: Config) -> Path | None:
+    """The sibling news feed (`<investing content_dir>/data/news.json`) when there is one."""
+    if cfg.investing_dir is None:
+        return None
+    path = cfg.investing_dir / "data" / NEWS_FILE
+    return path if path.is_file() else None
+
+
+def _text(value: object) -> str | None:
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def read_news(path: Path) -> tuple[list[Headline], str | None]:
+    """The feed's headlines (`by_ticker[*]`) with the symbol canonical, `outlet` the item's `source` and `url` only when
+    it is a safe https link; and an error note, or None. Nothing but date, published, title, source and url is read from
+    an item (no article text, no tags); an item without a date or title, or a ticker whose items are no list, is
+    skipped alone. A missing file is `([], None)`; one that can't be read as a feed is `([], note)`."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        tickers = list(data["by_ticker"].items())
+        as_of = _text(data.get("as_of"))
+    except FileNotFoundError:
+        return [], None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        return [], f"{NEWS_FILE} unreadable ({type(e).__name__}); headlines left as they were"
+    rows: list[Headline] = []
+    for ticker, items in tickers:
+        symbol = canonical(ticker) if isinstance(ticker, str) else ""
+        if not symbol or not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            title, day = _text(item.get("title")), _text(item.get("date"))
+            try:
+                day = date.fromisoformat(day[:10]).isoformat() if day else None
+            except ValueError:
+                day = None
+            if not title or not day:
+                continue
+            rows.append(Headline(symbol, day, title, _text(item.get("source")), safe_link(item.get("url")),
+                                 _text(item.get("published")), as_of))
+    return rows, None
+
+
+def ingest_news(store: Store, cfg: Config) -> tuple[int, str | None]:
+    """Keep the news feed's headlines: (rows new, a note when the feed can't be read). No investing folder or no
+    `data/news.json` is nothing at all."""
+    path = news_feed(cfg)
+    if path is None:
+        return 0, None
+    rows, note = read_news(path)
+    return (store.write_headlines(rows, utcnow()) if rows else 0), note

@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 from ..config import Config
 from ..connections.redact import redact
 from ..http import Fetch
-from ..models import EarningsEvent, Estimate, YahooEarning
+from ..models import CurrentReport, EarningsEvent, Estimate, YahooEarning
 from ..store import Store
 from . import yahoo as yahoo_mod
 from .yahoo import YahooClient, finite
@@ -48,6 +48,7 @@ class EarningsResult:
     message: str = ""
     failed: bool = False                # a part raised: the company is not marked and is asked again
     again: bool = False                 # no estimates today, but some on its last snapshot day: not marked, asked again
+    reports: int = 0                    # current_reports rows (8-Ks) new from SEC's answer
 
 
 def report_dates(recent: dict) -> list[tuple[str, str]]:
@@ -65,6 +66,24 @@ def report_dates(recent: dict) -> list[tuple[str, str]]:
             continue
         try:
             out.append((date.fromisoformat(filed).isoformat(), accn))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def current_reports(cik: str, recent: dict) -> list[CurrentReport]:
+    """Every 8-K and 8-K/A in SEC's `filings.recent` block, in the order SEC lists them: accession, form, filing date and
+    the item numbers split on commas (stripped, empty dropped). A row whose accession or date can't be read is skipped."""
+    forms, accns = recent.get("form") or [], recent.get("accessionNumber") or []
+    filed_on, items = recent.get("filingDate") or [], recent.get("items") or []
+    out: list[CurrentReport] = []
+    for i, (form, accn, filed) in enumerate(zip(forms, accns, filed_on)):
+        if form not in ("8-K", "8-K/A") or not isinstance(accn, str) or not ACCESSION.fullmatch(accn):
+            continue
+        listed = items[i] if i < len(items) else ""
+        parts = tuple(p for p in (part.strip() for part in listed.split(",")) if p) if isinstance(listed, str) else ()
+        try:
+            out.append(CurrentReport(cik, accn, form, date.fromisoformat(filed).isoformat(), parts))
         except (TypeError, ValueError):
             continue
     return out
@@ -242,11 +261,14 @@ def collect_earnings(
             progress(f"{i}/{len(universe)} {symbol}")
         problems: list[str] = []
         sec: list[tuple[str, str]] = []
+        reports = 0
         if agent and row["cik"]:
             try:
                 data = submissions(row["cik"])
                 sec = report_dates((data.get("filings") or {}).get("recent") or {})
                 store.set_sic(symbol, _sic(data.get("sic")))
+                reports = store.write_current_reports(
+                    current_reports(row["cik"], (data.get("filings") or {}).get("recent") or {}))
             except Exception as e:     # one company SEC will not answer keeps its Yahoo part and is asked again
                 problems.append(say("SEC", e))
         if yahoo_asked:
@@ -277,5 +299,5 @@ def collect_earnings(
         except Exception as e:
             problems.append(say("store", e))
         results.append(EarningsResult(symbol, changed, written, "; ".join(problems) or blank, failed=bool(problems),
-                                      again=bool(blank) and not problems))
+                                      again=bool(blank) and not problems, reports=reports))
     return results

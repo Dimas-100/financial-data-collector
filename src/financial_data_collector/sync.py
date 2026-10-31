@@ -17,7 +17,7 @@ from .connections.keys import KeyHome
 from .connections.service import run as run_connections
 from .derive import history, valuation
 from .export.cockpit import export_cockpit
-from .ingest import ingest_inbox, ingest_snaptrade
+from .ingest import ingest_inbox, ingest_news, ingest_snaptrade, news_feed
 from .models import PriceBar
 from .store import Store, utcnow
 from .universe import build_universe
@@ -77,8 +77,14 @@ def _step_ingest(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple
     a = ingest_inbox(store, cfg)
     progress("broker feed")
     b = ingest_snaptrade(store, cfg)
+    progress("news feed")
+    news_rows, news_note = ingest_news(store, cfg)
     msgs = a.messages + b.messages
-    return a.rows + b.rows, "; ".join(msgs), "ok"
+    if news_feed(cfg) is not None:
+        msgs.append(f"{news_rows} headlines new")
+    if news_note:
+        msgs.append(news_note)
+    return a.rows + b.rows + news_rows, "; ".join(msgs), "ok"
 
 
 def _universe(store: Store, cfg: Config) -> list[str]:
@@ -165,13 +171,14 @@ def _step_earnings(store: Store, cfg: Config, *, fetch, now, yahoo, sleep, progr
                                             sleep=sleep, progress=progress)
     changed = sum(r.events for r in results)
     written = sum(r.estimates for r in results)
+    reports = sum(r.reports for r in results)
     failed = [r for r in results if r.failed]
     again = [r for r in results if r.again]
     # Sectors need no network (stored SEC codes and the sibling feed), so the pass runs even when no company was asked.
     sector_pass = sectors_mod.assign_sectors(store, cfg)
     sectors_changed = sector_pass.changed
     msg = (f"{len(results)} companies asked, {changed} events changed, {written} estimate rows written, "
-           f"{sectors_changed} sectors changed")
+           f"{sectors_changed} sectors changed, {reports} 8-Ks new")
     if sector_pass.feed_kept:
         msg += "; " + sectors_mod.FEED_UNREADABLE
     if failed:
@@ -183,7 +190,7 @@ def _step_earnings(store: Store, cfg: Config, *, fetch, now, yahoo, sleep, progr
     # No company to ask (all asked today, or none typed a stock yet) is skipped, not ok: it says nothing about the
     # network, so exit_code leaves it out, as it does an unconfigured connections or macro step.
     status = "skipped" if not results else "error" if len(failed) == len(results) else "ok"
-    return changed + written + sectors_changed, msg, status
+    return changed + written + sectors_changed + reports, msg, status
 
 
 def _step_derive(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple[int, str, str]:

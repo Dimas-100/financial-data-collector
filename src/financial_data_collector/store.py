@@ -12,8 +12,8 @@ from . import migrate as _migrate
 from .adapters.base import dedupe_key
 from .connections.names import slug_for
 from .models import (
-    AccountRef, ConceptRule, EarningsEvent, Estimate, Fact, FundSnapshot, LineItem, MacroObservation, PriceBar,
-    Snapshot, TransactionRow, is_final,
+    AccountRef, ConceptRule, CurrentReport, EarningsEvent, Estimate, Fact, FundSnapshot, Headline, LineItem,
+    MacroObservation, PriceBar, Snapshot, TransactionRow, is_final,
 )
 
 if TYPE_CHECKING:
@@ -24,7 +24,7 @@ COUNT_TABLES = (
     "prices", "sec_facts", "financial_line_items", "sync_runs", "ingested_files",
     "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily", "connections",
     "unexplained_daily", "macro_observations", "check_runs", "check_findings", "fund_snapshots", "earnings_events",
-    "estimate_snapshots",
+    "estimate_snapshots", "current_reports", "news_headlines",
 )
 
 
@@ -554,6 +554,38 @@ class Store:
                 [(symbol, day, e.period, e.eps_avg, e.eps_low, e.eps_high, e.analysts, source, fetched_at)
                  for e in estimates])
         return self.conn.total_changes - before
+
+    def write_current_reports(self, reports: Iterable[CurrentReport]) -> int:
+        """Keep the 8-Ks as first stored: a filing already stored (by accession) is left alone. Returns the rows new."""
+        before = self.conn.total_changes
+        with self.conn:
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO current_reports (accession, cik, form, filed, items) VALUES (?,?,?,?,?)",
+                [(r.accession, r.cik, r.form, r.filed, ",".join(r.items)) for r in reports])
+        return self.conn.total_changes - before
+
+    def current_reports_of(self, cik: str, start: str, end: str) -> list[CurrentReport]:
+        """The company's stored 8-Ks filed in [start, end], oldest first (then accession)."""
+        rows = self.query("SELECT cik, accession, form, filed, items FROM current_reports "
+                          "WHERE cik = ? AND filed >= ? AND filed <= ? ORDER BY filed, accession", (cik, start, end))
+        return [CurrentReport(r["cik"], r["accession"], r["form"], r["filed"],
+                              tuple(part for part in r["items"].split(",") if part)) for r in rows]
+
+    def write_headlines(self, rows: Iterable[Headline], first_seen: str) -> int:
+        """Keep the headlines as first stored (key: symbol, date, title). Returns the rows new."""
+        before = self.conn.total_changes
+        with self.conn:
+            self.conn.executemany(
+                """INSERT OR IGNORE INTO news_headlines
+                     (symbol, date, title, outlet, url, published, feed_as_of, first_seen) VALUES (?,?,?,?,?,?,?,?)""",
+                [(h.symbol, h.date, h.title, h.outlet, h.url, h.published, h.feed_as_of, first_seen) for h in rows])
+        return self.conn.total_changes - before
+
+    def headlines_of(self, symbol: str, start: str, end: str) -> list[Headline]:
+        """The symbol's stored headlines dated in [start, end], oldest first, then by title."""
+        rows = self.query("SELECT symbol, date, title, outlet, url, published, feed_as_of FROM news_headlines "
+                          "WHERE symbol = ? AND date >= ? AND date <= ? ORDER BY date, title", (symbol, start, end))
+        return [Headline(*r) for r in rows]
 
     def estimates_before(self, symbol: str, day: str) -> str | None:
         """The company's last estimate snapshot day before `day` when that day holds at least one figure, else None."""

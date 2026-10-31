@@ -239,7 +239,7 @@ def _run_earnings_step(store, cfg):
 def test_the_earnings_step_reports_sectors_changed_and_counts_them(store, cfg):
     store.upsert_security("AAPL", asset_type="stock")
     rows, msg, status = _run_earnings_step(store, cfg)
-    assert "1 companies asked, 0 events changed, 0 estimate rows written, 1 sectors changed" in msg
+    assert "1 companies asked, 0 events changed, 0 estimate rows written, 1 sectors changed, 0 8-Ks new" in msg
     assert rows == 1
     assert _sector(store, "AAPL")[0] == "Technology"
 
@@ -249,7 +249,7 @@ def test_the_earnings_step_says_when_the_feed_was_unreadable_and_its_sectors_kep
     sectors.assign_sectors(store, cfg)
     cfg.investing_dir = tmp_path / "nowhere"
     rows, msg, status = _run_earnings_step(store, cfg)
-    assert "0 sectors changed; classifications feed unreadable; feed sectors kept" in msg
+    assert "0 sectors changed, 0 8-Ks new; classifications feed unreadable; feed sectors kept" in msg
     assert _sector(store, "AAPL") == ("Technology", FEED_SOURCE)
 
 
@@ -264,6 +264,6 @@ def test_the_sector_pass_runs_even_when_no_company_was_asked(store, cfg):
     store.upsert_security("AAPL", asset_type="stock")
     store.mark_earnings_fetch("AAPL", "2026-10-30")          # asked today already
     rows, msg, status = _run_earnings_step(store, cfg)
-    assert "0 companies asked" in msg and msg.endswith(", 1 sectors changed") and rows == 1
+    assert "0 companies asked" in msg and msg.endswith(", 1 sectors changed, 0 8-Ks new") and rows == 1
     assert status == "skipped"
     assert _sector(store, "AAPL")[0] == "Technology"
