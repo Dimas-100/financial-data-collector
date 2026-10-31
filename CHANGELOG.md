@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Docs: `price_moves` has no hold-applying view; a hold found after the engine's build reaches the moves at the next sync.
 - `[engine]` settings are checked more closely: `cheap_percentile` and `premium_percentile` must be 1 or more ("a percentile such as 25, not 0.25"), `drop_day`, `drop_week`, `discount_rate` and `terminal_growth` below 1 (fractions, 0.04 = 4%), and every number finite (TOML's `inf` and `nan` are refused).
 - Valuation engine: a dividend yield of zero (below 1e-12, to absorb float leftovers) is not ranked, for companies and funds: today's is `unsupported` "no dividend in 12 months", and only positive yields make up the history (a company that started paying no longer ranks its new yield against its years of zeros). A company's yield left out of `valuation_daily` (only without a close) now says "no close".
 - Migration 0021: a partial index of the open holds (`check_findings` by symbol, severity `hold`, not cleared), which the `valuation_latest` and `valuation_scores` views look up for every row.

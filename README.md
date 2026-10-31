@@ -329,7 +329,9 @@ is stated only from a sourced fact, in this order:
 6. none of these: `{"kind": "none", "text": "no cause found", "sources": []}`, never a guess.
 
 `sources` lists the closes used (the symbol's and the funds') and the thresholds that fired. Rows are rebuilt each
-engine run; one already as it should be is not rewritten.
+engine run; one already as it should be is not rewritten. `price_moves` has no view that applies holds: the build
+leaves held closes out, but a hold the checker finds after the build reaches the moves only at the next sync's engine
+run, so until then a move may rest on a close that is now held.
 
 ## Claude Desktop
 
