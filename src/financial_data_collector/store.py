@@ -811,14 +811,22 @@ class Store:
     def engine_coverage(self) -> dict | None:
         """The newest derive that finished ok and the newest error-free check run that covered it (a full run:
         only those stamp derive_run_id), as {derive_run_id, check_run_id, checked_at}; None when either is missing."""
-        d = self.query("SELECT run_id FROM sync_runs WHERE step = 'derive' AND status = 'ok' ORDER BY id DESC LIMIT 1")
-        if not d:
+        derive = self._newest_derive_run_id()
+        if derive is None:
             return None
         c = self.query("SELECT run_id, finished_at FROM check_runs WHERE derive_run_id = ? AND error IS NULL "
-                       "ORDER BY finished_at DESC, run_id DESC LIMIT 1", (d[0][0],))
+                       "ORDER BY finished_at DESC, run_id DESC LIMIT 1", (derive,))
         if not c:
             return None
-        return {"derive_run_id": d[0][0], "check_run_id": c[0][0], "checked_at": c[0][1]}
+        return {"derive_run_id": derive, "check_run_id": c[0][0], "checked_at": c[0][1]}
+
+    def engine_newest_derive(self) -> str | None:
+        """The run_id of the newest derive step that finished ok (the one the engine waits for a check run to cover)."""
+        return self._newest_derive_run_id()
+
+    def _newest_derive_run_id(self) -> str | None:
+        r = self.query("SELECT run_id FROM sync_runs WHERE step = 'derive' AND status = 'ok' ORDER BY id DESC LIMIT 1")
+        return r[0][0] if r else None
 
     def engine_symbols(self) -> list[sqlite3.Row]:
         """What the engine scores: securities not parked, not cash or crypto, with at least one final bar, that are
@@ -941,9 +949,7 @@ class Store:
 
     def check_derive_run_id(self) -> str | None:
         """The run_id of the newest derive step that finished ok: the derive a check run looked at."""
-        r = self.query("SELECT run_id FROM sync_runs WHERE step = 'derive' AND status = 'ok' "
-                       "ORDER BY id DESC LIMIT 1")
-        return r[0][0] if r else None
+        return self._newest_derive_run_id()
 
     def check_valuation_columns(self) -> list[str]:
         """The column names of valuation_daily: what a finding's `field` may name (besides '*')."""

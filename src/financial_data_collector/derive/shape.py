@@ -2,8 +2,9 @@
 average, and how its last week compares with the market fund's and its sector fund's.
 
 Pure: no SQL, no store. Every figure is on adjusted closes (`adjust.adjusted_closes` over the bars it is given), so a
-split or a dividend does not bend a high or an average. The caller passes bars with held closes already left out.
-A bar is (date, close, dividend, split_factor, source, fetched_at), ascending.
+split or a dividend does not bend a high or an average. A bar is (date, close, dividend, split_factor, source,
+fetched_at), ascending. The engine passes `engine.held_adjusted_bars`: already adjusted over every final bar, held
+closes then left out (adjusting those again changes nothing), so a held ex-date's split still applies.
 """
 from __future__ import annotations
 
@@ -54,7 +55,8 @@ def _relative(symbol: str, day: str, metric: str, own: dict, start: str, ret: fl
 def price_shape(symbol: str, day: str, bars, market: tuple[str, list] | None,
                 sector: tuple[str, list] | None) -> list[ScoreRow]:
     """The four price-shape rows of `symbol` on `day`, in METRICS order. `bars` are the symbol's held final bars;
-    `market` / `sector` are (benchmark symbol, its held final bars), or None when there is none to compare with."""
+    `market` / `sector` are (benchmark symbol, its held final bars), or None when there is none to compare with.
+    "Held" bars come from `engine.held_adjusted_bars` (raw bars work too: they are adjusted here)."""
     bars = [b for b in bars if b[0] <= day]
     if not bars:
         return [_row(symbol, day, m, [], status="not_enough_history", reason="no final close") for m in METRICS]

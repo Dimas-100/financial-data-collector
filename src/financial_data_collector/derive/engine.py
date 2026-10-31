@@ -2,7 +2,8 @@
 
 It runs only once a full, error-free check run has covered the newest derive, so it builds from data the checker has
 looked at; until then it writes nothing and says what it waits for. It reads the checker's open holds as missing
-values (a held close is left out of every window; a held close on the newest day holds every price-shape row), then
+values (closes are adjusted over every final bar, then a held close is left out of every window; a held close on
+the newest day holds every price-shape row), then
 writes one `valuation_scores_raw` row per symbol and metric at the symbol's newest final close, each stamped with the
 covering check run's finish time. Holds opened after the build reach readers through the `valuation_scores` view.
 
@@ -17,6 +18,7 @@ from ..config import Config
 from ..models import ScoreRow
 from ..store import Store
 from . import sources
+from .adjust import adjusted_closes
 from .shape import INPUTS as PRICE_INPUTS, METRICS as PRICE_METRICS, price_shape
 
 PRICE_CHECKS = ("prices2", "impossible", "closes")      # the checks whose '*' hold is about the close itself
@@ -61,9 +63,21 @@ def price_holds(holds: list[dict]) -> list[dict]:
 
 
 def held_bars(bars, holds: list[dict]) -> list[tuple]:
-    """`bars` (date first) without the ones on a date a price hold covers."""
+    """`bars` (date first) without the ones on a date a price hold covers. Raw bars: a window over closes reads
+    `held_adjusted_bars` instead, which adjusts before it drops, so a held ex-date keeps its split."""
     ph = price_holds(holds)
     return [b for b in bars if not any(_covers(h, b[0]) for h in ph)]
+
+
+def held_adjusted_bars(bars, holds: list[dict]) -> list[tuple]:
+    """The series every price window reads: `bars` (ascending (date, close, dividend, split_factor, source,
+    fetched_at), every final bar) adjusted for splits and dividends over ALL of them first, then the dates a price hold
+    covers dropped. Each kept bar comes back as (date, adjusted close, 0.0, 1.0, source, fetched_at), so adjusting it
+    again is a no-op. Adjusting before dropping keeps a held ex-date's split or dividend applied to every earlier close."""
+    adjusted = adjusted_closes([(b[0], b[1], b[2], b[3]) for b in bars])
+    ph = price_holds(holds)
+    return [(b[0], adj, 0.0, 1.0, b[4], b[5]) for b, (_, adj) in zip(bars, adjusted)
+            if not any(_covers(h, b[0]) for h in ph)]
 
 
 def _held_price_rows(symbol: str, day: str, newest: tuple, on_day: list[dict]) -> list[ScoreRow]:
@@ -75,7 +89,7 @@ def _held_price_rows(symbol: str, day: str, newest: tuple, on_day: list[dict]) -
 def run(store: Store, cfg: Config) -> EngineReport:
     cov = store.engine_coverage()
     if cov is None:
-        derive = store.check_derive_run_id()
+        derive = store.engine_newest_derive()
         why = (f"waiting for a check run to cover derive {derive}" if derive
                else "waiting for a check run: no derive has finished yet")
         return EngineReport(0, 0, 0, 0, why)
@@ -86,7 +100,7 @@ def run(store: Store, cfg: Config) -> EngineReport:
         if not symbol:
             return None
         if symbol not in benches:
-            benches[symbol] = (symbol, held_bars(store.final_bars(symbol), store.open_holds(symbol)))
+            benches[symbol] = (symbol, held_adjusted_bars(store.final_bars(symbol), store.open_holds(symbol)))
         return benches[symbol]
 
     symbols = store.engine_symbols()
@@ -101,7 +115,7 @@ def run(store: Store, cfg: Config) -> EngineReport:
             rows += _held_price_rows(sym, day, bars[-1], on_day)
         else:
             sector_fund = cfg.benchmarks.sectors.get(sec["sector"]) if sec["sector"] else None
-            rows += price_shape(sym, day, held_bars(bars, holds), benchmark(cfg.benchmarks.market),
+            rows += price_shape(sym, day, held_adjusted_bars(bars, holds), benchmark(cfg.benchmarks.market),
                                 benchmark(sector_fund))
     store.replace_scores(rows, cov["checked_at"])
     return EngineReport(len(symbols), len(rows), sum(1 for r in rows if r.status == "held"), 0, None)

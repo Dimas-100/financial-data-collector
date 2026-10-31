@@ -189,7 +189,7 @@ def test_price_shape_is_pure():
     bars = [(d, 100.0, 0.0, 1.0, "tiingo", None) for d in _weekdays(END, 3)]
     rows = price_shape("AAA", END, bars, None, None)
     assert [r.metric for r in rows] == list(PRICE_METRICS)
-    assert all(r.status == "not_enough_history" for r in rows[:3])
+    assert len(rows) == 4 and all(r.status == "not_enough_history" for r in rows)
 
 
 def test_a_split_does_not_bend_the_high_or_the_average(store, cfg):     # Review Focus 1
@@ -202,6 +202,45 @@ def test_a_split_does_not_bend_the_high_or_the_average(store, cfg):     # Review
     rows = _scores(store, "AAA")
     assert rows["off_high_52w"]["value"] == pytest.approx(0.0, abs=1e-9)
     assert rows["vs_200d"]["value"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_held_split_day_still_adjusts_the_closes_before_it(store, cfg):   # R5
+    over = {i: 100.0 for i in range(-99, 0)}
+    over[-100] = (100.0, 0.0, 4.0)
+    dates = _weekday_bars(store, "AAA", close=400.0, overrides=over)
+    _spy(store)
+    _hold(store, "impossible", "AAA", "*", dates[-100], dates[-100])        # the ex-date's close is held
+    _cover(store)
+    engine.run(store, cfg)
+    rows = _scores(store, "AAA")
+    assert rows["off_high_52w"]["status"] == "ok"
+    assert rows["off_high_52w"]["value"] == pytest.approx(0.0, abs=1e-9)
+    assert rows["vs_200d"]["value"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_benchmarks_held_split_day_still_adjusts_its_closes(store, cfg):
+    _aaa(store)
+    over = {i: 98.0 if i == -1 else 100.0 for i in range(-3, 0)}
+    over[-3] = (100.0, 0.0, 2.0)                                          # SPY 2-for-1 inside the week, ex-date held
+    dates = _weekday_bars(store, "SPY", close=200.0, overrides=over, asset_type="etf")
+    store.mark_benchmarks(["SPY"])
+    _hold(store, "impossible", "SPY", "*", dates[-3], dates[-3])
+    _cover(store)
+    engine.run(store, cfg)
+    assert _scores(store, "AAA")["week_vs_market"]["value"] == pytest.approx(-0.05 - (-0.02))
+
+
+def test_held_adjusted_bars_adjusts_over_every_bar_then_drops_held_dates():
+    bars = [("2026-01-02", 400.0, 0.0, 1.0, "tiingo", None), ("2026-01-05", 100.0, 0.0, 4.0, "tiingo", None),
+            ("2026-01-06", 101.0, 0.0, 1.0, "tiingo", "t")]
+    holds = [{"id": 1, "check_name": "impossible", "field": "*", "date_from": "2026-01-05", "date_to": "2026-01-05",
+              "message": "x"},
+             {"id": 2, "check_name": "fresh", "field": "*", "date_from": "2026-01-01", "date_to": None, "message": "y"}]
+    assert engine.held_adjusted_bars(bars, holds) == [("2026-01-02", 100.0, 0.0, 1.0, "tiingo", None),
+                                                      ("2026-01-06", 101.0, 0.0, 1.0, "tiingo", "t")]
+    assert engine.held_adjusted_bars(bars, []) == [("2026-01-02", 100.0, 0.0, 1.0, "tiingo", None),
+                                                   ("2026-01-05", 100.0, 0.0, 1.0, "tiingo", None),
+                                                   ("2026-01-06", 101.0, 0.0, 1.0, "tiingo", "t")]
 
 
 # ---- holds ----------------------------------------------------------------------------------------------------------

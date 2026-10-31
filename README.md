@@ -186,7 +186,8 @@ the checker on purpose: it builds only from a derive that a full, error-free che
 scores it had, and the step is `skipped` with "waiting for a check run to cover derive <id>".
 
 It reads the checker's open holds as missing values. A held close (a `close` hold, or a `*` hold from `prices2`,
-`impossible` or `closes`) is left out of every window; when one covers the newest day, every price-shape row is `held`
+`impossible` or `closes`) is left out of every window, after the closes are adjusted over every final bar, so a
+held split day still adjusts the closes before it; when one covers the newest day, every price-shape row is `held`
 (no value; the hold messages are the reason). A `*` hold from `fresh`, `filings` or `figures` is about statements and
 leaves prices alone.
 
