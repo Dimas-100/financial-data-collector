@@ -255,10 +255,11 @@ def _check_summary(cfg) -> int:
     try:
         rows = sorted(store.check_open_findings(),
                       key=lambda r: (_SEVERITY_ORDER[r["severity"]], r["symbol"], r["field"], r["date_from"]))
+        never_ran = store.check_last_run() is None
     finally:
         store.close()
     if not rows:
-        ui.console.print("check: nothing open")
+        ui.console.print("check: the checker has not run yet" if never_ran else "check: nothing open")
     for r in rows:
         # soft_wrap: a finding is one line however long its message; Text: the message is a check's words, not markup
         ui.console.print(Text(f"{r['severity'].upper()}  {r['symbol']}  {r['field']}  from {r['date_from']}  "

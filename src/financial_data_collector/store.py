@@ -651,7 +651,12 @@ class Store:
         params: tuple = ()
         if check_name is not None:
             sql, params = sql + " AND check_name = ?", (check_name,)
-        return self.query(sql + " ORDER BY last_seen DESC, id DESC", params)
+        try:
+            return self.query(sql + " ORDER BY last_seen DESC, id DESC", params)
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e):         # a database that predates migration 0012 has no findings
+                raise
+            return []
 
     def check_open_findings_of(self, check_name: str, symbol: str) -> list[sqlite3.Row]:
         """One symbol's open hold and warn findings of one check (not info), oldest first."""

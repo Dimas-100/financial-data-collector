@@ -119,7 +119,8 @@ found, and any check that raised). `check_findings` has one row per problem: `ch
 A finding the checks stop finding is cleared (never deleted); one that returns is reopened.
 
 `fdc check --summary` prints every open finding, holds first (`HOLD  KO  pe  from 2026-10-01  recompute: stored 25.0,
-recomputed 20.0`) without running any check; `fdc status` shows the last run's age and the open hold and warning counts.
+recomputed 20.0`) without running any check; `fdc status` shows the last run's age and the open hold and warning counts. The daily task logs to `%LOCALAPPDATA%\financial-data-collector\check.log`
+(beside `sync.log`), so a run that crashed before it could record itself still leaves a line.
 
 **What a hold means for a consumer.** Read `valuation_latest`, not `valuation_daily`. A hold is the checker saying a
 number is probably wrong and should not be used until someone looks. In `valuation_latest` a hold blanks only what it

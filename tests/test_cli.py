@@ -259,7 +259,7 @@ from financial_data_collector.store import Store
 
 
 def _record(root: Path, findings: list[Finding], *, names: tuple[str, ...] = ("recompute", "figures", "gaps"),
-            when: str = "2026-03-01T12:00:00Z", run: tuple[int, int] | None = None) -> None:
+            when: str = "2026-03-01T12:00:00Z", run: tuple[int, int] | None = None, error: str | None = None) -> None:
     """Findings recorded the way a check run records them (each check's own), then one check_runs row."""
     store = Store.open(root / "data" / "warehouse.db")
     try:
@@ -267,7 +267,7 @@ def _record(root: Path, findings: list[Finding], *, names: tuple[str, ...] = ("r
             store.check_record(name, [f for f in findings if f.check_name == name], when)
         if run is not None:
             store.check_log_run("20260301T120000Z", started_at=when, finished_at=when, derive_run_id=None,
-                                checks_run=1, holds=run[0], warns=run[1], error=None)
+                                checks_run=1, holds=run[0], warns=run[1], error=error)
     finally:
         store.close()
 
@@ -297,14 +297,33 @@ def test_check_summary_lists_holds_first_in_the_documented_format(tmp_path: Path
 
 def test_check_summary_leaves_out_cleared_findings_and_runs_no_checks(tmp_path: Path, capsys):
     cli.main(["--root", str(tmp_path), "init"])
-    _record(tmp_path, [_f("KO", "pe", "hold")])
-    _record(tmp_path, [], when="2026-03-02T12:00:00Z")           # the check no longer finds it: cleared
+    _record(tmp_path, [_f("KO", "pe", "hold")], run=(1, 0))
+    _record(tmp_path, [], when="2026-03-02T12:00:00Z", run=(0, 0))           # the check no longer finds it: cleared
     capsys.readouterr()
     assert cli.main(["--root", str(tmp_path), "check", "--summary"]) == 0
     assert capsys.readouterr().out.strip() == "check: nothing open"
     store = Store.open(tmp_path / "data" / "warehouse.db", migrate=False)
-    assert store.query("SELECT COUNT(*) FROM check_runs")[0][0] == 0      # printing a summary is not a run
+    assert store.query("SELECT COUNT(*) FROM check_runs")[0][0] == 1      # printing a summary is not a run (the one is _record's)
     store.close()
+
+
+def test_check_summary_before_the_checker_ever_ran(tmp_path: Path, capsys):
+    cli.main(["--root", str(tmp_path), "init"])
+    capsys.readouterr()
+    assert cli.main(["--root", str(tmp_path), "check", "--summary"]) == 0
+    assert capsys.readouterr().out.strip() == "check: the checker has not run yet"
+
+
+def test_check_summary_on_a_database_that_predates_migration_0012(tmp_path: Path, capsys):
+    import sqlite3
+
+    cli.main(["--root", str(tmp_path), "init"])
+    db = sqlite3.connect(tmp_path / "data" / "warehouse.db")
+    db.executescript("DROP VIEW valuation_latest; DROP TABLE check_findings; DROP TABLE check_runs;")
+    db.close()
+    capsys.readouterr()
+    assert cli.main(["--root", str(tmp_path), "check", "--summary"]) == 0
+    assert capsys.readouterr().out.strip() == "check: the checker has not run yet"
 
 
 def test_check_summary_keeps_a_long_message_on_one_line(tmp_path: Path, capsys):
@@ -334,6 +353,15 @@ def test_status_has_a_check_line_with_age_and_counts(tmp_path: Path, capsys):
     line = next(ln for ln in out.splitlines() if "holds," in ln)
     assert line.startswith("check  ") and "d ago" in line and "1 holds, 2 warnings" in line          # info findings count in neither
     assert "STALE" in line                                           # a run that old is past the 48 h a step may be
+
+
+def test_status_check_line_says_when_the_last_run_had_errors(tmp_path: Path, capsys):
+    cli.main(["--root", str(tmp_path), "init"])
+    _record(tmp_path, [], when="2999-01-01T00:00:00Z", run=(0, 0), error="figures: RuntimeError: boom")
+    capsys.readouterr()
+    cli.main(["--root", str(tmp_path), "status"])
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if "holds," in ln)
+    assert line.endswith("0 holds, 0 warnings, last run had errors") and "STALE" not in line
 
 
 def test_status_check_line_when_the_checker_never_ran(tmp_path: Path, capsys):
