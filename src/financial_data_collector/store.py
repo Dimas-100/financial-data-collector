@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Iterable
 from . import migrate as _migrate
 from .adapters.base import dedupe_key
 from .connections.names import slug_for
+from .symbols import is_money_market
 from .models import (
     AccountRef, AllocationProposal, ConceptRule, CurrentReport, EarningsEvent, Estimate, Fact, FundSnapshot, Headline, LineItem,
     ENGINE_CHECK_NAMES, MacroObservation, PriceBar, PriceMove, ScoreRow, Snapshot, TransactionRow, is_final,
@@ -961,6 +962,15 @@ class Store:
                        "WHERE a.label = ? AND c.currency = 'USD' AND c.as_of_date >= ?", (label, after))
         return r[0][0] if r else None
 
+    def split_buys_since(self, label: str, since: str) -> int:
+        """How many `buy` transactions of the account are dated `since` or later (the day itself counts), leaving out
+        a money market fund (its sweep is cash, not a placement) and a row with no symbol."""
+        rows = self.query(
+            "SELECT t.symbol, t.description, s.asset_type FROM transactions t JOIN accounts a ON a.id = t.account_id "
+            "LEFT JOIN securities s ON s.symbol = t.symbol "
+            "WHERE a.label = ? AND t.type = 'buy' AND t.trade_date >= ? AND t.symbol IS NOT NULL", (label, since))
+        return sum(1 for r in rows if r[2] != "money_market" and not is_money_market(r[0], r[1]))
+
     def split_asset_types(self, symbols: list[str]) -> dict[str, str]:
         """Each known symbol's `securities.asset_type`; a symbol not in securities (or with no type) is left out."""
         out: dict[str, str] = {}
@@ -1013,16 +1023,18 @@ class Store:
     def write_proposal(self, p: AllocationProposal, *, created_at: str, checked_at: str | None,
                        replaces: int | None) -> int:
         """Add a proposal (status open) and its lines; with `replaces`, the old open proposal is closed as
-        `replaced` (closed_at = created_at, closed_cash = this cash) in the same transaction. A second open proposal
-        for an account is refused by the table (sqlite3.IntegrityError), as is a line of zero dollars; nothing
-        else is checked here. Returns the new id."""
+        `replaced` (closed_at = created_at, closed_cash = this cash) in the same transaction. ValueError, nothing
+        written, when `replaces` is not an open proposal or is another account's (its account_key differs). A second
+        open proposal for an account is refused by the table (sqlite3.IntegrityError), as is a line of zero dollars;
+        nothing else is checked here (the amounts are the checker's). Returns the new id."""
         with self.conn:
             if replaces is not None:
                 n = self.conn.execute(
                     "UPDATE allocation_proposals_raw SET status = 'replaced', closed_at = ?, closed_cash = ? "
-                    "WHERE id = ? AND status = 'open'", (created_at, p.cash, replaces)).rowcount
+                    "WHERE id = ? AND status = 'open' AND account_key = ?",
+                    (created_at, p.cash, replaces, p.account_key)).rowcount
                 if n != 1:
-                    raise ValueError(f"proposal {replaces} is not open")
+                    raise ValueError(f"proposal {replaces} is not an open proposal of {p.account_key}")
             pid = self.conn.execute(
                 "INSERT INTO allocation_proposals_raw (account_key, created_at, cash_date, cash, placed, waits, "
                 "status, notes, sources, checked_at) VALUES (?,?,?,?,?,?, 'open', ?,?,?)",
@@ -1038,7 +1050,8 @@ class Store:
         return pid
 
     def close_proposal(self, proposal_id: int, *, closed_at: str, closed_cash: float) -> None:
-        """Mark an open proposal `spent` (its cash was placed, in full or in part)."""
+        """Mark an open proposal `spent` (its cash was placed, in full or in part); ValueError, nothing written, when
+        it is not open."""
         with self.conn:
             n = self.conn.execute(
                 "UPDATE allocation_proposals_raw SET status = 'spent', closed_at = ?, closed_cash = ? "

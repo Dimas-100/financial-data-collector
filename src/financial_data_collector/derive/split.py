@@ -574,7 +574,9 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
     touching nothing, when there is no targets file, it cannot be read, or `[allocation.accounts]` is empty. For each
     account (by targets-file name, sorted), its newest USD cash row: with an open proposal, cash `min_new` or more
     above that proposal's cash makes a new proposal for all of it that replaces it, cash at least $1 below closes it as
-    spent (placed, in full or in part), anything between changes nothing; with none open, cash `min_new` or more above
+    spent (placed, in full or in part), and so does a `buy` of a holding dated on or after its cash_date once a newer
+    cash row is in (a placement a deposit hid from the cash; then a new proposal for all the cash opens when it is at
+    least `min_new`), anything between changes nothing; with none open, cash `min_new` or more above
     the baseline (0 before any proposal; after a spent one, the lower of its closing cash and the lowest balance since
     that day) opens one. An account named twice on one label, with no entries in the targets file, with no cash row,
     or whose cash row is older than its newest positions (an account with no positions: any row counts) is left alone (an open proposal of it stays open, said in the notes), as is an open proposal whose name is no longer
@@ -649,7 +651,15 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
                 store.close_proposal(current["id"], closed_at=stamp, closed_cash=cash)
                 spent += 1
                 continue
-            if cash < current["cash"] + alloc.min_new - _CMP_EPS:
+            if cash_date > current["cash_date"] and store.split_buys_since(label, current["cash_date"]):
+                # A buy since the proposal's cash row, seen in a newer row: placed, though a deposit may have hidden it
+                # from the cash. Spent; all the cash makes a new proposal from min_new (the baseline is this cash).
+                store.close_proposal(current["id"], closed_at=stamp, closed_cash=cash)
+                spent += 1
+                current = None
+                if cash < alloc.min_new - _CMP_EPS:
+                    continue
+            elif cash < current["cash"] + alloc.min_new - _CMP_EPS:
                 continue                                        # under min_new more: the open one stands
         else:
             baseline = 0.0

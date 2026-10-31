@@ -734,3 +734,93 @@ def test_placed_is_the_dollars_placed(setup):
     p = store.open_proposal("brokerage")
     assert p["placed"] == sum(l["dollars"] for l in p["lines"]) and p["placed"] > len(p["lines"])
     assert round(p["placed"] + p["waits"], 2) == p["cash"]
+
+
+# ---- final fix wave: a placement a deposit hides, and a replacement in another account
+
+from financial_data_collector.models import TransactionRow
+
+
+def _buy(store: Store, day: str, symbol: str = "AAPL", acct: AccountRef = ACCT, kind: str = "buy") -> None:
+    store.write_transactions([TransactionRow(acct, day, kind, symbol, 1.0, 100.0, -100.0, None, kind.upper(),
+                                             "fidelity_csv")])
+
+
+def test_split_buys_since_counts_buys_of_holdings_only(store: Store):
+    _buy(store, "2026-10-30")
+    _buy(store, "2026-11-02", "VOO")
+    _buy(store, "2026-11-02", "SPAXX")                             # the money market's sweep is not a placement
+    _buy(store, "2026-11-02", "KO", kind="dividend")
+    _buy(store, "2026-11-02", "VFIAX", ROTH)
+    assert store.split_buys_since("Sample Brokerage", "2026-10-30") == 2      # the day itself counts
+    assert store.split_buys_since("Sample Brokerage", "2026-10-31") == 1
+    assert store.split_buys_since("Sample Brokerage", "2026-11-03") == 0
+    assert store.split_buys_since("Sample Roth", "2026-10-30") == 1
+    assert store.split_buys_since("Nobody", "2026-01-01") == 0
+
+
+def test_a_placement_hidden_by_a_deposit_is_spent_and_a_new_proposal_opens(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)                                            # 500 waiting on 10-30
+    first = store.open_proposal("brokerage")["id"]
+    _buy(store, "2026-11-02")                                      # 300 placed, 300 deposited: the cash still reads 500
+    _day(store, "2026-11-03", 500.0, positions=(("VOO", 500.0), ("AAPL", 200.0), ("KO", 100.0)))
+    rep = _run(store, cfg, 3)
+    assert (rep.opened, rep.replaced, rep.spent) == (1, 0, 1)
+    old = store.query("SELECT status, closed_cash FROM allocation_proposals_raw WHERE id = ?", (first,))[0]
+    assert tuple(old) == ("spent", 500.0)
+    new = store.open_proposal("brokerage")
+    assert new["id"] != first and (new["cash"], new["cash_date"]) == (500.0, "2026-11-03")
+    before = _all_rows(store)
+    rep = _run(store, cfg, 4)                                      # the same buy never closes the new one
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0) and _all_rows(store) == before
+
+
+def test_a_buy_spends_even_under_a_dollar_down_and_opens_only_from_min_new(store: Store, tmp_path: Path):
+    _types(store)
+    _day(store, "2026-10-30", 500.0)
+    cfg = _cfg(tmp_path)
+    _run(store, cfg, 2)
+    _buy(store, "2026-11-02")
+    _day(store, "2026-11-03", 499.5)                               # less than a dollar down, but a buy says placed
+    rep = _run(store, cfg, 3)
+    assert (rep.opened, rep.replaced, rep.spent) == (1, 0, 1)      # 499.5 >= min_new: a new one for all of it
+    assert store.open_proposal("brokerage")["cash"] == 499.5
+    # A proposal of 25.50; a buy, and 24.90 left: spent, and nothing new under min_new.
+    with store.conn:
+        store.conn.execute("DELETE FROM allocation_lines_raw")
+        store.conn.execute("DELETE FROM allocation_proposals_raw")
+    _day(store, "2026-11-04", 25.5)
+    assert _run(store, cfg, 5).opened == 1
+    _buy(store, "2026-11-05")
+    _day(store, "2026-11-06", 24.9)
+    rep = _run(store, cfg, 7)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 1) and store.open_proposal("brokerage") is None
+
+
+def test_a_buy_on_the_proposals_own_cash_row_changes_nothing(setup):
+    store, cfg = setup
+    _buy(store, "2026-10-30")                                      # already in the cash the proposal was made from
+    _run(store, cfg, 2)
+    before = _all_rows(store)
+    for day in (3, 4):
+        rep = _run(store, cfg, day)
+        assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+    assert _all_rows(store) == before
+
+
+def test_a_money_market_buy_is_not_a_placement(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    _buy(store, "2026-11-02", "SPAXX")
+    _day(store, "2026-11-03", 500.0)
+    rep = _run(store, cfg, 3)
+    assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
+
+
+def test_replacing_another_accounts_proposal_is_refused(store: Store):
+    pid = store.write_proposal(_proposal("brokerage"), created_at=NOW, checked_at=None, replaces=None)
+    with pytest.raises(ValueError):
+        store.write_proposal(_proposal("roth"), created_at=NOW, checked_at=None, replaces=pid)
+    assert store.open_proposal("brokerage")["id"] == pid and store.open_proposal("roth") is None
+    assert store.query("SELECT COUNT(*) FROM allocation_proposals_raw")[0][0] == 1
