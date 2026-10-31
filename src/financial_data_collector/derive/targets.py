@@ -1,0 +1,160 @@
+"""The owner's targets file and the fund look-through folder, read for the weekly split.
+
+Both are optional files named in config [allocation]; nothing here writes, fetches or opens a database. The targets
+file is read the way the sibling cockpit reads it: what it cannot use is skipped and said in `Targets.problems`,
+never guessed.
+"""
+from __future__ import annotations
+
+import csv
+import json
+import math
+from pathlib import Path
+
+from ..models import Cap, Sleeve, TargetEntry, Targets
+from ..symbols import canonical
+
+TARGET_BAND = 0.25                          # the band when an entry gives none: target x (1 - 0.25) .. x (1 + 0.25)
+RULES = ("trades", "contributions", "hold")
+KINDS = ("pct_of_account", "pct_of_brokerage", "direct_passive_ratio")
+_NOT_ACCOUNTS = ("sleeves", "caps", "planned")
+
+
+def _num(v: object) -> float | None:
+    """A finite number as a float, else None (a bool is not a number here)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        return None
+    return float(v)
+
+
+def _rule(v: object, where: str, problems: list[str]) -> tuple[str, str | None]:
+    """(rule, raw_rule): a missing rule is `trades`; one not exactly spelled is `unknown` with its spelling kept."""
+    if v is None:
+        return "trades", None
+    if isinstance(v, str) and v in RULES:
+        return v, None
+    problems.append(f"{where}: rebalance {v!r} is not one of {', '.join(RULES)}")
+    return "unknown", str(v)
+
+
+def _entry(account: str, raw: object, problems: list[str]) -> TargetEntry | None:
+    if not isinstance(raw, dict):
+        problems.append(f"{account}: an entry is not an object")
+        return None
+    ticker = raw.get("ticker")
+    if not isinstance(ticker, str) or not canonical(ticker):
+        problems.append(f"{account}: an entry has no ticker")
+        return None
+    symbol = canonical(ticker)
+    where = f"{account}/{symbol}"
+    target = _num(raw.get("target"))
+    if target is None:
+        problems.append(f"{where}: no finite target")
+        return None
+    kind = raw.get("type", "pct_of_account")
+    if kind not in KINDS:
+        problems.append(f"{where}: type {kind!r} is not one of {', '.join(KINDS)}")
+        return None
+    low = _num(raw.get("min"))
+    high = _num(raw.get("max"))
+    low = round(target * (1 - TARGET_BAND), 6) if low is None else low
+    high = round(target * (1 + TARGET_BAND), 6) if high is None else high
+    if low > high:
+        problems.append(f"{where}: inverted band (min above max)")
+        return None
+    rule, raw_rule = _rule(raw.get("rebalance"), where, problems)
+    return TargetEntry(account, symbol, kind, target, low, high, rule, raw_rule)
+
+
+def _sleeve(raw: object, problems: list[str]) -> Sleeve | None:
+    if not isinstance(raw, dict):
+        problems.append("sleeves: an entry is not an object")
+        return None
+    account, label = raw.get("account"), raw.get("label")
+    if not isinstance(account, str) or not account or not isinstance(label, str) or not label:
+        problems.append("sleeves: an entry has no account or label")
+        return None
+    members = raw.get("members")
+    members = members if isinstance(members, list) else []
+    symbols = tuple(canonical(m) for m in members if isinstance(m, str) and canonical(m))
+    rule, _ = _rule(raw.get("rebalance"), f"sleeves/{account}/{label}", problems)
+    return Sleeve(account, label, symbols, _num(raw.get("min")), _num(raw.get("max")), rule)
+
+
+def _cap(raw: object, problems: list[str]) -> Cap | None:
+    ticker = raw.get("ticker") if isinstance(raw, dict) else None
+    if not isinstance(ticker, str) or not canonical(ticker):
+        problems.append("caps: an entry has no ticker")
+        return None
+    symbol = canonical(ticker)
+    high = _num(raw.get("max"))
+    if high is None:
+        problems.append(f"caps/{symbol}: no finite max")
+        return None
+    return Cap(symbol, high)
+
+
+def _list(doc: dict, key: str) -> list:
+    value = doc.get(key)
+    return value if isinstance(value, list) else []
+
+
+def read_targets(path: Path | None) -> Targets | None:
+    """The targets file as `Targets`; None when no path is configured or the file is not there.
+
+    An unreadable file, bad JSON or a top level that is not an object raises ValueError with a short message that
+    does not carry the path."""
+    if path is None or not Path(path).is_file():
+        return None
+    path = Path(path)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError):
+        raise ValueError("the targets file cannot be read") from None
+    except json.JSONDecodeError as e:
+        raise ValueError(f"the targets file is not valid JSON (line {e.lineno})") from None
+    if not isinstance(doc, dict):
+        raise ValueError("the targets file must hold one JSON object at the top level")
+    problems: list[str] = []
+    entries: list[TargetEntry] = []
+    for key, value in doc.items():
+        if key.startswith("_") or key in _NOT_ACCOUNTS or not isinstance(value, list):
+            continue
+        for raw in value:
+            entry = _entry(key, raw, problems)
+            if entry is not None:
+                entries.append(entry)
+    sleeves = [s for s in (_sleeve(r, problems) for r in _list(doc, "sleeves")) if s is not None]
+    caps = [c for c in (_cap(r, problems) for r in _list(doc, "caps")) if c is not None]
+    revised = doc.get("last_revised")
+    return Targets(tuple(entries), tuple(sleeves), tuple(caps), revised if isinstance(revised, str) else None,
+                   path.name, tuple(problems))
+
+
+def read_look_through(fund_dir: Path | None) -> dict[str, dict[str, float]]:
+    """Fund symbol -> {held symbol: weight as a fraction}, from each `<FUND>.csv` (columns ticker, name, weight_pct).
+
+    A row with a weight that is not a finite number is dropped; an empty file is left out; files starting with `_`
+    and files that are not CSV are ignored; a missing folder gives {}."""
+    if fund_dir is None or not Path(fund_dir).is_dir():
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    for p in sorted(Path(fund_dir).iterdir()):
+        if not p.is_file() or p.suffix.lower() != ".csv" or p.name.startswith("_"):
+            continue
+        weights: dict[str, float] = {}
+        try:
+            with p.open(encoding="utf-8-sig", newline="") as f:
+                for row in csv.DictReader(f):
+                    symbol = canonical(row.get("ticker") or "")
+                    try:
+                        pct = float(row.get("weight_pct") or "")
+                    except ValueError:
+                        continue
+                    if symbol and math.isfinite(pct):
+                        weights[symbol] = pct / 100
+        except (OSError, UnicodeDecodeError, csv.Error):
+            continue
+        if weights:
+            out[canonical(p.stem)] = weights
+    return out

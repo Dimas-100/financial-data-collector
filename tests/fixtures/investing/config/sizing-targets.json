@@ -1,0 +1,23 @@
+{
+  "_comment": "Invented sample targets in the documented shape. Percent targets are fractions of the account (or of the brokerage account for pct_of_brokerage).",
+  "last_revised": "2026-01-15",
+  "brokerage": [
+    {"ticker": "VOO", "type": "pct_of_account", "target": 0.30, "rationale": "core index fund"},
+    {"ticker": "AAPL", "type": "pct_of_account", "target": 0.10, "min": 0.05, "max": 0.15, "rebalance": "contributions", "rationale": "own band"},
+    {"ticker": "KO", "type": "pct_of_account", "target": 0.04, "rebalance": "hold", "rationale": "held, no new money"},
+    {"ticker": "JNJ", "type": "direct_passive_ratio", "target": 0.5, "rationale": "direct against via funds"}
+  ],
+  "roth": [
+    {"ticker": "VFIAX", "type": "pct_of_account", "target": 0.60, "rationale": "core fund"},
+    {"ticker": "GLD", "type": "pct_of_brokerage", "target": 0.05, "rebalance": "trades", "rationale": "measured on the brokerage account"}
+  ],
+  "sleeves": [
+    {"account": "brokerage", "label": "Defensives", "members": ["KO", "JNJ"], "min": 0.05, "max": 0.20, "rebalance": "contributions"}
+  ],
+  "caps": [
+    {"ticker": "AAPL", "account": "all", "max": 0.12, "rebalance": "contributions"}
+  ],
+  "planned": [
+    {"label": "Sample later idea", "size": 0.03}
+  ]
+}

@@ -224,3 +224,64 @@ def test_engine_numbers_must_be_finite(tmp_path: Path, line: str):              
     name = line.split(" ")[0]
     with pytest.raises(C.ConfigError, match=rf"\[engine\] {name} must be a finite number above 0"):
         _engine_cfg(tmp_path, f"[engine]\n{line}\n")
+
+
+def _alloc_cfg(tmp_path: Path, body: str) -> C.Config:
+    (tmp_path / "config.toml").write_text(body, encoding="utf-8")
+    return C.load_config(tmp_path)
+
+
+def test_allocation_defaults_are_the_spec_values(tmp_path: Path):
+    cfg = _alloc_cfg(tmp_path, "[paths]\n")                 # no [allocation] table: no file is ever read by accident
+    a = cfg.allocation
+    assert a == C.AllocationSettings()
+    assert a.targets is None and a.fund_holdings is None
+    assert a.accounts == {}
+    assert (a.min_new, a.min_line, a.household_days) == (25.0, 10, 7)
+    assert a.tilt == {"cheap": 1.5, "usual": 1.0, "premium": 0.5}
+
+
+def test_allocation_can_be_set_and_paths_resolve_against_the_config_folder(tmp_path: Path):
+    cfg = _alloc_cfg(tmp_path, '[allocation]\ntargets = "t/x.json"\nfund_holdings = "f"\nmin_new = 50\nmin_line = 5\n'
+                               'household_days = 3\ntilt = { cheap = 2, premium = 0.25 }\n'
+                               '[allocation.accounts]\nbrokerage = "Sample Brokerage"\nroth = "Sample Roth"\n')
+    a = cfg.allocation
+    assert a.targets == (tmp_path / "t" / "x.json").resolve()
+    assert a.fund_holdings == (tmp_path / "f").resolve()
+    assert (a.min_new, a.min_line, a.household_days) == (50.0, 5, 3)
+    assert a.tilt == {"cheap": 2.0, "usual": 1.0, "premium": 0.25}              # unnamed bands keep their default
+    assert a.accounts == {"brokerage": "Sample Brokerage", "roth": "Sample Roth"}
+
+
+def test_allocation_unknown_setting_is_named(tmp_path: Path):
+    with pytest.raises(C.ConfigError, match=r"\[allocation\] has no setting no_such_thing"):
+        _alloc_cfg(tmp_path, "[allocation]\nno_such_thing = 1\n")
+
+
+@pytest.mark.parametrize("line", [
+    "min_new = 0", "min_new = -5", "min_new = 'x'", "min_new = true", "min_new = nan", "min_new = inf",
+    "min_line = 0", "min_line = 2.5", "min_line = 'x'", "min_line = true",
+    "household_days = 0", "household_days = 1.5", "household_days = false",
+    "targets = 5", "targets = ''", "fund_holdings = ['a']",
+    "tilt = 5", "tilt = { cheap = 0 }", "tilt = { cheap = -1 }", "tilt = { cheap = 'x' }", "tilt = { cheap = nan }",
+    "tilt = { cheap = inf }", "tilt = { risky = 1 }",
+    "accounts = 'x'",
+])
+def test_allocation_bad_values_are_refused(tmp_path: Path, line: str):
+    with pytest.raises(C.ConfigError, match=r"\[allocation\]"):
+        _alloc_cfg(tmp_path, f"[allocation]\n{line}\n")
+
+
+def test_allocation_accounts_must_be_strings(tmp_path: Path):
+    with pytest.raises(C.ConfigError, match=r"\[allocation\.accounts\]"):
+        _alloc_cfg(tmp_path, "[allocation.accounts]\nbrokerage = 5\n")
+    with pytest.raises(C.ConfigError, match=r"\[allocation\.accounts\]"):
+        _alloc_cfg(tmp_path, '[allocation.accounts]\nbrokerage = ""\n')
+
+
+def test_the_example_config_parses_and_names_the_sibling_files(tmp_path: Path):
+    C.init_project(tmp_path)
+    a = C.load_config(tmp_path).allocation
+    assert a.targets == (tmp_path / "../investing/config/sizing-targets.json").resolve()
+    assert a.fund_holdings == (tmp_path / "../investing/fund_holdings").resolve()
+    assert a.accounts == {}

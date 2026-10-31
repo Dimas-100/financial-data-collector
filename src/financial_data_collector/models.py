@@ -266,3 +266,48 @@ class Headline:
     url: str | None
     published: str | None
     feed_as_of: str | None
+
+
+@dataclass(frozen=True)
+class TargetEntry:
+    """One line of the owner's targets file: a holding's target share in an account, with its band.
+    `kind` says what the share is of; `rule` is how the file lets it be rebalanced (`unknown` keeps the spelling
+    it was given in `raw_rule`)."""
+    account: str
+    symbol: str
+    kind: str          # pct_of_account | pct_of_brokerage | direct_passive_ratio
+    target: float
+    low: float
+    high: float
+    rule: str          # trades | contributions | hold | unknown
+    raw_rule: str | None
+
+
+@dataclass(frozen=True)
+class Sleeve:
+    """A group of holdings the targets file limits together; `low` / `high` are None when it gives none."""
+    account: str
+    label: str
+    members: tuple[str, ...]
+    low: float | None
+    high: float | None
+    rule: str
+
+
+@dataclass(frozen=True)
+class Cap:
+    """A household-wide ceiling on one holding, as a fraction."""
+    symbol: str
+    high: float
+
+
+@dataclass(frozen=True)
+class Targets:
+    """The targets file as read: its entries, sleeves and caps, when it was last revised, its file name (never its
+    path) and a line for everything in it that was skipped or not understood."""
+    entries: tuple[TargetEntry, ...]
+    sleeves: tuple[Sleeve, ...]
+    caps: tuple[Cap, ...]
+    last_revised: str | None
+    file_name: str
+    problems: tuple[str, ...]

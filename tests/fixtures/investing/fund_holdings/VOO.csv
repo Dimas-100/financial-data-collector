@@ -1,0 +1,4 @@
+ticker,name,weight_pct,sector
+AAPL,Apple Inc,7.0,Technology
+KO,Coca-Cola Co,0.8,Consumer Staples
+JNJ,Johnson & Johnson,1.1,Health Care

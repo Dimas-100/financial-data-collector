@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Weekly split groundwork: `[allocation]` in `config.toml` (`targets`, `fund_holdings`, `accounts`, `min_new` $25, `min_line` $10, `tilt` cheap 1.5 / usual 1.0 / premium 0.5, `household_days` 7; validated; the paths are None until the file names them, so no owner file is read without a line), `derive/targets.py` (`read_targets`: the owner's targets file as `Targets`, what it skips said in `problems`, only the file name kept; `read_look_through`: each `<FUND>.csv` as fractions). Nothing reads them yet.
 - Valuation engine: an insider feed that is there but cannot be read (invalid JSON, the wrong shape) makes `insider_net_90d` `unsupported` "insider feed unreadable", apart from "insider feed not found" (no file).
 - Docs: `price_moves` has no hold-applying view; a hold found after the engine's build reaches the moves at the next sync.
 - `[engine]` settings are checked more closely: `cheap_percentile` and `premium_percentile` must be 1 or more ("a percentile such as 25, not 0.25"), `drop_day`, `drop_week`, `discount_rate` and `terminal_growth` below 1 (fractions, 0.04 = 4%), and every number finite (TOML's `inf` and `nan` are refused).

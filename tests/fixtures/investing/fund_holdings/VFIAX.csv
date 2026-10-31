@@ -1,0 +1,4 @@
+﻿ticker,name,weight_pct,sector
+AAPL,Apple Inc,6.5,Technology
+KO,Coca-Cola Co,0.7,Consumer Staples
+BADX,Bad Row,n/a,Other

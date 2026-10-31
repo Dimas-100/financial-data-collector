@@ -71,6 +71,18 @@ drop_week = 0.08                   # ... or this much over 5 trading days
 excess_sd = 2.5                    # ... or a day's move minus SPY's beyond this many of its own 1-year standard deviations
 moves_days = 365                   # price_moves covers this many calendar days back
 
+[allocation]                       # the weekly split (fdc sync's engine step): proposals only, never an order
+targets = "../investing/config/sizing-targets.json"   # owner-only targets file; no file, no proposals
+fund_holdings = "../investing/fund_holdings"          # owner-only <FUND>.csv look-through weights (top holdings)
+min_new = 25                       # a proposal is made when an account's waiting cash rises this many dollars
+min_line = 10                      # a line under this many dollars is folded into the largest line
+household_days = 7                 # caps count accounts whose newest snapshot is this close to the newest
+tilt = { cheap = 1.5, usual = 1.0, premium = 0.5 }    # a holding's share of the money, by its band
+
+[allocation.accounts]              # targets-file account name = fdc account label (fdc accounts lists them)
+# brokerage = "Sample Brokerage"
+# roth = "Sample Roth"
+
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"
 
@@ -138,6 +150,25 @@ class EngineSettings:
     moves_days: int = 365
 
 
+def _default_tilt() -> dict[str, float]:
+    return {"cheap": 1.5, "usual": 1.0, "premium": 0.5}
+
+
+@dataclass(frozen=True)
+class AllocationSettings:
+    """Settings of the weekly split (config [allocation]); the defaults are the spec's.
+
+    `targets` and `fund_holdings` are None until config.toml names them (the example config does): no line, no file read.
+    `accounts` maps a targets-file account name to an fdc account label."""
+    targets: Path | None = None
+    fund_holdings: Path | None = None
+    accounts: dict[str, str] = field(default_factory=dict)
+    min_new: float = 25.0
+    min_line: int = 10
+    tilt: dict[str, float] = field(default_factory=_default_tilt)
+    household_days: int = 7
+
+
 @dataclass(frozen=True)
 class Benchmarks:
     """The yardsticks a move is measured against: one fund for the whole market and one per sector."""
@@ -172,6 +203,7 @@ class Config:
     share_classes: dict[str, ShareClass] = field(default_factory=dict)
     check: CheckSettings = field(default_factory=CheckSettings)
     engine: EngineSettings = field(default_factory=EngineSettings)
+    allocation: AllocationSettings = field(default_factory=AllocationSettings)
     benchmarks: Benchmarks = field(default_factory=Benchmarks)
     fund_proxies: dict[str, str] = field(default_factory=dict)
     tiingo_token: str | None = None
@@ -296,6 +328,57 @@ def _engine_settings(raw: object, cfg_path: Path) -> EngineSettings:
     return EngineSettings(**values)
 
 
+ALLOCATION_BANDS = ("cheap", "usual", "premium")
+
+
+def _allocation_settings(raw: object, cfg_path: Path, root: Path) -> AllocationSettings:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{cfg_path}: [allocation] must be a table")
+    defaults = AllocationSettings()
+    unknown = sorted(set(raw) - set(defaults.__dataclass_fields__))
+    if unknown:
+        raise ConfigError(f"{cfg_path}: [allocation] has no setting {', '.join(unknown)}")
+    values: dict[str, object] = {}
+    for name in ("targets", "fund_holdings"):
+        if name not in raw:
+            continue
+        v = raw[name]
+        if not isinstance(v, str) or not v.strip():
+            raise ConfigError(f'{cfg_path}: [allocation] {name} must be a path, such as "../investing/fund_holdings"')
+        values[name] = (root / v).resolve()
+    for name in ("min_line", "household_days"):
+        v = raw.get(name, getattr(defaults, name))
+        if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+            raise ConfigError(f"{cfg_path}: [allocation] {name} must be a whole number, 1 or more")
+        values[name] = v
+    v = raw.get("min_new", defaults.min_new)
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or not v > 0:
+        raise ConfigError(f"{cfg_path}: [allocation] min_new must be a finite number of dollars above 0")
+    values["min_new"] = float(v)
+    tilt_raw = raw.get("tilt", {})
+    if not isinstance(tilt_raw, dict):
+        raise ConfigError(f"{cfg_path}: [allocation] tilt must be a table, such as {{ cheap = 1.5, usual = 1.0, premium = 0.5 }}")
+    bad = sorted(set(tilt_raw) - set(ALLOCATION_BANDS))
+    if bad:
+        raise ConfigError(f"{cfg_path}: [allocation] tilt has no band {', '.join(bad)}; the bands are: {', '.join(ALLOCATION_BANDS)}")
+    tilt = _default_tilt()
+    for band, v in tilt_raw.items():
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or not v > 0:
+            raise ConfigError(f"{cfg_path}: [allocation] tilt {band} must be a finite number above 0")
+        tilt[band] = float(v)
+    values["tilt"] = tilt
+    accounts_raw = raw.get("accounts", {})
+    if not isinstance(accounts_raw, dict):
+        raise ConfigError(f"{cfg_path}: [allocation] accounts must be a table")
+    accounts: dict[str, str] = {}
+    for name, label in accounts_raw.items():
+        if not isinstance(label, str) or not label.strip():
+            raise ConfigError(f'{cfg_path}: [allocation.accounts] {name} needs an account label, such as "Sample Brokerage"')
+        accounts[str(name)] = label.strip()
+    values["accounts"] = accounts
+    return AllocationSettings(**values)
+
+
 def _benchmarks(raw: object, cfg_path: Path) -> Benchmarks:
     if not isinstance(raw, dict):
         raise ConfigError(f"{cfg_path}: [benchmarks] must be a table")
@@ -373,6 +456,7 @@ def load_config(root: Path) -> Config:
         share_classes=_share_classes(raw.get("share_classes", {}), cfg_path),
         check=_check_settings(raw.get("check", {}), cfg_path),
         engine=_engine_settings(raw.get("engine", {}), cfg_path),
+        allocation=_allocation_settings(raw.get("allocation", {}), cfg_path, root),
         benchmarks=_benchmarks(raw.get("benchmarks", {}), cfg_path),
         fund_proxies=_fund_proxies(raw.get("fund_proxies", {}), cfg_path),
         tiingo_token=_secret("TIINGO_API_TOKEN", dotenv),

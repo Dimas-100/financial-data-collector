@@ -57,6 +57,18 @@ drop_week = 0.08                   # ... or this much over 5 trading days
 excess_sd = 2.5                    # ... or a day's move minus SPY's beyond this many of its own 1-year standard deviations
 moves_days = 365                   # price_moves covers this many calendar days back
 
+[allocation]                       # the weekly split (fdc sync's engine step): proposals only, never an order
+targets = "../investing/config/sizing-targets.json"   # owner-only targets file; no file, no proposals
+fund_holdings = "../investing/fund_holdings"          # owner-only <FUND>.csv look-through weights (top holdings)
+min_new = 25                       # a proposal is made when an account's waiting cash rises this many dollars
+min_line = 10                      # a line under this many dollars is folded into the largest line
+household_days = 7                 # caps count accounts whose newest snapshot is this close to the newest
+tilt = { cheap = 1.5, usual = 1.0, premium = 0.5 }    # a holding's share of the money, by its band
+
+[allocation.accounts]              # targets-file account name = fdc account label (fdc accounts lists them)
+# brokerage = "Sample Brokerage"
+# roth = "Sample Roth"
+
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"
 
