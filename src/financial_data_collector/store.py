@@ -12,7 +12,7 @@ from . import migrate as _migrate
 from .adapters.base import dedupe_key
 from .connections.names import slug_for
 from .models import (
-    AccountRef, ConceptRule, CurrentReport, EarningsEvent, Estimate, Fact, FundSnapshot, Headline, LineItem,
+    AccountRef, AllocationProposal, ConceptRule, CurrentReport, EarningsEvent, Estimate, Fact, FundSnapshot, Headline, LineItem,
     ENGINE_CHECK_NAMES, MacroObservation, PriceBar, PriceMove, ScoreRow, Snapshot, TransactionRow, is_final,
 )
 
@@ -25,6 +25,7 @@ COUNT_TABLES = (
     "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily", "connections",
     "unexplained_daily", "macro_observations", "check_runs", "check_findings", "fund_snapshots", "earnings_events",
     "estimate_snapshots", "current_reports", "news_headlines", "valuation_scores_raw", "price_moves",
+    "allocation_proposals_raw", "allocation_lines_raw",
 )
 
 
@@ -925,6 +926,113 @@ class Store:
                 f"INSERT OR REPLACE INTO price_moves ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
                 [v for k, v in want.items() if have.get(k) != v])
         return len(want)
+
+    # ---- the weekly split (prefix split_; proposals are a record, see migration 0022) ----------------------------
+    def split_positions(self) -> list[dict]:
+        """Every account's newest positions (positions_latest): `account` is the fdc account label."""
+        return [dict(r) for r in self.query(
+            "SELECT account, as_of_date, symbol, market_value, asset_type FROM positions_latest "
+            "ORDER BY account, symbol")]
+
+    def split_cash(self) -> dict[str, tuple[str, float]]:
+        """Each account label's newest USD cash balance as (as_of_date, amount)."""
+        out: dict[str, tuple[str, float]] = {}
+        for r in self.query(
+                "SELECT a.label, c.as_of_date, c.amount FROM cash_balances c JOIN accounts a ON a.id = c.account_id "
+                "WHERE c.currency = 'USD' AND c.as_of_date = (SELECT MAX(c2.as_of_date) FROM cash_balances c2 "
+                "WHERE c2.account_id = c.account_id AND c2.currency = 'USD') ORDER BY a.label"):
+            out[r[0]] = (r[1], r[2])
+        return out
+
+    def split_cash_low_since(self, label: str, after: str) -> float | None:
+        """The lowest USD balance of the account dated `after` or later (the day itself counts); None when none."""
+        r = self.query("SELECT MIN(c.amount) FROM cash_balances c JOIN accounts a ON a.id = c.account_id "
+                       "WHERE a.label = ? AND c.currency = 'USD' AND c.as_of_date >= ?", (label, after))
+        return r[0][0] if r else None
+
+    def split_scores(self, symbols: list[str]) -> dict[str, list[dict]]:
+        """Each symbol's rows of the valuation_scores view (open holds applied), `sources` parsed; [] for a symbol
+        with none."""
+        out: dict[str, list[dict]] = {s: [] for s in symbols}
+        for s in out:
+            for r in self.query("SELECT * FROM valuation_scores WHERE symbol = ? ORDER BY metric", (s,)):
+                d = dict(r)
+                d["sources"] = json.loads(d["sources"]) if d["sources"] else []
+                out[s].append(d)
+        return out
+
+    def _proposal_dict(self, row: sqlite3.Row) -> dict:
+        d = dict(row)
+        d["notes"] = json.loads(d["notes"])
+        d["sources"] = json.loads(d["sources"])
+        d["lines"] = []
+        for r in self.query("SELECT * FROM allocation_lines_raw WHERE proposal_id = ? ORDER BY rowid", (d["id"],)):
+            line = dict(r)
+            line["reasons"] = tuple(x for x in line["reasons"].split(",") if x)
+            line["sources"] = json.loads(line["sources"])
+            d["lines"].append(line)
+        return d
+
+    def open_proposal(self, account_key: str) -> dict | None:
+        """The account's open proposal (raw row, holds not applied) with its lines under "lines"; None when none."""
+        rows = self.query("SELECT * FROM allocation_proposals_raw WHERE account_key = ? AND status = 'open'",
+                          (account_key,))
+        return self._proposal_dict(rows[0]) if rows else None
+
+    def last_spent_proposal(self, account_key: str) -> dict | None:
+        """The account's newest `spent` proposal (by closed_at, then id), with its lines; None when none."""
+        rows = self.query("SELECT * FROM allocation_proposals_raw WHERE account_key = ? AND status = 'spent' "
+                          "ORDER BY closed_at DESC, id DESC LIMIT 1", (account_key,))
+        return self._proposal_dict(rows[0]) if rows else None
+
+    def write_proposal(self, p: AllocationProposal, *, created_at: str, checked_at: str | None,
+                       replaces: int | None) -> int:
+        """Add a proposal (status open) and its lines; with `replaces`, the old open proposal is closed as
+        `replaced` (closed_at = created_at, closed_cash = this cash) in the same transaction. A second open proposal
+        for an account is refused by the table (sqlite3.IntegrityError), as is a line of zero dollars; nothing
+        else is checked here. Returns the new id."""
+        with self.conn:
+            if replaces is not None:
+                n = self.conn.execute(
+                    "UPDATE allocation_proposals_raw SET status = 'replaced', closed_at = ?, closed_cash = ? "
+                    "WHERE id = ? AND status = 'open'", (created_at, p.cash, replaces)).rowcount
+                if n != 1:
+                    raise ValueError(f"proposal {replaces} is not open")
+            pid = self.conn.execute(
+                "INSERT INTO allocation_proposals_raw (account_key, created_at, cash_date, cash, placed, waits, "
+                "status, notes, sources, checked_at) VALUES (?,?,?,?,?,?, 'open', ?,?,?)",
+                (p.account_key, created_at, p.cash_date, p.cash, p.placed, p.waits,
+                 json.dumps(list(p.notes), sort_keys=True), json.dumps(list(p.sources), sort_keys=True),
+                 checked_at)).lastrowid
+            for line, src in zip(p.lines, p.line_sources, strict=True):
+                self.conn.execute(
+                    "INSERT INTO allocation_lines_raw (proposal_id, symbol, dollars, target_gap, band, tilt, "
+                    "reasons, sources) VALUES (?,?,?,?,?,?,?,?)",
+                    (pid, line.symbol, line.dollars, line.target_gap, line.band, line.tilt,
+                     ",".join(line.reasons), json.dumps(list(src), sort_keys=True)))
+        return pid
+
+    def close_proposal(self, proposal_id: int, *, closed_at: str, closed_cash: float) -> None:
+        """Mark an open proposal `spent` (its cash was placed, in full or in part)."""
+        with self.conn:
+            n = self.conn.execute(
+                "UPDATE allocation_proposals_raw SET status = 'spent', closed_at = ?, closed_cash = ? "
+                "WHERE id = ? AND status = 'open'", (closed_at, closed_cash, proposal_id)).rowcount
+        if n != 1:
+            raise ValueError(f"proposal {proposal_id} is not open")
+
+    def check_split_rows(self) -> list[dict]:
+        """For the checker: every open raw proposal (id, account_key, cash_date, cash) with its lines (symbol,
+        dollars, sources parsed), whether or not a hold covers it."""
+        out = []
+        for r in self.query("SELECT id, account_key, cash_date, cash FROM allocation_proposals_raw "
+                            "WHERE status = 'open' ORDER BY id"):
+            d = dict(r)
+            d["lines"] = [{"symbol": l[0], "dollars": l[1], "sources": json.loads(l[2]) if l[2] else []}
+                          for l in self.query("SELECT symbol, dollars, sources FROM allocation_lines_raw "
+                                              "WHERE proposal_id = ? ORDER BY rowid", (d["id"],))]
+            out.append(d)
+        return out
 
     # ---- the checker (prefix check_) ----------------------------------------
     def check_open_findings(self, check_name: str | None = None) -> list[sqlite3.Row]:

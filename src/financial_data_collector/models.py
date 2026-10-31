@@ -326,3 +326,23 @@ class SplitLine:
     band: str
     tilt: float
     reasons: tuple[str, ...]
+
+
+PROPOSAL_STATUSES = ("open", "replaced", "spent")
+
+
+@dataclass(frozen=True)
+class AllocationProposal:
+    """One account's weekly split as it is stored: `account_key` is the targets file's name for the account (never
+    its label), `cash_date` / `cash` the waiting cash it was made from, `placed` the number of lines, `waits` the
+    dollars left for next week, `notes` the plan's notes, `sources` the proposal's own sources (the cash row).
+    `line_sources[i]` belongs to `lines[i]`."""
+    account_key: str
+    cash_date: str
+    cash: float
+    placed: int
+    waits: float
+    lines: tuple[SplitLine, ...]
+    line_sources: tuple[tuple[dict, ...], ...]
+    notes: tuple[dict, ...]
+    sources: tuple[dict, ...]
