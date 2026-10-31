@@ -31,7 +31,7 @@ def _src(label: str) -> dict:
 def _proposal(account_key: str = "brokerage", cash: float = 100.0, symbols=("VOO", "KO")) -> AllocationProposal:
     lines = tuple(SplitLine(s, 40 - 10 * i, 55.5, "cheap" if i == 0 else "usual", 1.5 if i == 0 else 1.0,
                             ("cheap_by:pe", "band_top") if i == 0 else ()) for i, s in enumerate(symbols))
-    return AllocationProposal(account_key, "2026-10-30", cash, len(lines), cash - sum(l.dollars for l in lines),
+    return AllocationProposal(account_key, "2026-10-30", cash, sum(l.dollars for l in lines), cash - sum(l.dollars for l in lines),
                               lines, tuple((_src(f"line {l.symbol}"),) for l in lines),
                               ({"code": "under_min", "symbol": "JNJ"},), (_src("cash_balances"),))
 
@@ -47,7 +47,7 @@ def test_write_and_read_an_open_proposal(store: Store):
     got = store.open_proposal("brokerage")
     assert got["id"] == pid and got["status"] == "open" and got["closed_at"] is None
     assert (got["account_key"], got["cash_date"], got["cash"], got["placed"], got["waits"]) == \
-           ("brokerage", "2026-10-30", 100.0, 2, 30.0)
+           ("brokerage", "2026-10-30", 100.0, 70, 30.0)
     assert got["created_at"] == NOW and got["checked_at"] == "2026-10-31T11:00:00Z"
     assert got["notes"] == [{"code": "under_min", "symbol": "JNJ"}]
     assert got["sources"] == [_src("cash_balances")]
@@ -294,7 +294,7 @@ def test_first_deposit_opens_a_proposal(setup):
     by = {l["symbol"]: l for l in p["lines"]}
     assert set(by) == {"VOO", "AAPL"}
     assert sum(l["dollars"] for l in p["lines"]) + p["waits"] == pytest.approx(500.0)
-    assert p["placed"] == 2 and p["waits"] >= 0
+    assert p["placed"] == 475 and p["waits"] >= 0                 # the dollars placed, not the number of lines
     assert by["AAPL"]["band"] == "cheap" and by["AAPL"]["tilt"] == 1.5
     raw = store.query("SELECT reasons FROM allocation_lines_raw WHERE symbol = 'AAPL'")[0][0]
     assert raw == "missing:ps,cheap_by:pe+p_fcf,quality_unknown,band_top"      # the band's codes come first
@@ -662,3 +662,75 @@ def test_an_account_without_positions_decides_on_any_cash_row(store: Store, tmp_
     store.write_snapshot(Snapshot("2026-10-20", "fidelity_csv", [], [CashRow(ACCT, 500.0)]))
     rep = _run(store, _cfg(tmp_path), 2)
     assert rep.opened == 1 and not any("older than its positions" in n for n in rep.notes)
+
+
+# ---- final fix wave: caps across accounts, untyped names, placed in dollars
+
+def test_a_household_cap_holds_across_two_accounts_in_one_run(store: Store, tmp_path: Path):
+    # Each account holds 100 of AAPL and 1000 of a fund, with 1000 waiting; household 4200, cap AAPL 12% = 504, so
+    # 304 of room for both accounts together. The brokerage is planned first; the roth's lines then count its open ones.
+    _types(store)
+    doc = {"last_revised": "2026-10-01",
+           "brokerage": [{"ticker": "AAPL", "target": 30.0}, {"ticker": "VOO", "target": 70.0}],
+           "roth": [{"ticker": "AAPL", "target": 30.0}, {"ticker": "VFIAX", "target": 70.0}],
+           "caps": [{"ticker": "AAPL", "max": 12.0}]}
+    _day(store, "2026-10-30", 1000.0, ACCT, (("VOO", 1000.0), ("AAPL", 100.0)))
+    _day(store, "2026-10-30", 1000.0, ROTH, (("VFIAX", 1000.0), ("AAPL", 100.0)))
+    rep = _run(store, _cfg(tmp_path, doc), 2)
+    assert rep.opened == 2
+    aapl = [l["dollars"] for k in ("brokerage", "roth") for l in store.open_proposal(k)["lines"] if l["symbol"] == "AAPL"]
+    assert sum(aapl) <= 304
+    assert {"symbol": "AAPL", "reason": "cap_cut:AAPL"} in store.open_proposal("roth")["notes"]
+    # A replacement of the brokerage's proposal counts the roth's open lines, not its own old ones.
+    _day(store, "2026-11-02", 1100.0, ACCT, (("VOO", 1000.0), ("AAPL", 100.0)))
+    rep = _run(store, _cfg(tmp_path, doc), 3)
+    assert rep.replaced == 1
+    aapl = [l["dollars"] for k in ("brokerage", "roth") for l in store.open_proposal(k)["lines"] if l["symbol"] == "AAPL"]
+    assert sum(aapl) <= 0.12 * 4300 - 200 + 1e-9
+    assert aapl[0] >= 300                       # its own old 304 would have left it 12 of room
+
+
+def test_an_untyped_symbol_with_a_look_through_file_is_a_fund(store: Store, tmp_path: Path):
+    # QQQ has no asset type but a look-through file (AAPL 50%): it is a fund, so the AAPL cap cuts its line through the
+    # file (0.5 of each dollar) and its band is read from the fund metrics (pe, dividend_yield).
+    _types(store)
+    funds = tmp_path / "fund_holdings"
+    funds.mkdir()
+    (funds / "QQQ.csv").write_text("ticker,name,weight_pct\nAAPL,Apple,50\n", encoding="utf-8")
+    for m in ("pe", "dividend_yield"):
+        _score(store, "QQQ", m, "cheap")
+    doc = {"last_revised": "2026-10-01", "brokerage": [{"ticker": "QQQ", "target": 60.0}],
+           "caps": [{"ticker": "AAPL", "max": 10.0}]}
+    _day(store, "2026-10-30", 500.0, ACCT, (("KO", 400.0), ("AAPL", 80.0)))
+    rep = _run(store, _cfg(tmp_path, doc, fund_holdings=funds, accounts={"brokerage": "Sample Brokerage"}), 2)
+    assert rep.opened == 1
+    (line,) = store.open_proposal("brokerage")["lines"]
+    # household 980: cap 98, AAPL held 80 -> room 18 -> QQQ at most 36.
+    assert line["symbol"] == "QQQ" and line["dollars"] == 36
+    assert line["band"] == "cheap" and "cheap_by:pe+dividend_yield" in line["reasons"]
+    assert "type_unknown" not in line["reasons"] and "look_through_assumed" not in line["reasons"]
+
+
+def test_an_untyped_symbol_without_a_file_is_capped_at_the_assumed_weight(store: Store, tmp_path: Path):
+    # QQQ: no type, no file. VOO's file names AAPL at 10%: QQQ is taken at 10% for an AAPL cap and says type_unknown.
+    _types(store)
+    funds = tmp_path / "fund_holdings"
+    funds.mkdir()
+    (funds / "VOO.csv").write_text("ticker,name,weight_pct\nAAPL,Apple,10\n", encoding="utf-8")
+    doc = {"last_revised": "2026-10-01", "brokerage": [{"ticker": "QQQ", "target": 60.0}],
+           "caps": [{"ticker": "AAPL", "max": 10.0}]}
+    _day(store, "2026-10-30", 500.0, ACCT, (("KO", 400.0), ("AAPL", 80.0)))
+    rep = _run(store, _cfg(tmp_path, doc, fund_holdings=funds, accounts={"brokerage": "Sample Brokerage"}), 2)
+    assert rep.opened == 1
+    (line,) = store.open_proposal("brokerage")["lines"]
+    # household 980: cap 98, AAPL held 80 -> room 18 -> QQQ at most 180.
+    assert line["symbol"] == "QQQ" and line["dollars"] == 180
+    assert "type_unknown" in line["reasons"] and "look_through_assumed" in line["reasons"]
+
+
+def test_placed_is_the_dollars_placed(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    p = store.open_proposal("brokerage")
+    assert p["placed"] == sum(l["dollars"] for l in p["lines"]) and p["placed"] > len(p["lines"])
+    assert round(p["placed"] + p["waits"], 2) == p["cash"]

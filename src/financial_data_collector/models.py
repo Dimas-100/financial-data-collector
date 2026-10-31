@@ -319,8 +319,8 @@ class Targets:
 class SplitLine:
     """One line of a weekly split: whole dollars of an account's waiting cash toward one holding. `target_gap` is the
     dollars between the holding and its target before the band's tilt; `tilt` the factor its band gave; `reasons`
-    the band's reason codes, then the split's own (`trades_as_contributions`, `no_scores`, `look_through_assumed`,
-    `sleeve_cut:<label>`, `cap_cut:<symbol>`, `band_top`, `folded`)."""
+    the band's reason codes, then the split's own (`trades_as_contributions`, `no_scores`, `type_unknown`,
+    `look_through_assumed`, `sleeve_cut:<label>`, `cap_cut:<symbol>`, `band_top`, `folded`)."""
     symbol: str
     dollars: int
     target_gap: float
@@ -335,9 +335,9 @@ PROPOSAL_STATUSES = ("open", "replaced", "spent")
 @dataclass(frozen=True)
 class AllocationProposal:
     """One account's weekly split as it is stored: `account_key` is the targets file's name for the account (never
-    its label), `cash_date` / `cash` the waiting cash it was made from, `placed` the number of lines, `waits` the
-    dollars left for next week, `notes` the plan's notes, `sources` the proposal's own sources (the cash row).
-    `line_sources[i]` belongs to `lines[i]`."""
+    its label), `cash_date` / `cash` the waiting cash it was made from, `placed` the whole dollars its lines place (the
+    sum of the lines), `waits` the dollars left for next week (cash = placed + waits to the cent), `notes` the plan's
+    notes, `sources` the proposal's own sources (the cash row). `line_sources[i]` belongs to `lines[i]`."""
     account_key: str
     cash_date: str
     cash: float

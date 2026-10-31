@@ -67,7 +67,8 @@ def _open(store, lines, *, cash=100.0, account="brokerage") -> int:
     for item in lines:
         built.append(SplitLine(item[0], item[1], 10.0, "usual", 1.0, ()))
         srcs.append(tuple(item[2]) if len(item) > 2 else tuple(SRC))
-    p = AllocationProposal(account, "2026-10-30", cash, len(built), 0.0, tuple(built), tuple(srcs), (), tuple(SRC))
+    p = AllocationProposal(account, "2026-10-30", cash, sum(int(b.dollars) for b in built), 0.0, tuple(built), tuple(srcs), (),
+                           tuple(SRC))
     return store.write_proposal(p, created_at=STAMP, checked_at=None, replaces=None)
 
 

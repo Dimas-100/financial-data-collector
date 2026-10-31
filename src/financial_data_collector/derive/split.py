@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 
 from ..models import FUND_TYPES, AllocationProposal, SplitLine, TargetEntry, Targets
 from . import sources
@@ -115,13 +115,16 @@ _FILL_RULES = ("trades", "contributions")
 class Household:
     """Every counted account together: `total` (positions plus cash), each name's `direct` dollars, its `indirect`
     dollars through funds with a look-through file, the look-through itself, which symbols are funds, and the
-    dollars held in each fund (`fund_values`, with a file or not) for the caps."""
+    dollars held in each fund (`fund_values`, with a file or not) for the caps. `untyped`: symbols whose asset type is
+    unknown or missing and that have no look-through file; they are in `funds` (for caps, a fund without a file, at
+    the assumed weight) and their lines say `type_unknown`."""
     total: float
     direct: dict[str, float]
     indirect: dict[str, float]
     look_through: dict[str, dict[str, float]]
     funds: frozenset[str]
     fund_values: dict[str, float] = field(default_factory=dict)
+    untyped: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -134,12 +137,12 @@ class SplitPlan:
 
 
 def household_of(positions: list[dict], cash: dict[str, float], look_through: dict[str, dict[str, float]],
-                 fund_symbols: frozenset[str]) -> Household:
+                 fund_symbols: frozenset[str], untyped: frozenset[str] = frozenset()) -> Household:
     """The household from the counted accounts' positions (`account`, `symbol`, `market_value`) and cash.
 
     A fund with a look-through file adds value x weight to each name it holds (`indirect`); the rest of the fund adds
     to no name. A fund without a file, and anything that is not a fund, counts as a direct holding of itself. Every
-    fund's held dollars are also kept in `fund_values`."""
+    fund's held dollars are also kept in `fund_values`. `untyped` (a subset of `fund_symbols`) is kept as given."""
     direct: dict[str, float] = {}
     indirect: dict[str, float] = {}
     fund_values: dict[str, float] = {}
@@ -154,7 +157,30 @@ def household_of(positions: list[dict], cash: dict[str, float], look_through: di
                 indirect[name] = indirect.get(name, 0.0) + value * weight
         else:
             direct[symbol] = direct.get(symbol, 0.0) + value
-    return Household(total, direct, indirect, dict(look_through), frozenset(fund_symbols), fund_values)
+    return Household(total, direct, indirect, dict(look_through), frozenset(fund_symbols), fund_values,
+                     frozenset(untyped))
+
+
+def with_pending(household: Household, lines: Iterable[tuple[str, float]], *, add_to_total: bool) -> Household:
+    """The household with another account's open proposal lines (symbol, dollars) counted as pending holdings, the
+    way household_of counts a holding: a fund with a file through its weights (`indirect`), a fund without one as
+    itself (`direct`) and in `fund_values` (so a cap charges it at the assumed weight), anything else `direct`. The
+    total grows only with `add_to_total`: a line's dollars are that account's cash, already in the total when its cash
+    row is counted. Returns a new Household; the one given is not changed."""
+    direct, indirect, fund_values = dict(household.direct), dict(household.indirect), dict(household.fund_values)
+    total = household.total
+    for symbol, dollars in lines:
+        d = float(dollars)
+        if add_to_total:
+            total += d
+        if symbol in household.funds:
+            fund_values[symbol] = fund_values.get(symbol, 0.0) + d
+        if symbol in household.funds and symbol in household.look_through:
+            for name, weight in household.look_through[symbol].items():
+                indirect[name] = indirect.get(name, 0.0) + d * weight
+        else:
+            direct[symbol] = direct.get(symbol, 0.0) + d
+    return Household(total, direct, indirect, household.look_through, household.funds, fund_values, household.untyped)
 
 
 def _account_entries(account: str, targets: Targets) -> list[TargetEntry]:
@@ -313,12 +339,16 @@ def plan_split(account: str, cash: float, base: float, held: dict[str, float], h
     and its top max% x base - held; a ratio entry's gap is target x via-funds - direct (household-wide) and its top
     max x via-funds - direct. Money goes by gap x tilt, never past a top, a sleeve's max (its members in this account)
     or a cap (the name household-wide, funds through their look-through; see `cap_used`). Whole dollars (floored);
-    a line under `min_line` is folded into the largest line as far as that line's room allows; the rest waits. Never
+    a line under `min_line` is folded into the largest line as far as that line's room allows; when no line reaches
+    `min_line`, everything placed is folded into the largest share (ties alphabetical) within its room, and waits if
+    that is still under `min_line`; the rest waits. A name with any `hold` entry in the account is `hold`, even after
+    a duplicate that says otherwise. A name in `household.untyped` says `type_unknown`. Never
     more than the cash, never a `hold` or unknown-rule entry. With no cash (0.005 or less) every entry that could
     have had money is noted `no_cash`.
     """
     cash_in = max(float(cash), 0.0)
     entries = _account_entries(account, targets)
+    on_hold = {e.symbol for e in entries if e.rule == "hold"}      # any hold entry of a name in this account wins
     reason_of: dict[int, str] = {}
     seen: set[str] = set()
     lines: dict[str, _Line] = {}
@@ -328,7 +358,7 @@ def plan_split(account: str, cash: float, base: float, held: dict[str, float], h
             reason_of[i] = "duplicate"
             continue
         seen.add(s)
-        if e.rule == "hold":
+        if s in on_hold:
             reason_of[i] = "hold"
             continue
         if e.rule not in _FILL_RULES:
@@ -357,6 +387,8 @@ def plan_split(account: str, cash: float, base: float, held: dict[str, float], h
             reasons.append("trades_as_contributions")
         if s not in bands:
             reasons.append("no_scores")
+        if s in household.untyped:
+            reasons.append("type_unknown")
         factor = float(tilt[band])
         lines[s] = _Line(s, gap, top, band, factor, gap * factor, reasons)
 
@@ -380,6 +412,18 @@ def plan_split(account: str, cash: float, base: float, held: dict[str, float], h
         if add > 0:
             dollars[r] += add
             folded = r
+    elif not kept and lines:
+        # No line reaches the minimum: everything the fill placed goes to the largest share (ties alphabetical), as
+        # far as its room allows (its top, every group over it); still under the minimum, everything waits.
+        r = min(lines, key=lambda s: (-x[s], s))
+        room = lines[r].top
+        for g in groups:
+            if r in g.coef:
+                room = min(room, g.room / g.coef[r])
+        amount = min(int(math.floor(sum(x.values()) + _FLOOR_EPS)), max(0, int(math.floor(room + _FLOOR_EPS))))
+        if amount >= min_line:
+            dollars[r] = amount
+            kept, folded = [r], r
     kept = _within_cash(dollars, kept, cash_in, min_line)
 
     out = []
@@ -472,7 +516,7 @@ def _household_notes(left_out: int, stale_cash: int, days: int) -> list[str]:
 
 
 def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: str, cash: float, targets: Targets,
-                  household: Household, positions: list[dict], types: dict[str, str],
+                  household: Household, positions: list[dict], fund_symbols: frozenset[str],
                   extra_notes: list[dict]) -> AllocationProposal:
     """One account's proposal for all of `cash`: plan_split over its own positions, the household and the bands
     from its entries' scores, with every line's sources (its targets entry, the score rows that decided its band,
@@ -493,7 +537,7 @@ def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: st
     deciding: dict[str, tuple[dict, ...]] = {}
     for s in symbols:
         if rows_of.get(s):              # no score row at all: plan_split says `no_scores`
-            band, reasons, rows = holding_band(rows_of[s], types.get(s) in FUND_TYPES)
+            band, reasons, rows = holding_band(rows_of[s], s in fund_symbols)
             bands[s], deciding[s] = (band, reasons), rows
     plan = plan_split(key, cash, base, held, household, targets, bands, alloc.tilt, alloc.min_line)
 
@@ -510,11 +554,17 @@ def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: st
              + extra_notes)
     proposal_sources = (sources.derived("cash_balances", key, cash_date),
                         sources.feed(targets.file_name, targets.last_revised, key))
-    return AllocationProposal(key, cash_date, cash, len(plan.lines), plan.waits, plan.lines, tuple(line_sources),
+    placed = sum(line.dollars for line in plan.lines)          # the dollars placed: cash = placed + waits
+    return AllocationProposal(key, cash_date, cash, placed, plan.waits, plan.lines, tuple(line_sources),
                               tuple(notes), proposal_sources)
 
 
 _STAYS_OPEN = "; its open proposal stays open"
+
+
+def _untyped(asset_type: str | None) -> bool:
+    """An asset type the warehouse does not know: missing, empty or `unknown`."""
+    return asset_type in (None, "", "unknown")
 
 
 def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> SplitReport:
@@ -547,8 +597,12 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
     look_through = read_look_through(alloc.fund_holdings)
     symbols = {r["symbol"] for r in positions} | {e.symbol for e in targets.entries} | set(look_through)
     types = store.split_asset_types(sorted(symbols))
-    funds = frozenset(s for s, t in types.items() if t in FUND_TYPES)
-    household = household_of(kept, kept_cash, look_through, funds)
+    # A fund: typed one, or a symbol with a look-through file whose type is unknown or missing (the file shows it holds
+    # other names). Any other symbol of unknown or missing type is, for caps, a fund without a file (`type_unknown`).
+    funds = frozenset(s for s in symbols
+                      if types.get(s) in FUND_TYPES or (s in look_through and _untyped(types.get(s))))
+    untyped = frozenset(s for s in symbols if _untyped(types.get(s)) and s not in look_through)
+    household = household_of(kept, kept_cash, look_through, funds | untyped, untyped)
     kept_labels = {r["account"] for r in kept}
     positions_labels = {r["account"] for r in positions}
     positions_date: dict[str, str] = {}
@@ -609,7 +663,16 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
         if label in positions_labels and label not in kept_labels:
             extra.append({"symbol": None, "reason":
                           f"this account is older than {alloc.household_days} days and left out of the household"})
-        proposal = _new_proposal(store, cfg, key, label, cash_date, cash, targets, household, positions, types, extra)
+        # Caps are household-wide: every other account's open lines (earlier runs, and earlier in this one) are
+        # pending holdings. This account's own open proposal, being replaced, does not count.
+        pending = household
+        for other in store.open_proposal_keys():
+            if other == key:
+                continue
+            p = store.open_proposal(other)
+            counted = alloc.accounts.get(other) in kept_cash
+            pending = with_pending(pending, [(l["symbol"], l["dollars"]) for l in p["lines"]], add_to_total=not counted)
+        proposal = _new_proposal(store, cfg, key, label, cash_date, cash, targets, pending, positions, funds, extra)
         store.write_proposal(proposal, created_at=stamp, checked_at=checked_at,
                              replaces=current["id"] if current is not None else None)
         if current is not None:

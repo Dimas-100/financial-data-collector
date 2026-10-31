@@ -562,9 +562,10 @@ def test_lines_never_sum_above_cash(cash):
 
 
 def test_three_line_sweep_values():
-    # 9 and 10: every share is under $10 (10 -> 5 / 3.33 / 1.67), nothing is a line, all waits.
+    # 9 and 10: every share is under $10 (10 -> 5 / 3.33 / 1.67), so everything folds into the largest (SPY): 9 is
+    # still under the minimum and waits; 10 makes one line of 10.
     assert _d(_plan(THREE, 9, held=THREE_HELD)) == {} and _plan(THREE, 9, held=THREE_HELD).waits == 9.0
-    assert _d(_plan(THREE, 10, held=THREE_HELD)) == {} and _plan(THREE, 10, held=THREE_HELD).waits == 10.0
+    assert _d(_plan(THREE, 10, held=THREE_HELD)) == {"SPY": 10} and _plan(THREE, 10, held=THREE_HELD).waits == 0.0
     # 25.75: 12.875 / 8.58 / 4.29 -> floors 12 / 8 / 4; 8 + 4 fold into SPY: 24, 1.75 waits.
     plan = _plan(THREE, 25.75, held=THREE_HELD)
     assert _d(plan) == {"SPY": 24} and plan.waits == 1.75
@@ -637,3 +638,78 @@ def test_split_reasons_and_notes_never_say_buy():
     plan = _plan(entries, 400, hh=hh, held={"SPY": 200.0}, caps=[Cap("AAPL", 5.0)], bands={})
     codes = [r for line in plan.lines for r in line.reasons] + [n["reason"] for n in plan.notes]
     assert codes and not any("buy" in c.lower() for c in codes)
+
+
+# ---- final fix wave: a hold anywhere in the account wins, everything under the minimum folds, untyped names
+
+def test_a_hold_entry_after_a_contributions_duplicate_still_holds():
+    # GLD is filed twice in the brokerage: first contributions, then hold. Any hold entry makes it hold.
+    entries = [_e("GLD", 10), _e("GLD", 10, rule="hold"), _e("SPY", 10)]
+    plan = _plan(entries, 50)
+    assert _d(plan) == {"SPY": 50}
+    assert _notes(plan) == [("GLD", "hold"), ("GLD", "duplicate")]
+    # A pct_of_brokerage hold filed under roth counts in the brokerage too.
+    entries = [_e("GLD", 10), _e("GLD", 10, kind="pct_of_brokerage", rule="hold", account="roth"), _e("SPY", 10)]
+    assert _d(_plan(entries, 50)) == {"SPY": 50}
+
+
+def test_when_no_line_reaches_the_minimum_everything_folds_into_the_largest():
+    # Six entries of 10% of 1000 (gap 100, top 125 each), cash 50: 8.33 each, every floor (8) under 10. All 50 fold
+    # into the largest share (a tie: AAPL, alphabetical first), well within its top: one line of 50, nothing waits.
+    entries = [_e(s, 10) for s in ("SPY", "KO", "JNJ", "VOO", "GLD", "AAPL")]
+    plan = _plan(entries, 50)
+    assert _d(plan) == {"AAPL": 50} and plan.waits == 0.0
+    assert _line(plan, "AAPL").reasons == ("disagree", "folded")
+    assert sorted(_notes(plan)) == sorted((s, "under_min") for s in ("SPY", "KO", "JNJ", "VOO", "GLD"))
+
+
+def test_the_all_under_fold_goes_to_the_largest_share_within_its_room():
+    # SPY gap 300 (30%), KO gap 100 (10%): cash 12 -> 9 / 3, both under 10. SPY is the largest: 12 -> SPY 12.
+    plan = _plan([_e("SPY", 30), _e("KO", 10)], 12)
+    assert _d(plan) == {"SPY": 12} and "folded" in _line(plan, "SPY").reasons
+    # Its room is the smallest of its top and every group over it: a sleeve on SPY alone with 1.1% of 1000 = 11.
+    sleeve = Sleeve("brokerage", "Core", ("SPY",), None, 1.1, "contributions")
+    plan = _plan([_e("SPY", 30), _e("KO", 10)], 12, sleeves=[sleeve])
+    assert _d(plan) == {"SPY": 11} and plan.waits == 1.0
+    # Still under the minimum after the fold: everything waits.
+    plan = _plan([_e("SPY", 30), _e("KO", 10)], 9)
+    assert plan.lines == () and plan.waits == 9.0
+    small = Sleeve("brokerage", "Core", ("SPY",), None, 0.9, "contributions")      # room 9: under 10
+    plan = _plan([_e("SPY", 30), _e("KO", 10)], 12, sleeves=[small])
+    assert plan.lines == () and plan.waits == 12.0
+
+
+def test_an_untyped_name_is_capped_as_a_fund_without_a_file_and_says_so():
+    # QQQ's type is unknown and no file shows what it holds: for caps it is a fund without a file, taken at the largest
+    # AAPL weight on file (VOO: 10%). Cap AAPL 5% of 10000 = 500, held 480: room 20 -> QQQ at most 200.
+    hh = Household(10_000.0, {"AAPL": 480.0}, {}, {"VOO": {"AAPL": 0.10}}, frozenset({"VOO", "QQQ"}),
+                   untyped=frozenset({"QQQ"}))
+    plan = _plan([_e("QQQ", 50)], 300, hh=hh, caps=[Cap("AAPL", 5.0)])
+    assert _d(plan) == {"QQQ": 200} and plan.waits == 100.0
+    assert _line(plan, "QQQ").reasons == ("disagree", "type_unknown", "look_through_assumed", "cap_cut:AAPL")
+    # Without a cap it is not cut, and still says its type is unknown.
+    plan = _plan([_e("QQQ", 50)], 300, hh=hh)
+    assert _d(plan) == {"QQQ": 300} and _line(plan, "QQQ").reasons == ("disagree", "type_unknown")
+
+
+def test_household_of_charges_an_untyped_holding_at_the_assumed_weight():
+    # A held QQQ of unknown type and no file: a direct holding of itself and a fund value for the caps.
+    positions = [{"account": "A", "symbol": "QQQ", "market_value": 1000.0},
+                 {"account": "A", "symbol": "VOO", "market_value": 1000.0}]
+    hh = household_of(positions, {}, {"VOO": {"AAPL": 0.07}}, frozenset({"VOO", "QQQ"}), untyped=frozenset({"QQQ"}))
+    assert hh.direct == {"QQQ": 1000.0} and hh.fund_values == {"QQQ": 1000.0, "VOO": 1000.0}
+    assert hh.untyped == frozenset({"QQQ"})
+    from financial_data_collector.derive.split import cap_used
+    assert cap_used(hh, "AAPL") == pytest.approx(70.0 + 70.0)       # via VOO's file + QQQ at the assumed 7%
+
+
+def test_with_pending_adds_another_accounts_open_lines():
+    from financial_data_collector.derive.split import with_pending
+    hh = _hh(total=5000.0, direct={"AAPL": 100.0}, look_through={"VOO": {"AAPL": 0.07}}, funds={"VOO", "VFIAX"})
+    got = with_pending(hh, [("AAPL", 300), ("VOO", 1000), ("VFIAX", 200)], add_to_total=False)
+    assert got.direct == {"AAPL": 400.0, "VFIAX": 200.0}
+    assert got.indirect == pytest.approx({"AAPL": 70.0})
+    assert got.fund_values == {"VOO": 1000.0, "VFIAX": 200.0}
+    assert got.total == 5000.0                                       # that account's cash is already counted
+    assert with_pending(hh, [("AAPL", 300)], add_to_total=True).total == 5300.0
+    assert hh.direct == {"AAPL": 100.0}                              # the household itself is not changed

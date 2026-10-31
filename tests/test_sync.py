@@ -630,7 +630,7 @@ def test_engine_step_rechecks_what_the_split_wrote_and_reports_the_hold(project,
 
     def bad(store, cfg, **k):       # the split wrote a line to a name the targets file has no entry for
         src = ({"kind": "derived", "label": "cash_balances", "date": "2026-02-27", "ref": "c"},)
-        store.write_proposal(AllocationProposal("brokerage", "2026-02-27", 100.0, 1, 0.0,
+        store.write_proposal(AllocationProposal("brokerage", "2026-02-27", 100.0, 100, 0.0,
                                                 (SplitLine("ZZZ", 100, 1.0, "usual", 1.0, ()),), (src,), (), src),
                              created_at="2026-03-01T12:00:00Z", checked_at=None, replaces=None)
         return real_split(store, cfg, **k)
