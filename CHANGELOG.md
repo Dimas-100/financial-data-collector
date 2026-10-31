@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Known: SEC's companyfacts answer can lag a filing by months. A large-cap's 10-Q filed in July was absent from
+  SEC's companyfacts answer three months later (no fact carried its accession number and no period ended after
+  March), although SEC's submissions list showed the filing with XBRL. fdc stores every fact companyfacts returns
+  (the stored rows matched the answer one for one), so its TTM stopped at the March quarter. Nothing in fdc dropped
+  it and no code changed; the checker's filings check (SEC's submissions list against `sec_facts`) holds such a
+  company's TTM-based values from the filing date until the facts appear.
 - `macro` step (after `prices`): FRED economic numbers into `macro_observations` (CPI, core CPI, the Fed's target range, the 10-year yield, unemployment) with a free `FRED_API_KEY` in `.env`; skipped without it. Migration 0010.
 - `fdc console`: a live terminal screen (Textual) with three tabs: each step's last result and staleness plus
   the scheduled task's registration (Windows), every source and output with its last activity, and the history
