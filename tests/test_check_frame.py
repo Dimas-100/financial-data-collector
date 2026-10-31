@@ -291,3 +291,27 @@ def test_two_runs_in_the_same_second_keep_two_rows_and_run_ids_sort_by_time(cfg)
     ids = [r[0] for r in _rows(cfg, "SELECT run_id FROM check_runs")]
     assert len(ids) == 4 and a.run_id != b.run_id
     assert max(a.run_id, b.run_id) < c.run_id < d.run_id
+
+
+def test_fdc_check_waits_for_a_running_sync_before_it_checks(cfg, capsys, monkeypatch):
+    from financial_data_collector import cli, heartbeat as H
+
+    now = H.stamp(datetime.now(timezone.utc))
+    other = H.Heartbeat("r0", 999999, "scheduled", now, now, "derive", "valuation")
+    cfg.heartbeat_path.write_text(other.to_json(), encoding="utf-8")
+    slept: list[float] = []
+    monkeypatch.setattr(H, "pid_alive", lambda pid: pid == 999999 and len(slept) < 2)
+    monkeypatch.setattr(cli.time, "sleep", slept.append)
+    seen: list[int] = []
+    check.CHECKS.clear()
+    check.CHECKS["a"] = lambda ctx: seen.append(len(slept)) or []
+    rc = cli.main(["--root", str(cfg.root), "check"])
+    assert rc == 0 and slept == [5.0, 5.0] and seen == [2]          # it checked only once the sync was done
+    assert "waited 10 s for another sync" in capsys.readouterr().out
+
+
+def test_fdc_check_summary_does_not_wait(cfg, monkeypatch):
+    from financial_data_collector import cli, heartbeat as H
+
+    monkeypatch.setattr(H, "wait_for_turn", lambda *a, **k: pytest.fail("waited"))
+    assert cli.main(["--root", str(cfg.root), "check", "--summary"]) == 0

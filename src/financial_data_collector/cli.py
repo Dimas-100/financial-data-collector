@@ -5,13 +5,14 @@ import argparse
 import csv
 import getpass
 import sys
+import time
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.text import Text
 
-from . import __version__, http, ui
+from . import __version__, heartbeat, http, ui
 from .config import ConfigError, init_project, load_config
 from .connections import service, simplefin
 from .connections.base import ConnectionFailed
@@ -273,6 +274,11 @@ def cmd_check(root: Path, args) -> int:
     cfg = load_config(root)
     if args.summary:
         return _check_summary(cfg)
+    # a sync that is running will run its own check step: wait for it, so this run's reads are not older than
+    # what that step records (the newest check_runs row is the one valuation_latest.checked_at follows)
+    waited = heartbeat.wait_for_turn(cfg.heartbeat_path, now=datetime.now(timezone.utc), sleep=time.sleep)
+    if waited:
+        ui.console.print(Text(f"waited {waited:.0f} s for another sync"))
     rep = check.run_check(cfg, fetch=http.fetch, only=args.only)
     errs = len(rep.errors)
     line = (f"check: {rep.holds} holds found, {rep.open_holds} open, {rep.warns} warnings, "
