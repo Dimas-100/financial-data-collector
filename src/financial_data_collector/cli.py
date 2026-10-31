@@ -275,8 +275,9 @@ def cmd_check(root: Path, args) -> int:
     cfg = load_config(root)
     if args.summary:
         return _check_summary(cfg)
-    # a sync that is running will run its own check step: wait for it, so this run's reads are not older than
-    # what that step records (the newest check_runs row is the one valuation_latest.checked_at follows)
+    # valuation_latest.checked_at is the finish time of the newest check run whose derive_run_id is the newest ok
+    # derive; a check that ran while a sync was mid-derive would cover the previous derive, so wait for a running
+    # sync first
     waited = heartbeat.wait_for_turn(cfg.heartbeat_path, now=datetime.now(timezone.utc), sleep=time.sleep)
     if waited:
         ui.console.print(Text(f"waited {waited:.0f} s for another sync"))

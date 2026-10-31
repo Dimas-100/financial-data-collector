@@ -42,6 +42,8 @@ price_warn = 0.005                 # the newest close differs from a second prov
 price_hold = 0.03                  # ... by more than this: hold the symbol's values
 figure_warn = 0.15                 # a figure (EPS, market cap, revenue, free cash flow) differs from Yahoo's by more than this: warn
 figure_hold = 0.40                 # ... by more than this: hold that figure
+close_warn_days = 2                # the newest final close is this many trading days old: warn
+close_hold_days = 5                # ... this many: hold the symbol's values
 
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"

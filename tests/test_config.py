@@ -100,6 +100,7 @@ def test_check_settings_default_to_the_specs_values(tmp_path: Path):
     assert (cfg.check.recompute_tolerance, cfg.check.max_daily_move) == (0.01, 0.40)
     assert (cfg.check.price_warn, cfg.check.price_hold) == (0.005, 0.03)
     assert (cfg.check.figure_warn, cfg.check.figure_hold) == (0.15, 0.40)
+    assert (cfg.check.close_warn_days, cfg.check.close_hold_days) == (2, 5)
     (tmp_path / "config.toml").write_text("")
     assert C.load_config(tmp_path).check == cfg.check
 
@@ -117,11 +118,24 @@ def test_outside_check_thresholds_can_be_set(tmp_path: Path):
     assert (c.price_warn, c.price_hold, c.figure_warn, c.figure_hold) == (0.01, 0.05, 0.2, 0.5)
 
 
+def test_close_day_settings_can_be_set(tmp_path: Path):
+    (tmp_path / "config.toml").write_text("[check]\nclose_warn_days = 3\nclose_hold_days = 3\n")
+    c = C.load_config(tmp_path).check
+    assert (c.close_warn_days, c.close_hold_days) == (3, 3)
+
+
+def test_close_warn_days_must_not_exceed_close_hold_days(tmp_path: Path):
+    (tmp_path / "config.toml").write_text("[check]\nclose_warn_days = 6\n")
+    with pytest.raises(C.ConfigError, match=r"\[check\] close_warn_days must not be more than close_hold_days"):
+        C.load_config(tmp_path)
+
+
 @pytest.mark.parametrize("body", [
     "fresh_warn_months = 0", "fresh_warn_months = 'five'", "fresh_warn_months = 2.5", "fresh_warn_months = true",
     "fresh_warn_months = 20", "fresh_hold_months = -1", "recompute_tolerance = 0", "recompute_tolerance = 'x'",
     "max_daily_move = -0.1", "max_daily_move = false", "typo_months = 5",
     "price_warn = 0", "price_hold = 'x'", "price_warn = 0.5", "figure_warn = 0.9", "figure_hold = -1",
+    "close_warn_days = 0", "close_hold_days = 'five'", "close_warn_days = 1.5", "close_hold_days = true",
 ])
 def test_a_bad_check_setting_is_a_config_error(tmp_path: Path, body):
     (tmp_path / "config.toml").write_text(f"[check]\n{body}\n")

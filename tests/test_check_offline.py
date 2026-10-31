@@ -56,6 +56,12 @@ def _hold(store, symbol, qty=10.0):
     store.write_snapshot(Snapshot("2026-10-28", "test", [PositionRow(acct, symbol, symbol, qty, 100.0, qty * 100.0)], []))
 
 
+def _hold_all(store, *symbols):
+    """One snapshot holding all of `symbols` (a second _hold would replace the first's positions)."""
+    acct = AccountRef(label="Test account", institution="fidelity", account_type="brokerage")
+    store.write_snapshot(Snapshot("2026-10-28", "test", [PositionRow(acct, s, s, 10.0, 100.0, 1000.0) for s in symbols], []))
+
+
 def _bars(store, symbol, closes, start="2026-09-01", splits=None):
     """Consecutive weekdays from `start`, one final bar per close; splits = {index: factor}."""
     splits = splits or {}
@@ -240,6 +246,11 @@ def test_gaps_count_only_days_before_the_newest_final_bar(store, cfg):
                        fetched_at=datetime(2026, 4, 17, 15, 0, tzinfo=timezone.utc))   # before the close: not final
     (f,) = offline.gaps(_ctx(store, cfg, APRIL))
     assert f.evidence["missing"] == ["2026-04-09"]
+    # a non-final bar inside the range does not fill its day: that day is still missing
+    store.write_prices("AAA", [PriceBar("2026-04-09", 100.0, 100.0)], "test",
+                       fetched_at=datetime(2026, 4, 9, 15, 0, tzinfo=timezone.utc))
+    (f,) = offline.gaps(_ctx(store, cfg, APRIL))
+    assert f.evidence["missing"] == ["2026-04-09"]
 
 
 def test_gaps_say_nothing_about_the_days_after_the_last_sync(store, cfg):
@@ -268,6 +279,103 @@ def test_gaps_only_cover_held_symbols(store, cfg):
     _security(store, "NOTHELD")
     _bars_on(store, "NOTHELD", ["2026-04-01", "2026-04-15"])
     assert offline.gaps(_ctx(store, cfg, APRIL)) == []
+
+
+# ---- closes ------------------------------------------------------------------------------------
+
+THU = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)      # 08:00 New York
+
+
+def _priced_to(store, symbol, last, start="2026-10-01"):
+    """Final bars on every weekday from `start` to `last`."""
+    _bars_on(store, symbol, _weekdays(date.fromisoformat(start), date.fromisoformat(last)))
+
+
+def test_a_close_two_trading_days_old_warns(store, cfg):
+    _security(store, "AAA"), _hold(store, "AAA")
+    _priced_to(store, "AAA", "2026-10-26")                         # Tue and Wed missed (Thu is today)
+    (f,) = offline.closes(_ctx(store, cfg, THU))
+    assert (f.check_name, f.symbol, f.severity, f.field, f.date_from, f.date_to) ==            ("closes", "AAA", "warn", "close", "2026-10-27", None)
+    assert f.evidence == {"newest": "2026-10-26", "missed": ["2026-10-27", "2026-10-28"]}
+    assert f.message == ("newest final close is from 2026-10-26, 2 trading days ago (the feed may have stopped)")
+
+
+def test_yesterdays_close_is_fine(store, cfg):
+    _security(store, "AAA"), _security(store, "BBB"), _hold_all(store, "AAA", "BBB")
+    _priced_to(store, "AAA", "2026-10-28")
+    _priced_to(store, "BBB", "2026-10-27")                         # one missed day: below the warning
+    assert offline.closes(_ctx(store, cfg, THU)) == []
+
+
+def test_five_missed_trading_days_hold_every_value(store, cfg):
+    _security(store, "AAA"), _hold(store, "AAA")
+    _priced_to(store, "AAA", "2026-10-21")                         # 22, 23, 26, 27, 28 missed
+    (f,) = offline.closes(_ctx(store, cfg, THU))
+    assert (f.severity, f.field, f.date_from) == ("hold", "*", "2026-10-22")
+    assert f.evidence["missed"] == ["2026-10-22", "2026-10-23", "2026-10-26", "2026-10-27", "2026-10-28"]
+    assert "5 trading days ago" in f.message
+    _security(store, "BBB"), _hold_all(store, "AAA", "BBB")
+    _priced_to(store, "BBB", "2026-10-22")                         # four missed: still only a warning
+    assert [(g.symbol, g.severity) for g in offline.closes(_ctx(store, cfg, THU))] == [("AAA", "hold"), ("BBB", "warn")]
+
+
+def test_good_friday_and_the_weekend_are_not_missed_days(store, cfg):
+    _security(store, "AAA"), _hold(store, "AAA")
+    _priced_to(store, "AAA", "2026-04-02", start="2026-03-02")      # Thursday; Good Friday 04-03 is shut
+    assert offline.closes(_ctx(store, cfg, datetime(2026, 4, 6, 12, 0, tzinfo=timezone.utc))) == []
+
+
+def test_today_is_the_new_york_date(store, cfg):
+    _security(store, "AAA"), _hold(store, "AAA")
+    _priced_to(store, "AAA", "2026-10-26")
+    late = datetime(2026, 10, 29, 2, 0, tzinfo=timezone.utc)       # 22:00 on the 28th in New York: the 28th is today
+    assert offline.closes(_ctx(store, cfg, late)) == []            # only the 27th is missed (by UTC date it would be two)
+
+
+def test_only_a_non_final_bar_is_not_never_priced(store, cfg):
+    _security(store, "AAA"), _hold(store, "AAA")
+    store.write_prices("AAA", [PriceBar("2026-10-28", 100.0, 100.0)], "test",
+                       fetched_at=datetime(2026, 10, 28, 15, 0, tzinfo=timezone.utc))      # before the close
+    (f,) = offline.closes(_ctx(store, cfg, THU))
+    assert (f.severity, f.field, f.date_from) == ("warn", "close", "2026-10-28")
+    assert f.message == "no final closing price yet, only a bar fetched before the close"
+
+
+def test_held_never_priced_warns_with_a_stable_date(store, cfg):
+    store.upsert_security("NEWCO", "NewCo", "stock", first_seen="2026-10-20")
+    _hold(store, "NEWCO")
+    (f,) = offline.closes(_ctx(store, cfg, THU))
+    assert (f.symbol, f.severity, f.field, f.date_from) == ("NEWCO", "warn", "close", "2026-10-20")
+    assert f.date_from == store.check_first_seen()["NEWCO"]
+    assert f.message == "held, never priced: no price from any provider"
+    (g,) = offline.closes(_ctx(store, cfg, THU + timedelta(days=1)))
+    assert g.date_from == f.date_from                              # the same finding tomorrow
+
+
+def test_benchmarks_are_covered_and_money_markets_are_not(store, cfg):
+    store.mark_benchmarks(["SPY"])
+    _security(store, "CASH", "money_market"), _security(store, "COIN", "crypto")
+    _hold_all(store, "CASH", "COIN")                               # held, never priced, but not covered
+    (f,) = offline.closes(_ctx(store, cfg, THU))
+    assert (f.symbol, f.severity, f.message) == ("SPY", "warn", "benchmark, never priced: no price from any provider")
+    _priced_to(store, "SPY", "2026-10-21")
+    (f,) = offline.closes(_ctx(store, cfg, THU))
+    assert (f.symbol, f.severity) == ("SPY", "hold")
+
+
+def test_a_symbol_both_held_and_a_benchmark_is_checked_once_with_the_held_wording(store, cfg):
+    store.mark_benchmarks(["SPY"])
+    _hold(store, "SPY")
+    (f,) = offline.closes(_ctx(store, cfg, THU))
+    assert f.message == "held, never priced: no price from any provider"
+
+
+def test_thresholds_come_from_config(store, cfg):
+    _security(store, "AAA"), _hold(store, "AAA")
+    _priced_to(store, "AAA", "2026-10-26")                         # two missed days
+    assert offline.closes(_ctx(store, replace(cfg, check=replace(cfg.check, close_warn_days=3)), THU)) == []
+    (f,) = offline.closes(_ctx(store, replace(cfg, check=replace(cfg.check, close_warn_days=1, close_hold_days=2)), THU))
+    assert f.severity == "hold"
 
 
 # ---- recompute ---------------------------------------------------------------------------------
@@ -333,6 +441,12 @@ def test_recompute_reads_no_shaped_view():
 def test_the_four_checks_are_registered():
     assert {"fresh", "impossible", "gaps", "recompute"} <= set(check.CHECKS)
     assert check.CHECKS["fresh"] is offline.fresh
+
+
+def test_closes_is_registered_after_gaps():
+    names = list(check.CHECKS)
+    assert names.index("closes") == names.index("gaps") + 1
+    assert check.CHECKS["closes"] is offline.closes
 
 
 def test_the_checks_run_end_to_end_and_record_findings(cfg, store):

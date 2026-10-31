@@ -883,6 +883,10 @@ class Store:
                        "ORDER BY date DESC LIMIT 1", (symbol,))
         return (r[0][0], r[0][1], r[0][2], r[0][3]) if r else None
 
+    def check_first_seen(self) -> dict[str, str]:
+        """The day each symbol first appeared in the warehouse (securities.first_seen)."""
+        return {r[0]: r[1] for r in self.query("SELECT symbol, first_seen FROM securities")}
+
     def check_first_price_date(self, symbol: str) -> str | None:
         r = self.query("SELECT MIN(date) FROM prices WHERE symbol = ?", (symbol,))
         return r[0][0] if r else None

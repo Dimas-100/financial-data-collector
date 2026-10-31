@@ -55,6 +55,8 @@ price_warn = 0.005                 # the newest close differs from a second prov
 price_hold = 0.03                  # ... by more than this: hold the symbol's values
 figure_warn = 0.15                 # a figure (EPS, market cap, revenue, free cash flow) differs from Yahoo's by more than this: warn
 figure_hold = 0.40                 # ... by more than this: hold that figure
+close_warn_days = 2                # the newest final close is this many trading days old: warn
+close_hold_days = 5                # ... this many: hold the symbol's values
 
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"
@@ -104,6 +106,8 @@ class CheckSettings:
     price_hold: float = 0.03
     figure_warn: float = 0.15
     figure_hold: float = 0.40
+    close_warn_days: int = 2
+    close_hold_days: int = 5
 
 
 @dataclass(frozen=True)
@@ -209,6 +213,13 @@ def _check_settings(raw: object, cfg_path: Path) -> CheckSettings:
         values[name] = v
     if values["fresh_warn_months"] > values["fresh_hold_months"]:
         raise ConfigError(f"{cfg_path}: [check] fresh_warn_months must not be more than fresh_hold_months")
+    for name in ("close_warn_days", "close_hold_days"):
+        v = raw.get(name, getattr(defaults, name))
+        if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+            raise ConfigError(f"{cfg_path}: [check] {name} must be a whole number of trading days, 1 or more")
+        values[name] = v
+    if values["close_warn_days"] > values["close_hold_days"]:
+        raise ConfigError(f"{cfg_path}: [check] close_warn_days must not be more than close_hold_days")
     for name in ("recompute_tolerance", "max_daily_move", "price_warn", "price_hold", "figure_warn", "figure_hold"):
         v = raw.get(name, getattr(defaults, name))
         if not isinstance(v, (int, float)) or isinstance(v, bool) or not v > 0:

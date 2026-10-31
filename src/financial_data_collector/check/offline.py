@@ -1,5 +1,6 @@
 """The checks that need nothing from outside: are the statements fresh enough, is anything impossible, are
-there gaps in the prices, and do the stored ratios come out again from the stored inputs.
+there gaps in the prices, has the price feed stopped, and do the stored ratios come out again from the stored
+inputs.
 
 Every check looks at the newest `valuation_daily` row of each symbol (the raw table, not the view that applies
 holds) and at the symbols it covers: those in the latest positions plus those with a valuation row. The numbers
@@ -129,6 +130,47 @@ def gaps(ctx: CheckContext) -> list[Finding]:
     return out
 
 
+# ---- closes ------------------------------------------------------------------------------------
+
+def closes(ctx: CheckContext) -> list[Finding]:
+    """A held symbol or benchmark whose newest final close has fallen behind: the trading days strictly after it
+    and strictly before today are the ones a sync should have fetched by now. `close_warn_days` of them is a
+    warning on the close, `close_hold_days` a hold on every value of the symbol (a stopped feed leaves a valuation
+    priced on a stale close). A symbol with only a bar fetched before the close, or with no bar at all, warns
+    too; money markets and crypto have no feed to watch."""
+    today = ctx.now.astimezone(NEW_YORK).date()
+    warn_days, hold_days = ctx.cfg.check.close_warn_days, ctx.cfg.check.close_hold_days
+    held = set(ctx.store.check_held_symbols())
+    kinds = ctx.store.check_asset_types()
+    first_seen = ctx.store.check_first_seen()
+    out: list[Finding] = []
+    for symbol in sorted(held | set(ctx.store.check_benchmark_symbols())):
+        if kinds.get(symbol) in ("money_market", "crypto"):
+            continue
+        newest = ctx.store.check_newest_final_bar(symbol)
+        if newest is None:
+            first_bar = ctx.store.check_first_price_date(symbol)
+            if first_bar is not None:
+                out.append(Finding("closes", symbol, "close", first_bar, None, "warn",
+                                   "no final closing price yet, only a bar fetched before the close",
+                                   {"first_bar": first_bar}))
+            else:
+                role, seen = "held" if symbol in held else "benchmark", first_seen.get(symbol, today.isoformat())
+                out.append(Finding("closes", symbol, "close", seen, None, "warn",
+                                   f"{role}, never priced: no price from any provider", {"first_seen": seen}))
+            continue
+        after = date.fromisoformat(newest[0])
+        missed = [d.isoformat() for d in nyse.trading_days(after + timedelta(days=1), today - timedelta(days=1))]
+        if len(missed) < warn_days:
+            continue
+        hold = len(missed) >= hold_days
+        out.append(Finding(
+            "closes", symbol, "*" if hold else "close", missed[0], None, "hold" if hold else "warn",
+            f"newest final close is from {newest[0]}, {len(missed)} trading days ago (the feed may have stopped)",
+            {"newest": newest[0], "missed": missed}))
+    return out
+
+
 # ---- recompute ---------------------------------------------------------------------------------
 
 def _ratio(num: float | None, den: float | None) -> float | None:
@@ -178,4 +220,5 @@ def recompute(ctx: CheckContext) -> list[Finding]:
 CHECKS["fresh"] = fresh
 CHECKS["impossible"] = impossible
 CHECKS["gaps"] = gaps
+CHECKS["closes"] = closes
 CHECKS["recompute"] = recompute
