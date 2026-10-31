@@ -21,10 +21,13 @@ _NOT_ACCOUNTS = ("sleeves", "caps", "planned")
 
 
 def _num(v: object) -> float | None:
-    """A finite number as a float, else None (a bool is not a number here)."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+    """A finite number as a float, else None (a bool is not a number here, nor an integer too large for a float)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
-    return float(v)
+    try:
+        return float(v) if math.isfinite(v) else None
+    except OverflowError:
+        return None
 
 
 def _rule(v: object, where: str, problems: list[str]) -> tuple[str, str | None]:
@@ -102,8 +105,8 @@ def _list(doc: dict, key: str) -> list:
 def read_targets(path: Path | None) -> Targets | None:
     """The targets file as `Targets`; None when no path is configured or the file is not there.
 
-    An unreadable file, bad JSON or a top level that is not an object raises ValueError with a short message that
-    does not carry the path."""
+    An unreadable file, bad JSON (nested too deeply to read, too) or a top level that is not an object raises
+    ValueError with a short message that does not carry the path."""
     if path is None or not Path(path).is_file():
         return None
     path = Path(path)
@@ -113,6 +116,8 @@ def read_targets(path: Path | None) -> Targets | None:
         raise ValueError("the targets file cannot be read") from None
     except json.JSONDecodeError as e:
         raise ValueError(f"the targets file is not valid JSON (line {e.lineno})") from None
+    except RecursionError:
+        raise ValueError("the targets file is nested too deeply to read") from None
     if not isinstance(doc, dict):
         raise ValueError("the targets file must hold one JSON object at the top level")
     problems: list[str] = []

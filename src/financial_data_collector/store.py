@@ -1059,6 +1059,12 @@ class Store:
         if n != 1:
             raise ValueError(f"proposal {proposal_id} is not open")
 
+    def check_split_cash(self, label: str, day: str) -> float | None:
+        """For the checker: the account's USD cash_balances amount dated `day`; None when there is no such row."""
+        r = self.query("SELECT c.amount FROM cash_balances c JOIN accounts a ON a.id = c.account_id "
+                       "WHERE a.label = ? AND c.currency = 'USD' AND c.as_of_date = ?", (label, day))
+        return r[0][0] if r else None
+
     def check_split_rows(self) -> list[dict]:
         """For the checker: every open raw proposal (id, account_key, cash_date, cash) with its lines (symbol,
         dollars, sources parsed), whether or not a hold covers it."""

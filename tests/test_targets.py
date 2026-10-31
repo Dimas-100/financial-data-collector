@@ -122,3 +122,23 @@ def test_look_through_missing_folder_and_empty_file(tmp_path):
     (tmp_path / "EMPTY.csv").write_text("", encoding="utf-8")
     (tmp_path / "ALLBAD.csv").write_text("ticker,name,weight_pct\nAAPL,x,nan\n", encoding="utf-8")
     assert T.read_look_through(tmp_path) == {}
+
+
+def test_a_number_too_large_for_a_float_is_no_number(tmp_path):
+    big = "1" + "0" * 400                                          # a 401-digit integer: float() overflows
+    p = tmp_path / "sizing-targets.json"
+    p.write_text('{"brokerage": [{"ticker": "VOO", "target": ' + big + '}, {"ticker": "KO", "target": 5, "max": '
+                 + big + '}], "caps": [{"ticker": "AAPL", "max": ' + big + '}]}', encoding="utf-8")
+    t = T.read_targets(p)
+    assert [e.symbol for e in t.entries] == ["KO"]
+    assert (_entry(t, "brokerage", "KO").high) == 6.25                          # no usable max: the default band
+    assert "brokerage/VOO: no finite target" in t.problems and "caps/AAPL: no finite max" in t.problems
+    assert T._num(10 ** 400) is None
+
+
+def test_deeply_nested_json_is_unreadable(tmp_path):
+    p = tmp_path / "sizing-targets.json"
+    p.write_text('{"brokerage": ' + "[" * 100_000 + "]" * 100_000 + "}", encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        T.read_targets(p)
+    assert str(tmp_path) not in str(e.value)

@@ -12,7 +12,7 @@ import pytest
 from financial_data_collector import check, config as C
 from financial_data_collector.check import CheckContext
 from financial_data_collector.check import split as check_split
-from financial_data_collector.models import AllocationProposal, SplitLine
+from financial_data_collector.models import AccountRef, AllocationProposal, CashRow, Snapshot, SplitLine
 from financial_data_collector.store import Store
 
 NOW = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
@@ -43,7 +43,8 @@ def cfg(tmp_path: Path):
     path = tmp_path / "targets.json"
     path.write_text(json.dumps(TARGETS), encoding="utf-8")
     c = C.load_config(tmp_path)
-    return replace(c, allocation=replace(c.allocation, targets=path))
+    return replace(c, allocation=replace(c.allocation, targets=path,
+                                         accounts={"brokerage": "Sample Brokerage", "roth": "Sample Roth"}))
 
 
 @pytest.fixture
@@ -61,8 +62,19 @@ def _with_targets(cfg, path):
     return replace(cfg, allocation=replace(cfg.allocation, targets=path))
 
 
-def _open(store, lines, *, cash=100.0, account="brokerage") -> int:
-    """Write an open proposal. `lines` is [(symbol, dollars)] or [(symbol, dollars, sources)]."""
+ACCOUNTS = {"brokerage": AccountRef("Sample Brokerage", "brokerage", "fidelity", "brokerage"),
+            "roth": AccountRef("Sample Roth", "roth", "fidelity", "roth_ira")}
+
+
+def _cash_row(store, account: str, amount: float, day: str = "2026-10-30") -> None:
+    store.write_snapshot(Snapshot(day, "fidelity_csv", [], [CashRow(ACCOUNTS[account], amount)]))
+
+
+def _open(store, lines, *, cash=100.0, account="brokerage", cash_row=True) -> int:
+    """Write an open proposal, and (unless told not to) the account's cash row it was made from on its cash_date.
+    `lines` is [(symbol, dollars)] or [(symbol, dollars, sources)]."""
+    if cash_row:
+        _cash_row(store, account, cash)
     built, srcs = [], []
     for item in lines:
         built.append(SplitLine(item[0], item[1], 10.0, "usual", 1.0, ()))
@@ -249,3 +261,65 @@ def test_check_imports_nothing_from_derive():
     lines = Path(check_split.__file__).read_text(encoding="utf-8").splitlines()
     imports = "\n".join(l for l in lines if l.startswith(("from ", "import ")))
     assert imports and not re.search(r"derive|statements|collectors", imports)
+
+
+# ---- final fix wave: the proposal's cash against the account's own cash row; numbers no float can hold
+
+def test_a_proposal_whose_cash_is_not_the_accounts_is_held(store, cfg):
+    pid = _open(store, [("VOO", 60)], cash=100.0, cash_row=False)
+    _cash_row(store, "brokerage", 90.0)
+    f = _one(store, cfg)
+    assert (f.severity, f.field) == ("hold", f"proposal:{pid}")
+    assert "the proposal's cash $100.00 is not the account's $90.00 on 2026-10-30" in f.message
+    assert f.evidence["account_cash"] == 90.0
+    assert "Sample" not in f.message and "Sample" not in json.dumps(f.evidence)
+
+
+def test_a_cash_row_within_half_a_cent_agrees(store, cfg):
+    _open(store, [("VOO", 60)], cash=100.0, cash_row=False)
+    _cash_row(store, "brokerage", 100.004)
+    assert check_split.split(_ctx(store, cfg)) == []
+
+
+def test_a_missing_cash_row_or_an_unmapped_account_warns(store, cfg):
+    pid = _open(store, [("VOO", 60)], cash=100.0, cash_row=False)
+    _cash_row(store, "brokerage", 100.0, day="2026-10-29")              # not the proposal's day
+    f = _one(store, cfg)
+    assert (f.severity, f.field) == ("warn", f"proposal:{pid}") and "no cash row" in f.message
+    unmapped = replace(cfg, allocation=replace(cfg.allocation, accounts={"roth": "Sample Roth"}))
+    f = _one(store, unmapped)
+    assert f.severity == "warn" and "not in [allocation.accounts]" in f.message
+
+
+def test_a_cash_mismatch_joins_the_other_faults_in_one_finding(store, cfg):
+    _open(store, [("KO", 20)], cash=100.0, cash_row=False)
+    _cash_row(store, "brokerage", 50.0)
+    f = _one(store, cfg)
+    assert f.severity == "hold" and "marks hold" in f.message and "is not the account's $50.00" in f.message
+
+
+def test_check_split_cash_reads_one_days_usd_row(store):
+    _cash_row(store, "brokerage", 120.0)
+    store.write_snapshot(Snapshot("2026-10-30", "fidelity_csv", [], [CashRow(ACCOUNTS["roth"], 7.0, "EUR")]))
+    assert store.check_split_cash("Sample Brokerage", "2026-10-30") == 120.0
+    assert store.check_split_cash("Sample Brokerage", "2026-10-29") is None
+    assert store.check_split_cash("Sample Roth", "2026-10-30") is None          # not dollars
+    assert store.check_split_cash("Nobody", "2026-10-30") is None
+
+
+def test_a_targets_file_too_deep_to_read_warns(store, cfg, tmp_path):
+    pid = _open(store, [("VOO", 60)])
+    deep = tmp_path / "deep.json"
+    deep.write_text('{"brokerage": ' + "[" * 100_000 + "]" * 100_000 + "}", encoding="utf-8")
+    f = _one(store, _with_targets(cfg, deep))
+    assert (f.severity, f.field) == ("warn", f"proposal:{pid}") and "cannot check hold names" in f.message
+
+
+def test_a_target_too_large_for_a_float_is_no_target_and_no_exception(store, cfg, tmp_path):
+    big = tmp_path / "big.json"
+    big.write_text('{"brokerage": [{"ticker": "VOO", "target": 1' + "0" * 400 + '}, {"ticker": "JNJ", "target": 5}]}',
+                   encoding="utf-8")
+    _open(store, [("VOO", 60), ("JNJ", 40)])
+    f = _one(store, _with_targets(cfg, big))
+    assert f.severity == "hold" and f.evidence == {"no_target": ["VOO"]}           # the split's reader skips it too
+    assert check_split._finite(10 ** 400) is False
