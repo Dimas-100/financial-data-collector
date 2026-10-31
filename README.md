@@ -103,13 +103,22 @@ See `docs/QUERIES.md` for a cookbook.
 
 `fdc check` is an independent second opinion on the numbers `derive` writes into `valuation_daily`. It is code of its
 own (`check/`) and imports nothing from the code it checks. The sync runs it as its last step; a daily task is the
-backstop (below). What it looks at:
+backstop (below). Run on its own, `fdc check` first waits for a sync that is running, as a second sync does. The
+thresholds are in `[check]` of `config.toml`. What it looks at:
 
-- **fresh**: prices and statements recent enough for the day's numbers to mean something;
-- **impossible**: values that cannot be right (a negative market cap, a P/E that its own inputs cannot give);
-- **gaps**: holes in a price history or a statement series;
-- **recompute**: P/E, P/S, P/FCF, yield and market cap recomputed from the row's own inputs and compared with what is stored;
-- **filings**: a filing SEC lists for a company that the warehouse does not have;
+- **fresh**: statements only. Each symbol's newest valuation row (status `ok` or `stale`): the end of its TTM
+  statements against the row's price date. More than `fresh_warn_months` (5) apart is a warning, more than
+  `fresh_hold_months` (15) a hold on every value (`*`), both from the day the threshold was crossed;
+- **impossible**: negative shares, or a company ratio (P/E, P/S, P/FCF, market cap) set on something that is not a
+  company (an ETF, fund, mutual fund, money market, crypto or foreign filer), on the newest valuation row; and a
+  one-day move in the close of more than `max_daily_move` (40%) with no split that day, within the last 30 final bars;
+- **gaps**: prices only. A held symbol with no final close on an NYSE trading day of the last 60 (today left out),
+  counted from its first price and up to its newest final bar, so a day no sync has fetched yet is not a gap. A warning;
+- **recompute**: P/E, P/S, P/FCF, yield and market cap worked out again from the row's own inputs (rows with status
+  `ok`). A stored value more than `recompute_tolerance` (1%) away is held, and so is one stored when its own inputs
+  cannot give one (a P/E with no EPS);
+- **filings**: a filing SEC lists for a company that the warehouse does not have (without `SEC_USER_AGENT`, SEC is
+  not asked: one note, and the open holds stay);
 - **prices2** and **figures**: a second price source and outside statement figures (Yahoo, Tiingo), compared with ours.
 
 It records into two tables. `check_runs` has one row per run (when, how many checks, how many holds and warnings it
@@ -117,6 +126,10 @@ found, and any check that raised). `check_findings` has one row per problem: `ch
 `valuation_daily` column, or `*` for every value column), the days it covers (`date_from`, `date_to`), `severity`
 (`hold`, `warn` or `info`), a plain-words `message`, `evidence` as JSON, and `first_seen` / `last_seen` / `cleared_at`.
 A finding the checks stop finding is cleared (never deleted); one that returns is reopened.
+
+The open hold count (`fdc status`, the console, the sync's check line) counts every hold not yet cleared, including
+holds on past days: an `impossible` one-day move holds only that day (`date_to` is the day), so it blanks nothing
+once a newer row is the latest, but it stays open, and counted, while that bar is among the last 30 final bars.
 
 `fdc check --summary` prints every open finding, holds first (`HOLD  KO  pe  from 2026-10-01  recompute: stored 25.0,
 recomputed 20.0`) without running any check; `fdc status` shows the last run's age and the open hold and warning counts. The daily task logs to `%LOCALAPPDATA%\financial-data-collector\check.log`
@@ -129,8 +142,15 @@ ones, so a `NULL` is "not known", never zero. Its `status` is `held` when an ope
 otherwise `ok`); a row that was already `stale` or `unsupported` keeps that status. `hold_ids` lists the covering
 `check_findings` ids, `status_reason` gives the messages, and `checked_at` is when the checker last covered the newest
 derive: a run of every check with none failing (a run of `--only` some checks, or one where a check raised, is recorded
-with no `derive_run_id` and leaves `checked_at` where it was). `valuation_daily` itself is never changed by a hold: it stays the raw record, so a cleared hold brings the
-values straight back. Warnings and notes change nothing; they are for a person to look at.
+with no `derive_run_id` and leaves `checked_at` where it was). `valuation_daily` itself is never changed by a hold: it
+stays the raw record, so a cleared hold brings the values straight back. Warnings and notes change nothing; they are
+for a person to look at.
+
+A hold and the row's own status can both apply, and the hold is the stricter of the two. A `fresh` hold (statements
+more than 15 months older than the price) names `*`, so it blanks every value column but the close, the dividend
+yield and trailing dividends included. A row that `derive` itself marked `stale` keeps its close, dividends and dividend yield (only the
+statement figures are `NULL`) and keeps the status `stale`; with the `fresh` hold over it, `valuation_latest` shows
+those as `NULL` too.
 
 ## Claude Desktop
 
