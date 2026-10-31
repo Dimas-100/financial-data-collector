@@ -349,9 +349,9 @@ def test_sync_check_step_when_sec_has_no_submissions_is_an_info_finding_and_no_e
     assert last.status == "ok" and "0 errors" in last.message
     s = Store.open(project.db_path, migrate=False)
     rows = s.check_open_findings("filings")
-    full = s.query("SELECT derive_run_id FROM check_runs WHERE checks_run > 1")       # the engine's re-check runs `scores` alone
+    run = s.check_last_run()            # the newest FULL run: the engine's re-check runs `scores` alone and is passed over
     s.close()
-    assert [r[0] for r in full] == [rep.run_id]                 # a clean run of every check covers the sync's derive
+    assert run["derive_run_id"] == rep.run_id                   # a clean run of every check covers the sync's derive
     assert [(r["symbol"], r["severity"]) for r in rows] == [("AAPL", "info")]
 
 

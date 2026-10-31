@@ -179,3 +179,35 @@ def test_the_engine_check_imports_nothing_it_checks():
     lines = Path(check_engine.__file__).read_text(encoding="utf-8").splitlines()
     imports = "\n".join(l for l in lines if l.startswith(("from ", "import ")))
     assert imports and not re.search(r"derive|statements|collectors", imports)
+
+
+def test_a_metric_the_engine_does_not_know_is_a_warning_not_a_check_error(store, cfg):
+    _raw(store, "AAA", "gone_metric", percentile=10.0, band="cheap")
+    (f,) = check_engine.scores(_ctx(store, cfg))
+    assert (f.field, f.severity, f.message, f.date_from, f.date_to) == ("*", "warn", "unknown metric gone_metric",
+                                                                         "2026-10-29", "2026-10-29")
+    rep = check.run_check(cfg, now=NOW, store=store, only=["scores"], fetch=lambda u, h: b"")
+    assert (rep.holds, rep.warns, rep.errors) == (0, 1, [])
+    assert store.query("SELECT field FROM check_findings")[0][0] == "*"
+
+
+def test_a_deeply_nested_sources_text_is_a_finding_not_an_exception(store, cfg):
+    _raw(store, "AAA", "pe", sources="[" * 100000 + "]" * 100000)
+    (f,) = check_engine.scores(_ctx(store, cfg))
+    assert f.message == "no sources"
+
+
+def test_last_run_is_the_newest_full_one_not_the_engines_partial_rerun(store, cfg):
+    rep = check.run_check(cfg, now=NOW, store=store, fetch=lambda u, h: b"", only=list(check.CHECKS)[:3])
+    assert rep.checks_run == 3
+    later = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
+    partial = check.run_check(cfg, now=later, store=store, fetch=lambda u, h: b"", only=["scores"])
+    assert partial.checks_run == 1
+    assert store.check_last_run()["run_id"] == rep.run_id
+    fresh = Store.open(cfg.db_path.with_name("empty.db"))      # only a partial run on record: it is all there is
+    try:
+        assert fresh.check_last_run() is None
+        check.run_check(cfg, now=later, store=fresh, fetch=lambda u, h: b"", only=["scores"])
+        assert fresh.check_last_run()["checks_run"] == 1
+    finally:
+        fresh.close()

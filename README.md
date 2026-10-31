@@ -153,8 +153,8 @@ thresholds are in `[check]` of `config.toml`. What it looks at:
   outside 0..100, or a band its percentile does not give by the checker's own rule and the `[engine]` thresholds (P/E, P/FCF,
   P/S, EV/EBIT: high is premium; yield: high is cheap; every other metric, and any row that is not `ok`, has no band). Its
   findings name the field `score:<metric>`, which the `valuation_scores` view blanks. A row it cannot read is a finding,
-  never an error. The `engine` step runs this check again alone right after it writes (its message ends "; checks: N holds,
-  N warnings, N errors"); that partial run never stamps `checked_at`.
+  never an error, and a row whose metric the engine does not know is one warning on `*` (it would otherwise be an error that keeps the engine from building). The `engine` step runs this check again alone right after it writes (its message ends "; checks: N holds,
+  N warnings, N errors"); that partial run never stamps `checked_at`, and `fdc status` and the console show the last full run, not that one.
 
 It records into two tables. `check_runs` has one row per run (when, how many checks, how many holds and warnings it
 found, and any check that raised). `check_findings` has one row per problem: `check_name`, `symbol`, `field` (a

@@ -15,9 +15,10 @@ import json
 import math
 import re
 
+from ..models import ENGINE_CHECK_NAMES, SCORE_METRICS
 from . import CHECKS, CheckContext, Finding
 
-ENGINE_CHECKS = ("scores",)            # what the sync runs again right after the engine has written
+ENGINE_CHECKS = ENGINE_CHECK_NAMES      # what the sync runs again right after the engine has written
 
 PREMIUM_HIGH = ("pe", "p_fcf", "ps", "ev_ebit")     # a high percentile of these is dear
 CHEAP_HIGH = ("dividend_yield",)                   # a high percentile of the yield is cheap
@@ -41,7 +42,7 @@ def _sources(raw: object) -> list | None:
     """The row's sources as a list, or None when they cannot be read as one."""
     try:
         got = json.loads(raw) if isinstance(raw, (str, bytes)) else None
-    except ValueError:
+    except (ValueError, RecursionError):     # RecursionError: a pathologically nested text
         return None
     return got if isinstance(got, list) else None
 
@@ -68,6 +69,12 @@ def scores(ctx: CheckContext) -> list[Finding]:
     cheap, premium = ctx.cfg.engine.cheap_percentile, ctx.cfg.engine.premium_percentile
     out: list[Finding] = []
     for r in ctx.store.check_score_rows():
+        if r["metric"] not in SCORE_METRICS:
+            # A field the frame would refuse is an error that blocks every later engine build; a warn on "*" blanks
+            # nothing, and the next build replaces the row.
+            out.append(Finding("scores", r["symbol"], "*", r["date"], r["date"], "warn",
+                               f"unknown metric {r['metric']}", {"metric": r["metric"]}))
+            continue
         problems: list[str] = []
         evidence: dict = {"status": r["status"]}
         listed = _sources(r["sources"])

@@ -13,7 +13,7 @@ from .adapters.base import dedupe_key
 from .connections.names import slug_for
 from .models import (
     AccountRef, ConceptRule, CurrentReport, EarningsEvent, Estimate, Fact, FundSnapshot, Headline, LineItem,
-    MacroObservation, PriceBar, PriceMove, ScoreRow, Snapshot, TransactionRow, is_final,
+    ENGINE_CHECK_NAMES, MacroObservation, PriceBar, PriceMove, ScoreRow, Snapshot, TransactionRow, is_final,
 )
 
 if TYPE_CHECKING:
@@ -979,10 +979,14 @@ class Store:
                     self.conn.execute("UPDATE check_findings SET cleared_at = ? WHERE id = ?", (now, r["id"]))
 
     def check_last_run(self) -> sqlite3.Row | None:
-        """The newest check_runs row, or None when the checker never ran (or the database predates migration 0012:
-        a status read does not migrate)."""
+        """The newest FULL check_runs row (more checks than the engine's own re-check runs, so `fdc sync --only engine`
+        cannot make an old checker look fresh), else the newest row of any kind; None when the checker never ran (or the
+        database predates migration 0012: a status read does not migrate)."""
         try:
-            rows = self.query("SELECT * FROM check_runs ORDER BY finished_at DESC, run_id DESC LIMIT 1")
+            rows = self.query("SELECT * FROM check_runs WHERE checks_run > ? ORDER BY finished_at DESC, run_id DESC LIMIT 1",
+                              (len(ENGINE_CHECK_NAMES),))
+            if not rows:
+                rows = self.query("SELECT * FROM check_runs ORDER BY finished_at DESC, run_id DESC LIMIT 1")
         except sqlite3.OperationalError as e:
             if "no such table" not in str(e):
                 raise

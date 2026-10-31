@@ -193,6 +193,9 @@ SCORE_METRICS: tuple[str, ...] = (
     "estimate_change_30d", "insider_net_90d", "expense_ratio", "off_high_52w", "vs_200d", "week_vs_market",
     "week_vs_sector",
 )
+# The checks the sync runs again right after the engine writes (check.engine.ENGINE_CHECKS is this). A run of no more
+# checks than these is a partial run: the store's `check_last_run` skips it for the last full one.
+ENGINE_CHECK_NAMES: tuple[str, ...] = ("scores",)
 # The asset types of a fund (ETF, mutual fund): the funds step snapshots them and the engine scores them from the snapshots.
 FUND_TYPES: tuple[str, ...] = ("etf", "mutual_fund", "fund")
 SCORE_STATUSES: tuple[str, ...] = ("ok", "held", "unsupported", "not_enough_history")
