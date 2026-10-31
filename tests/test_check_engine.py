@@ -211,3 +211,14 @@ def test_last_run_is_the_newest_full_one_not_the_engines_partial_rerun(store, cf
         assert fresh.check_last_run()["checks_run"] == 1
     finally:
         fresh.close()
+
+
+def test_last_run_shows_a_full_run_that_failed_over_an_older_healthy_one(store):          # R17 (M1)
+    store.check_log_run("c1", started_at="2026-10-30T12:00:00Z", finished_at="2026-10-30T12:01:00Z",
+                        derive_run_id="r1", checks_run=10, holds=0, warns=0, error=None)
+    store.check_log_run("c2", started_at="2026-10-31T12:00:00Z", finished_at="2026-10-31T12:01:00Z",
+                        derive_run_id="r2", checks_run=1, holds=0, warns=0, error="gaps: boom; closes: boom")
+    store.check_log_run("c3", started_at="2026-10-31T13:00:00Z", finished_at="2026-10-31T13:01:00Z",
+                        derive_run_id="r2", checks_run=1, holds=0, warns=0, error=None)    # the engine's clean re-check
+    run = store.check_last_run()
+    assert (run["run_id"], run["checks_run"], run["error"]) == ("c2", 1, "gaps: boom; closes: boom")

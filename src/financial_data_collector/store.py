@@ -980,11 +980,12 @@ class Store:
 
     def check_last_run(self) -> sqlite3.Row | None:
         """The newest FULL check_runs row (more checks than the engine's own re-check runs, so `fdc sync --only engine`
-        cannot make an old checker look fresh), else the newest row of any kind; None when the checker never ran (or the
-        database predates migration 0012: a status read does not migrate)."""
+        cannot make an old checker look fresh) or the newest run with an error (a full run whose checks nearly all
+        raised ran few of them, and must still show), else the newest row of any kind; None when the checker never ran
+        (or the database predates migration 0012: a status read does not migrate)."""
         try:
-            rows = self.query("SELECT * FROM check_runs WHERE checks_run > ? ORDER BY finished_at DESC, run_id DESC LIMIT 1",
-                              (len(ENGINE_CHECK_NAMES),))
+            rows = self.query("SELECT * FROM check_runs WHERE checks_run > ? OR error IS NOT NULL "
+                              "ORDER BY finished_at DESC, run_id DESC LIMIT 1", (len(ENGINE_CHECK_NAMES),))
             if not rows:
                 rows = self.query("SELECT * FROM check_runs ORDER BY finished_at DESC, run_id DESC LIMIT 1")
         except sqlite3.OperationalError as e:
