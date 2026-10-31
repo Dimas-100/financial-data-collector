@@ -194,8 +194,9 @@ def second_price(ctx: CheckContext) -> list[Finding]:
 
 FIELDS = (("eps_ttm", "trailing_eps"), ("market_cap", "market_cap"), ("revenue_ttm", "revenue"),
           ("fcf_ttm", "free_cash_flow"))            # (our valuation column, the outside figure)
-DEPENDENTS = {"eps_ttm": ("pe",), "revenue_ttm": ("ps",), "market_cap": ("ps", "p_fcf")}
-# the ratios built on a figure: a hold on the figure holds them too, or they would show a number built on it.
+DEPENDENTS = {"eps_ttm": ("pe",), "revenue_ttm": ("ps",), "market_cap": ("shares", "ps", "p_fcf")}
+# what is built on a figure, or it on: a hold on the figure holds them too, or they would show a number built on
+# it. Our market cap is close x shares, so a market cap far from Yahoo's means the share count is suspect too.
 # fcf_ttm is warn-only, so p_fcf is held only through market_cap.
 SMALL_EPS = 0.25                # EPS this small on both sides: a few cents of rounding is a big fraction, warn only
 
@@ -260,7 +261,8 @@ def outside_figures(ctx: CheckContext) -> list[Finding]:
             if diff > cfg.figure_hold and warn_only is None:
                 out.append(Finding("figures", symbol, column, row["date"], None, "hold", text + f" (more than {_pct(cfg.figure_hold)})", evidence))
                 out += [Finding("figures", symbol, dep, row["date"], None, "hold",
-                                f"built on {column}: {text} (more than {_pct(cfg.figure_hold)})", evidence)
+                                f"{'behind' if dep == 'shares' else 'built on'} {column}: {text} "
+                                f"(more than {_pct(cfg.figure_hold)})", evidence)
                         for dep in DEPENDENTS.get(column, ())]
             elif diff > cfg.figure_warn:
                 out.append(Finding("figures", symbol, column, row["date"], None, "warn", text + f" (more than {_pct(cfg.figure_warn)})", evidence))

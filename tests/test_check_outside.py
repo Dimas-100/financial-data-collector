@@ -295,7 +295,18 @@ def test_a_figures_hold_holds_the_ratios_built_on_it(store, cfg):
     r = store.query("SELECT eps_ttm, pe, market_cap, ps FROM valuation_latest WHERE symbol = 'AAA'")[0]
     assert (r["eps_ttm"], r["pe"]) == (None, None) and (r["market_cap"], r["ps"]) == (1000.0, 5.0)
     found = _figures(store, cfg, FakeOutside(figs={"AAA": F(2.0, 100.0, None, None)}))     # market_cap 10x off
-    assert {f.field for f in found} == {"market_cap", "ps", "p_fcf"}
+    assert {f.field for f in found} == {"market_cap", "shares", "ps", "p_fcf"}
+
+
+def test_a_market_cap_hold_blanks_the_shares_it_is_built_on(store, cfg):
+    _held(store)
+    _valuation(store, eps_ttm=2.0, market_cap=1000.0, shares=10.0, ps=5.0, revenue_ttm=200.0)
+    found = _figures(store, cfg, FakeOutside(figs={"AAA": F(2.0, 100.0, None, None)}))     # market_cap 10x off
+    store.check_record("figures", found, "2026-10-29T12:00:00Z")
+    r = store.query("SELECT shares, market_cap, ps, eps_ttm FROM valuation_latest WHERE symbol = 'AAA'")[0]
+    assert (r["shares"], r["market_cap"], r["ps"]) == (None, None, None) and r["eps_ttm"] == 2.0
+    [held_shares] = [f for f in found if f.field == "shares"]
+    assert held_shares.message.startswith("behind market_cap: ")
 
 
 def test_a_zero_figure_outside_is_not_compared_and_says_so(store, cfg):
@@ -341,7 +352,7 @@ def test_figures_outside_failure_is_info_and_keeps_open_holds(store, cfg, answer
     _held(store)
     _valuation(store, market_cap=100.0)
     holds = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, 1000.0, None, None)}))
-    assert {f.field for f in holds} == {"market_cap", "ps", "p_fcf"} and {f.severity for f in holds} == {"hold"}
+    assert {f.field for f in holds} == {"market_cap", "shares", "ps", "p_fcf"} and {f.severity for f in holds} == {"hold"}
     store.check_record("figures", holds, "2026-10-28T20:00:00Z")
     found = _figures(store, cfg, FakeOutside(figs={"AAA": answer}))
     assert all(h in found for h in holds) and any(f.severity == "info" for f in found)
