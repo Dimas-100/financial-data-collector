@@ -169,6 +169,8 @@ def run(store: Store, cfg: Config) -> EngineReport:
             sector_fund = cfg.benchmarks.sectors.get(sec["sector"]) if sec["sector"] else None
             rows += price_shape(sym, day, held_adjusted_bars(bars, holds), benchmark(cfg.benchmarks.market),
                                 benchmark(sector_fund))
+        if sec["asset_type"] in scores.FUND_TYPES:
+            rows += scores.fund_scores(sym, day, store.fund_snapshot_rows(sym), cfg.engine, holds=holds)
         if sec["asset_type"] == "stock" and sec["cik"]:
             rows += _company(store, cfg, sym, sec["cik"], day, bars[-1], holds, insider_of(sym))
     store.replace_scores(rows, cov["checked_at"])

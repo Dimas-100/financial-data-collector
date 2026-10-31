@@ -260,6 +260,22 @@ The newest valuation row decides the four built on it (`implied_growth`, the mar
 `figures` check holds `revenue_ttm` and `fcf_ttm` field by field) holds them; the rest name none, so only a `*` hold
 holds them. Either way at build time as in the view.
 
+Each fund (ETF, mutual fund) also gets three scores from its own daily `fund_snapshots` rows, since it files no statements:
+
+- `pe` (Yahoo's trailing P/E) and `dividend_yield`: where the newest snapshot (dated on or before the day) sits among
+  the fund's own snapshots of the last `history_years`, as a mid-rank percentile, with the same bands as a company's.
+  Only snapshots with the same `source` as the newest count, so a fund that borrows an ETF's P/E through
+  `[fund_proxies]` ranks the proxy's days apart from its own. History starts the day the `funds` step first ran, so a
+  fund has **no band** until its own snapshots span `min_history_days` (365): the row is `not_enough_history`, shows
+  its value, and says "<N> days of its own snapshots; a band needs 365". Until then a fund is read by its price
+  measures only (off the 52-week high, against the 200-day average, the week against the market).
+- `expense_ratio`: the newest snapshot's figure as a fraction (0.0004 = 0.04%); a value only.
+
+A fund with no snapshot is `unsupported` "no fund snapshot yet"; one whose newest snapshot is more than 7 days before
+the day, "newest snapshot is from <date>"; a figure the snapshot lacks says so. No fund row names a `valuation_daily`
+column, so only a `*` hold (or one on `score:<metric>`, through the view) holds it. Sources: the snapshot
+(`fund_snapshots: <source>`), the history span and the settings.
+
 A row's `status` is `ok`, `held`, `unsupported` or `not_enough_history`; `inputs` names the `valuation_daily` columns
 it was built from (`,close,` for the price shape; a company history score names its own column and the close it is
 built on, `,pe,close,` for P/E, `,market_cap,close,` for EV/EBIT, so a `close` hold opened after the build holds it in

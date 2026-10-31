@@ -506,6 +506,12 @@ class Store:
                                 (symbol, day)).fetchone()
         return row[0] if row else None
 
+    def fund_snapshot_rows(self, symbol: str) -> list[dict]:
+        """The fund's snapshots, ascending by day: date, trailing_pe, dividend_yield, expense_ratio, source, fetched_at."""
+        return [dict(r) for r in self.query(
+            "SELECT date, trailing_pe, dividend_yield, expense_ratio, source, fetched_at FROM fund_snapshots "
+            "WHERE symbol = ? ORDER BY date", (symbol,))]
+
     # ---- earnings -----------------------------------------------------------
     _EARNINGS_COLUMNS = ("symbol, report_date, time_of_day, accession, eps_expected, eps_reported, surprise_pct, "
                          "date_source, time_source, eps_source")

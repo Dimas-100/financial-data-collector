@@ -15,6 +15,9 @@ implies, 5-year free cash flow and revenue growth, the year's change in free cas
 EBITDA, the buyback yield, the last earnings surprise, the 30-day change in this year's EPS estimate and net insider
 buying. Each one that cannot be known is `unsupported` or `not_enough_history` and says why. Pure too, except
 `read_insider`, which reads the sibling insider feed once per engine run.
+
+`fund_scores` gives a fund (ETF, mutual fund) its trailing P/E and dividend yield against its own daily snapshots, banded
+only once a year of them exists, and its expense ratio as a value.
 """
 from __future__ import annotations
 
@@ -563,3 +566,72 @@ def fundamental_scores(symbol: str, day: str, newest: dict | None, ttm: dict[str
         final.append(row(r.metric, status="held", reason="; ".join(msgs), src=r.sources)
                      if r.status == "ok" and msgs else r)
     return final
+
+
+# ---- funds ------------------------------------------------------------------------------------------------------------
+
+FUND_TYPES = ("etf", "mutual_fund", "fund")
+FUND_METRICS = ("pe", "dividend_yield", "expense_ratio")
+FUND_COLUMNS = {"pe": "trailing_pe", "dividend_yield": "dividend_yield", "expense_ratio": "expense_ratio"}
+FUND_LABELS = {"pe": "trailing P/E", "dividend_yield": "dividend yield", "expense_ratio": "expense ratio"}
+
+
+def fund_scores(symbol: str, day: str, snaps: list[dict], s: EngineSettings, *,
+                holds: list[dict] | tuple = ()) -> list[ScoreRow]:
+    """The three fund rows on `day` (`pe`, `dividend_yield`, `expense_ratio`), from the fund's own daily snapshots.
+
+    snaps: the symbol's fund_snapshots rows ({date, trailing_pe, dividend_yield, expense_ratio, source, fetched_at}),
+    ascending. The newest one dated on or before `day` is the value; one more than SNAPSHOT_MAX_AGE_DAYS older than
+    `day` makes every row `unsupported` ("newest snapshot is from <date>"), none at all "no fund snapshot yet".
+    `pe` and `dividend_yield` are ranked among the snapshots with the same `source` as the newest within
+    `history_years`, and get a band only once those span `min_history_days`: until then `not_enough_history` (a fund
+    whose P/E is borrowed from a proxy ETF does not count the proxy's days as its own), with the value and no band.
+    `expense_ratio` is a value only. Funds file no statements, so no row names a valuation_daily column; holds: the
+    symbol's open holds as the checker wrote them, of which a `*` covering `day` holds an `ok` row (a hold on
+    `score:<metric>` reaches the row through the valuation_scores view).
+    """
+    snaps = [x for x in snaps if x["date"] <= day]
+    newest = snaps[-1] if snaps else None
+
+    def row(metric: str, value=None, pct=None, status="unsupported", reason=None, src=()) -> ScoreRow:
+        return ScoreRow(symbol, day, metric, value, pct, band(metric, pct, s) if metric in HISTORY_METRICS else None,
+                        status, reason, (), tuple(src))
+
+    if newest is None:
+        return [row(m, reason="no fund snapshot yet") for m in FUND_METRICS]
+    feed = sources.feed(f"fund_snapshots: {newest['source']}", newest["date"], newest["fetched_at"])
+    if newest["date"] < _days_before(day, SNAPSHOT_MAX_AGE_DAYS):
+        return [row(m, reason=f"newest snapshot is from {newest['date']}", src=(feed,)) for m in FUND_METRICS]
+
+    start = _years_before(day, s.history_years)
+    out: list[ScoreRow] = []
+    for metric in FUND_METRICS:
+        column = FUND_COLUMNS[metric]
+        value = newest.get(column)
+        if value is None:
+            out.append(row(metric, reason=f"no {FUND_LABELS[metric]} in the newest snapshot", src=(feed,)))
+        elif metric == "expense_ratio":
+            out.append(row(metric, value, status="ok", src=(feed,)))
+        else:
+            own = [(x["date"], x[column]) for x in snaps
+                   if x["source"] == newest["source"] and x["date"] >= start and x[column] is not None]
+            first = own[0][0]
+            days = (date.fromisoformat(newest["date"]) - date.fromisoformat(first)).days
+            derived = sources.derived(f"fund_snapshots {column}", f"{first}..{newest['date']} ({len(own)} days)",
+                                      newest["date"])
+            if days < s.min_history_days:
+                out.append(row(metric, value, status="not_enough_history",
+                               reason=f"{days} days of its own snapshots; a band needs {s.min_history_days}",
+                               src=(feed, derived, sources.config("min_history_days", s.min_history_days))))
+            else:
+                out.append(row(metric, value, percentile([v for _, v in own], value), "ok", src=(
+                    feed, derived, sources.config("history_years", s.history_years),
+                    sources.config("cheap_percentile", s.cheap_percentile),
+                    sources.config("premium_percentile", s.premium_percentile))))
+
+    # the holds open now, as the valuation_scores view applies them to an input-less row: a `*` covering `day`
+    msgs = [h["message"] for h in holds if _covers(h, day) and h["field"] == "*"]
+    if msgs:
+        out = [row(r.metric, status="held", reason="; ".join(msgs), src=r.sources) if r.status == "ok" else r
+               for r in out]
+    return out

@@ -416,8 +416,12 @@ def test_only_stocks_with_a_cik_and_valuation_rows_get_history_scores(store, cfg
     _cover(store)
     engine.run(store, cfg)
     assert set(HISTORY) <= set(_scores(store, "AAA"))
-    for sym in ("BBB", "CCC", "SPY"):
+    for sym in ("BBB", "CCC"):
         assert not set(HISTORY) & set(_scores(store, sym))
+    fund = _scores(store, "SPY")                                            # a fund: its own rows, no company history
+    assert not {"p_fcf", "ps", "ev_ebit"} & set(fund)
+    assert {m: fund[m]["status_reason"] for m in ("pe", "dividend_yield")} == {
+        "pe": "no fund snapshot yet", "dividend_yield": "no fund snapshot yet"}
 
 
 def test_second_run_changes_no_row(store, cfg):
