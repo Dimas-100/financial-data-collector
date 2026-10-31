@@ -240,3 +240,49 @@ def test_collect_sec_sets_foreign_filer_and_stops_shaping_it(project, fixtures: 
                                   sleep=lambda s: None)
     assert len(calls) == 1                                       # a foreign filer is skipped from then on
     assert "AAPL" not in {r.symbol for r in again}
+
+
+def _one_concept_facts(taxonomy: str, concept: str, form: str, filed: str = "2026-03-01"):
+    return sec_facts.parse_company_facts({"facts": {taxonomy: {concept: {"units": {"USD": [
+        {"start": "2025-01-01", "end": "2025-12-31", "val": 10, "accn": "a", "fy": 2025, "fp": "FY", "form": form,
+         "filed": filed}]}}}}})
+
+
+def test_a_realty_trust_with_only_lease_revenue_stays_a_company():
+    facts = _one_concept_facts("us-gaap", "OperatingLeasesIncomeStatementLeaseRevenue", "10-K")
+    assert sec_facts.classify_filer(facts, "Sample Realty Trust") is None
+
+
+def test_a_bancorp_trust_with_only_interest_income_stays_a_company():
+    facts = _one_concept_facts("us-gaap", "InterestAndDividendIncomeOperating", "10-K")
+    assert sec_facts.classify_filer(facts, "Sample Bancorp Trust") is None
+
+
+def test_a_revenue_concept_from_the_concept_map_counts():
+    facts = _one_concept_facts("us-gaap", "SalesOfOddThings", "10-K")
+    assert sec_facts.classify_filer(facts, "Sample Odd Trust") == "fund"
+    assert sec_facts.classify_filer(facts, "Sample Odd Trust", ["SalesOfOddThings"]) is None
+
+
+def test_ifrs_only_operating_facts_on_a_10k_are_a_foreign_filer():
+    facts = _one_concept_facts("ifrs-full", "Revenue", "10-K")
+    assert sec_facts.classify_filer(facts, "Sample Holdings") == "foreign_filer"
+
+
+def test_a_malformed_filed_date_gives_no_fund_verdict_and_no_error():
+    facts = _one_concept_facts("us-gaap", "NetIncomeLoss", "10-Q", filed="soon")
+    assert sec_facts.classify_filer(facts, "Sample Bitcoin Trust") is None
+
+
+def test_collect_sec_still_types_a_filer_with_no_operating_facts_as_etf(project, fixtures: Path):
+    cfg, store = project
+
+    def fetch(url, headers):
+        if url == sec_cik.CIK_URL:
+            return json.dumps({"0": {"cik_str": 9, "ticker": "AAPL", "title": "Sample Holdings"}}).encode()
+        return json.dumps({"cik": 9, "facts": {"dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [
+            {"end": "2025-12-31", "val": 1, "accn": "x", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-01-01"}]}}}}}).encode()
+
+    results = sec_facts.collect_sec(store, cfg, fetch=fetch, now=NOW, rebuild=lambda f, r: [], sleep=lambda s: None)
+    assert store.query("SELECT asset_type FROM securities WHERE symbol='AAPL'")[0][0] == "etf"
+    assert "no operating facts; classified as etf" in {r.symbol: r.message for r in results}["AAPL"]

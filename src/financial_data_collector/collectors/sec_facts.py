@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Callable
+from typing import Callable, Iterable
 
 from ..config import Config, ConfigError
 from ..http import Fetch, HttpError
@@ -20,7 +20,7 @@ PAUSE_SECONDS = 1.0
 _FUND_TYPES = {"etf", "mutual_fund", "money_market", "crypto", "fund", "foreign_filer"}
 _FOREIGN_FORMS = {"20-F", "20-F/A", "40-F", "6-K"}
 _FUND_NAME = re.compile(r"\b(trust|fund|etf)\b", re.IGNORECASE)
-_REVENUE_CONCEPTS = ("RevenueFromContractWithCustomer", "Revenues")
+_REVENUE_ENDINGS = ("LeaseIncome", "LeaseRevenue", "RealEstateRevenueNet")
 Rebuild = Callable[[list[Fact], list[ConceptRule]], list[LineItem]]
 
 
@@ -65,13 +65,20 @@ def has_operating_facts(facts: list[Fact]) -> bool:
     return any(f.taxonomy == "us-gaap" and f.period_start for f in facts)
 
 
-def classify_filer(facts: list[Fact], sec_name: str | None) -> str | None:
+def _is_revenue(concept: str, revenue_concepts: frozenset[str]) -> bool:
+    return (concept in revenue_concepts or concept.startswith("Revenue") or "InterestAndDividendIncome" in concept
+            or concept.endswith(_REVENUE_ENDINGS))
+
+
+def classify_filer(facts: list[Fact], sec_name: str | None, revenue_concepts: Iterable[str] = ()) -> str | None:
     """"foreign_filer", "fund" or None (an ordinary company the statements can shape).
 
     A foreign filer's newest filing is a 20-F, 40-F or 6-K, or its only operating facts are IFRS (a company that
     filed 10-Ks until 2012 and 20-Fs since has old us-gaap facts and is still a foreign filer). A fund-like filer
     has "trust", "fund" or "etf" in its name and no revenue in the two years before its newest filing: a bank
-    called "... Trust Corp" has revenue and stays a company."""
+    called "... Trust Corp" has revenue and stays a company. Revenue is any us-gaap concept the concept map files
+    under `revenue`, one starting with "Revenue", interest and dividend income (banks), or lease and real-estate
+    revenue (REITs); `revenue_concepts` is the map's list, passed in so this stays pure."""
     if not facts:
         return None
     newest = max(f.filed for f in facts)
@@ -81,9 +88,13 @@ def classify_filer(facts: list[Fact], sec_name: str | None) -> str | None:
     ifrs = any(f.taxonomy == "ifrs-full" and f.period_start for f in facts)
     if ifrs and not us_gaap:
         return "foreign_filer"
-    if sec_name and _FUND_NAME.search(sec_name) and newest:
-        cutoff = (date.fromisoformat(newest[:10]) - timedelta(days=730)).isoformat()
-        if not any(f.taxonomy == "us-gaap" and f.concept.startswith(_REVENUE_CONCEPTS) and f.period_end >= cutoff
+    if sec_name and _FUND_NAME.search(sec_name):
+        try:
+            cutoff = (date.fromisoformat(newest[:10]) - timedelta(days=730)).isoformat()
+        except ValueError:
+            return None                                    # a malformed date: no fund verdict, never an error
+        known = frozenset(revenue_concepts)
+        if not any(f.taxonomy == "us-gaap" and f.period_end >= cutoff and _is_revenue(f.concept, known)
                    for f in facts):
             return "fund"
     return None
@@ -121,6 +132,7 @@ def collect_sec(
     headers = _headers(cfg.sec_user_agent)
     cik_map = load_cik_map(cfg.cache_dir / "company_tickers.json", fetch, cfg.sec_user_agent, now)
     rules = store.concept_rules()
+    revenue_concepts = frozenset(r.concept for r in rules if r.line_item == "revenue" and r.taxonomy == "us-gaap")
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     results: list[SecResult] = []
     securities = store.securities()
@@ -159,7 +171,7 @@ def collect_sec(
             sleep(PAUSE_SECONDS)
             continue
         facts = parse_company_facts(data)
-        kind = classify_filer(facts, sec_name or data.get("entityName"))
+        kind = classify_filer(facts, sec_name or data.get("entityName"), revenue_concepts)
         if kind:
             # not an operating company the statements can shape: typed, its old lines cleared, never shaped again
             store.set_asset_type(symbol, kind)
