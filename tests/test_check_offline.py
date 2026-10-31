@@ -297,7 +297,7 @@ def test_a_close_two_trading_days_old_warns(store, cfg):
     (f,) = offline.closes(_ctx(store, cfg, THU))
     assert (f.check_name, f.symbol, f.severity, f.field, f.date_from, f.date_to) ==            ("closes", "AAA", "warn", "close", "2026-10-27", None)
     assert f.evidence == {"newest": "2026-10-26", "missed": ["2026-10-27", "2026-10-28"]}
-    assert f.message == ("newest final close is from 2026-10-26, 2 trading days ago (the feed may have stopped)")
+    assert f.message == "no final close for 2 trading days since 2026-10-26 (the feed may have stopped)"
 
 
 def test_yesterdays_close_is_fine(store, cfg):
@@ -313,7 +313,7 @@ def test_five_missed_trading_days_hold_every_value(store, cfg):
     (f,) = offline.closes(_ctx(store, cfg, THU))
     assert (f.severity, f.field, f.date_from) == ("hold", "*", "2026-10-22")
     assert f.evidence["missed"] == ["2026-10-22", "2026-10-23", "2026-10-26", "2026-10-27", "2026-10-28"]
-    assert "5 trading days ago" in f.message
+    assert "no final close for 5 trading days since 2026-10-21" in f.message
     _security(store, "BBB"), _hold_all(store, "AAA", "BBB")
     _priced_to(store, "BBB", "2026-10-22")                         # four missed: still only a warning
     assert [(g.symbol, g.severity) for g in offline.closes(_ctx(store, cfg, THU))] == [("AAA", "hold"), ("BBB", "warn")]
@@ -376,6 +376,13 @@ def test_thresholds_come_from_config(store, cfg):
     assert offline.closes(_ctx(store, replace(cfg, check=replace(cfg.check, close_warn_days=3)), THU)) == []
     (f,) = offline.closes(_ctx(store, replace(cfg, check=replace(cfg.check, close_warn_days=1, close_hold_days=2)), THU))
     assert f.severity == "hold"
+
+
+def test_one_missed_day_is_said_in_the_singular(store, cfg):
+    _security(store, "AAA"), _hold(store, "AAA")
+    _priced_to(store, "AAA", "2026-10-27")                         # one missed day
+    (f,) = offline.closes(_ctx(store, replace(cfg, check=replace(cfg.check, close_warn_days=1)), THU))
+    assert f.message == "no final close for 1 trading day since 2026-10-27 (the feed may have stopped)"
 
 
 # ---- recompute ---------------------------------------------------------------------------------

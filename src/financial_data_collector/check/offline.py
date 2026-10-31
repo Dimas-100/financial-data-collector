@@ -164,9 +164,10 @@ def closes(ctx: CheckContext) -> list[Finding]:
         if len(missed) < warn_days:
             continue
         hold = len(missed) >= hold_days
+        days = f"{len(missed)} trading day" + ("" if len(missed) == 1 else "s")
         out.append(Finding(
             "closes", symbol, "*" if hold else "close", missed[0], None, "hold" if hold else "warn",
-            f"newest final close is from {newest[0]}, {len(missed)} trading days ago (the feed may have stopped)",
+            f"no final close for {days} since {newest[0]} (the feed may have stopped)",
             {"newest": newest[0], "missed": missed}))
     return out
 
