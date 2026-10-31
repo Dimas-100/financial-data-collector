@@ -268,3 +268,16 @@ def test_only_naming_every_check_is_a_full_run_and_stamps_the_derive(cfg):
     _derive_ok(cfg)
     _run(cfg, {"a": lambda ctx: [], "b": lambda ctx: []}, only=["a", "b"])
     assert _rows(cfg, "SELECT derive_run_id FROM check_runs")[0][0] == "20260301T100000Z"
+
+
+def test_a_checks_error_text_is_redacted_before_it_is_kept(cfg):
+    cfg.sec_user_agent, cfg.tiingo_token = "Sample Person s@example.com", "tok-0123456789abcdef"
+
+    def leaky(ctx):
+        raise RuntimeError(f"GET https://user:pw@h/x?token={cfg.tiingo_token} as {cfg.sec_user_agent} failed")
+
+    rep = _run(cfg, {"a": leaky})
+    run = _rows(cfg, "SELECT error FROM check_runs")[0][0]
+    for text in (rep.errors[0], run):
+        assert "a: RuntimeError" in text and "failed" in text
+        assert cfg.tiingo_token not in text and cfg.sec_user_agent not in text and "pw@" not in text

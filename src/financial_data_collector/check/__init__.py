@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from .. import http
 from ..config import Config, ConfigError
+from ..connections.redact import redact
 from ..store import Store
 from .findings import Finding
 
@@ -106,7 +107,8 @@ def run_check(cfg: Config, *, fetch: http.Fetch = http.fetch, outside: Any = Non
                         raise ValueError(f"returned a finding for {f.field!r}, which is not a valuation_daily column or '*'")
                 st.check_record(name, found, stamp)     # one transaction: an error leaves its findings as they were
             except Exception as e:      # one broken check must not hide the others; its findings stay as they were
-                errors.append(f"{name}: {type(e).__name__}: {e}")
+                # the text reaches check_runs.error and the sync's message: no key or agent may ride along
+                errors.append(redact(f"{name}: {type(e).__name__}: {e}", [cfg.sec_user_agent, cfg.tiingo_token]))
                 continue
             holds += sum(1 for f in found if f.severity == "hold")
             warns += sum(1 for f in found if f.severity == "warn")
