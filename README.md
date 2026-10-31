@@ -262,8 +262,8 @@ Each stock with an SEC CIK also gets ten fundamentals, with no percentile or ban
 - `insider_net_90d`: buys minus sells among the sibling `<investing content_dir>/data/insider.json` feed's Form 4
   entries filed in the 90 days ending the day (`mixed` and `other` count 0); each counted filing's SEC link is built
   from the CIK and accession, never taken from the feed; `unsupported` "insider feed not found" (no file), "insider feed
-  unreadable" (there, but not JSON of the feed's shape), "insider feed has no date", "insider feed is from <date>" (its `as_of` more than 7 days before the day) or "not in the insider feed".
-  The feed is read once per run.
+  unreadable" (there, but not JSON of the feed's shape), "insider feed has no date", "insider feed is from <date>"
+  (its `as_of` more than 7 days before the day) or "not in the insider feed". The feed is read once per run.
 
 The newest valuation row decides the four built on it (`implied_growth`, the margins, `net_debt_ebitda`,
 `buyback_yield`): not on the day, `stale` or `unsupported` makes them `unsupported` with its reason. Inputs:
