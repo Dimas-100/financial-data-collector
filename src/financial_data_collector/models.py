@@ -135,3 +135,16 @@ class LineItem:
     accn: str
     is_derived: bool = False
     first_filed: str = ""  # when the period was first public; point-in-time analysis uses this
+
+
+@dataclass(frozen=True)
+class FundSnapshot:
+    """What Yahoo said about a fund on one New York day. Yield and expense ratio are fractions (0.0121 = 1.21%).
+    `source` is 'yfinance', or 'proxy: SPY via yfinance' when an ETF tracking the same index supplied the P/E and yield."""
+    symbol: str
+    date: str
+    trailing_pe: float | None
+    forward_pe: float | None
+    dividend_yield: float | None
+    expense_ratio: float | None
+    source: str

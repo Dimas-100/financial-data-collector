@@ -12,7 +12,7 @@ from . import migrate as _migrate
 from .adapters.base import dedupe_key
 from .connections.names import slug_for
 from .models import (
-    AccountRef, ConceptRule, Fact, LineItem, MacroObservation, PriceBar, Snapshot, TransactionRow, is_final,
+    AccountRef, ConceptRule, Fact, FundSnapshot, LineItem, MacroObservation, PriceBar, Snapshot, TransactionRow, is_final,
 )
 
 if TYPE_CHECKING:
@@ -169,6 +169,11 @@ class Store:
     def mark_sec_fetch(self, symbol: str, when: str) -> None:
         with self.conn:
             self.conn.execute("UPDATE securities SET last_sec_fetch = ? WHERE symbol = ?", (when, symbol))
+
+    def mark_fund_fetch(self, symbol: str, day: str) -> None:
+        """The fund was asked about on this New York day: the funds step does not ask again until the next one."""
+        with self.conn:
+            self.conn.execute("UPDATE securities SET last_fund_fetch = ? WHERE symbol = ?", (day, symbol))
 
     def set_asset_type(self, symbol: str, asset_type: str) -> None:
         with self.conn:
@@ -446,6 +451,29 @@ class Store:
                 [(o.series_id, o.obs_date, o.value, fetched_at) for o in obs],
             )
         return self.conn.total_changes - before
+
+    # ---- fund snapshots ---------------------------------------------------
+    def write_fund_snapshot(self, snap: FundSnapshot, fetched_at: str) -> int:
+        """Upsert the fund's row for its day. A row whose figures and source are unchanged is left alone (fetched_at
+        included), so a repeat run changes nothing. Returns 1 when a row was inserted or changed, else 0."""
+        before = self.conn.total_changes
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO fund_snapshots
+                     (symbol, date, trailing_pe, forward_pe, dividend_yield, expense_ratio, source, fetched_at)
+                   VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(symbol, date) DO UPDATE SET
+                     trailing_pe = excluded.trailing_pe, forward_pe = excluded.forward_pe,
+                     dividend_yield = excluded.dividend_yield, expense_ratio = excluded.expense_ratio,
+                     source = excluded.source, fetched_at = excluded.fetched_at
+                   WHERE fund_snapshots.trailing_pe IS NOT excluded.trailing_pe
+                      OR fund_snapshots.forward_pe IS NOT excluded.forward_pe
+                      OR fund_snapshots.dividend_yield IS NOT excluded.dividend_yield
+                      OR fund_snapshots.expense_ratio IS NOT excluded.expense_ratio
+                      OR fund_snapshots.source IS NOT excluded.source""",
+                (snap.symbol, snap.date, snap.trailing_pe, snap.forward_pe, snap.dividend_yield, snap.expense_ratio,
+                 snap.source, fetched_at))
+        return 1 if self.conn.total_changes > before else 0
 
     # ---- SEC --------------------------------------------------------------
     def write_sec_facts(self, cik: str, facts: Iterable[Fact]) -> int:

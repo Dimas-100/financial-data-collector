@@ -19,6 +19,9 @@ min_hours = 6                      # ask a connected service (fdc connect) at mo
 market = "SPY"
 # sectors = { "Technology" = "XLK", "Health Care" = "XLV" }   # replaces the default: the 11 Select Sector SPDRs
 
+[fund_proxies]                     # a fund Yahoo has no P/E or yield for: an ETF tracking the same index stands in; fund_snapshots.source says so
+# "XYZFX" = "SPY"
+
 [sources.snaptrade]
 enabled = true                     # owner-only: investing's SnapTrade export. Ignored if dir is missing.
 dir = "../investing/fidelity/dashboard-data"

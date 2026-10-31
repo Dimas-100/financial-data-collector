@@ -41,7 +41,7 @@ projects consume the database; this one owns collection and storage. Design spec
 ```
 src/financial_data_collector/
   cli.py            fdc init | sync | import | status | query | export | check | mcp | connect | connections | disconnect | accounts | console
-  sync.py           runs steps connections -> ingest -> prices -> macro -> sec -> derive -> export -> check, logs sync_runs (with origin), keeps the heartbeat, exit codes
+  sync.py           runs steps connections -> ingest -> prices -> macro -> sec -> funds -> derive -> export -> check, logs sync_runs (with origin), keeps the heartbeat, exit codes
   heartbeat.py      data/sync.heartbeat.json: the running sync's step, progress line, pid and origin; wait_for_turn() for a second sync
   console/          model.py (read-only Overview), schedule.py (Windows Task Scheduler reader), actions.py (one fdc sync subprocess), report.py (rich, --once), app.py (Textual screen)
   connections/      names.py (labels, kinds, external keys), keys.py (key store / .env), snaptrade.py + simplefin.py (read-only fetchers -> models), service.py (connect / disconnect / run), redact.py
@@ -50,12 +50,12 @@ src/financial_data_collector/
   export/cockpit.py prices.json / dividends.json / fundamentals.json for the investing cockpit
   ingest.py         inbox routing by file signature; SnapTrade folder walk; hash-based idempotency
   adapters/         fidelity_positions.py, fidelity_history.py, snaptrade.py -> models.Snapshot / TransactionRow
-  collectors/       prices.py (Tiingo|yfinance), macro.py (FRED: CPI, core CPI, the Fed range, 10-year, unemployment; needs FRED_API_KEY), sec_cik.py, sec_facts.py (EDGAR company facts)
+  collectors/       prices.py (Tiingo|yfinance), macro.py (FRED: CPI, core CPI, the Fed range, 10-year, unemployment; needs FRED_API_KEY), sec_cik.py, sec_facts.py (EDGAR company facts), yahoo.py (the `YahooClient` seam over yfinance, `default_client()`), funds.py (daily fund snapshots: P/E, yield, expense ratio; a `[fund_proxies]` ETF stands in when a fund has none)
   sectors.py        SECTORS (the eleven sector names) and DEFAULT_SECTOR_ETFS (the fund that stands for each); config `[benchmarks]` builds on them
   statements.py     facts + concept_map -> financial_line_items (annual, quarter, YTD differencing, derived Q4)
   store.py          Store: every write; migrate.py: migrations, seed, generated wide views
   readonly.py       SQL guard + mode=ro connection; mcp_server.py: schema/query/status tools
-  migrations/*.sql  0001 tables, 0002 views, 0003 derived tables + TTM/history views, 0006 connections, 0007 unexplained_daily, 0008 sync_runs.origin, 0009 sec_facts(filed) index, 0010 macro_observations, 0011 prices.final + valuation status columns, 0012 check_runs + check_findings, 0013 valuation_latest applies holds, 0014 securities.benchmark;  seeds/concept_map.csv
+  migrations/*.sql  0001 tables, 0002 views, 0003 derived tables + TTM/history views, 0006 connections, 0007 unexplained_daily, 0008 sync_runs.origin, 0009 sec_facts(filed) index, 0010 macro_observations, 0011 prices.final + valuation status columns, 0012 check_runs + check_findings, 0013 valuation_latest applies holds, 0014 securities.benchmark, 0015 fund_snapshots + securities.last_fund_fetch;  seeds/concept_map.csv
 ```
 
 ## Tables and views (start here when querying)
@@ -70,6 +70,7 @@ src/financial_data_collector/
 - `unexplained_daily` (per account and day, the change no transaction or split explains, at least a dollar and not cancelled within a week: `cash`, `holdings` at the day's close, `amount`; most often a deposit the balance shows before the activity feed posts it. A consumer counts `amount` as money moved, not growth)
 - `sec_facts` (raw XBRL, every filing's value for every period), `financial_line_items` (shaped), `concept_map`
 - `check_runs` (one row per `fdc check` run: `run_id` (start to the millisecond plus six random hex digits, sortable), `started_at`, `finished_at`, `derive_run_id`, `checks_run`, `holds`, `warns` found by that run, `error`) and `check_findings` (what the checks found: `check_name`, `symbol`, `field` = a `valuation_daily` column or `*`, `date_from`/`date_to`, `severity` `hold|warn|info`, `message`, `evidence` JSON, `first_seen`, `last_seen`, `cleared_at`; unique on check, symbol, field, date_from). An open hold (not cleared) covering a row NULLs its fields in `valuation_latest` and sets `status = 'held'` (only on a row that was `ok`); `valuation_daily` is never changed by a hold. `fdc check --summary` lists the open ones
+- `fund_snapshots` (symbol, date, trailing_pe, forward_pe, dividend_yield, expense_ratio, source, fetched_at; one row per fund per New York day from Yahoo, history starting the day the `funds` step first ran; `source` is `yfinance` or `proxy: X via yfinance` when an ETF named in `[fund_proxies]` supplied the P/E and yield; yields and expense ratios are fractions, 0.0121 = 1.21%; a re-run the same day changes nothing)
 - `sync_status` / `sync_runs` (each run's `origin`: `scheduled`, `manual`, `console`; `unknown` before migration 0008), `ingested_files`, `securities` (`benchmark` = a yardstick the config names, collected like any symbol, never counted as a holding, left out of the export unless held or listed), `accounts` (with `external_key`, `origin`, `kind_confirmed`, `credit_limit`, `rate_pct`, `flows` for a connected account), `connections`
 
 More examples: `docs/QUERIES.md`.

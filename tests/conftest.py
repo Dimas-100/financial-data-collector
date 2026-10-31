@@ -42,3 +42,19 @@ def no_real_outside_source(monkeypatch):
     from financial_data_collector.check import outside
 
     monkeypatch.setattr(outside, "default_source", lambda: _NoOutside())
+
+
+class _NoYahoo:
+    """What the suite's Yahoo client knows: nothing."""
+
+    def fund_info(self, symbol):
+        return None
+
+
+@pytest.fixture(autouse=True)
+def no_real_yahoo(monkeypatch):
+    """No test reaches Yahoo through a sync: `collectors.yahoo.default_client` answers None for everything. A test
+    that exercises a collector passes its own fake through `yahoo=`."""
+    from financial_data_collector.collectors import yahoo
+
+    monkeypatch.setattr(yahoo, "default_client", lambda: _NoYahoo())

@@ -49,12 +49,12 @@ def _counts(cfg):
 
 def test_full_sync_then_noop(project, fixtures: Path):
     rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "derive", "export", "check"]
-    assert [s.status for s in rep.steps] == ["skipped", "ok", "ok", "skipped", "ok", "ok", "skipped", "ok"], rep.steps   # no connections, no FRED key; export disabled by default
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "funds", "derive", "export", "check"]
+    assert [s.status for s in rep.steps] == ["skipped", "ok", "ok", "skipped", "ok", "ok", "ok", "skipped", "ok"], rep.steps   # no connections, no FRED key; export disabled by default
     assert rep.exit_code == 0
     c1 = _counts(project)
     assert c1["position_snapshots"] > 0 and c1["prices"] > 0 and c1["sec_facts"] == 35
-    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 8
+    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 9
     assert "without data" in rep.steps[2].message          # KO, VTI, BRK.B had no bars
     rep2 = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert rep2.steps[1].rows == 0
@@ -69,12 +69,12 @@ def test_only_and_skip(project, fixtures: Path):
     rep = sync.run_sync(project, only=["prices"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert [s.step for s in rep.steps] == ["prices"]
     rep = sync.run_sync(project, skip=["sec"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "derive", "export", "check"]
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "funds", "derive", "export", "check"]
 
 
 def test_dry_run_touches_nothing(project):
     rep = sync.run_sync(project, dry_run=True)
-    assert rep.dry_run and [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "derive", "export", "check"]
+    assert rep.dry_run and [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "funds", "derive", "export", "check"]
     assert not project.db_path.exists()
 
 
@@ -95,13 +95,18 @@ def test_missing_user_agent_skips_sec(project, fixtures: Path):
     assert rep.exit_code == 0
 
 
+class _YahooDown:
+    def fund_info(self, symbol):
+        raise OSError("network down")
+
+
 def test_network_down_exit_code(project):
     def down(url, headers):
         raise HttpError(500, url)
-    rep = sync.run_sync(project, fetch=down, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    rep = sync.run_sync(project, fetch=down, now=NOW, yf=lambda s, d: [], yahoo=_YahooDown(), sleep=lambda s: None)
     by = {s.step: s for s in rep.steps}
     assert by["ingest"].status == "ok"
-    assert by["prices"].status == "error" and by["sec"].status == "error"
+    assert by["prices"].status == "error" and by["sec"].status == "error" and by["funds"].status == "error"
     assert rep.exit_code == 1
 
 
@@ -213,7 +218,7 @@ def test_connections_step_runs_the_connections(project, fixtures: Path, tmp_path
 def test_a_skipped_connections_step_leaves_the_exit_code_to_the_other_network_steps(project):
     def down(url, headers):
         raise HttpError(500, url)
-    rep = sync.run_sync(project, fetch=down, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    rep = sync.run_sync(project, fetch=down, now=NOW, yf=lambda s, d: [], yahoo=_YahooDown(), sleep=lambda s: None)
     by = {s.step: s for s in rep.steps}
     assert by["connections"].status == "skipped" and rep.exit_code == 1
 
@@ -403,3 +408,8 @@ def test_derive_does_not_reshape_a_company_the_sec_step_typed_a_foreign_filer(pr
     assert kind == "foreign_filer" and items == 0        # its old us-gaap facts are still in sec_facts, but not shaped
     rep = sync.run_sync(project, only=["derive"], fetch=ifrs, now=later, yf=lambda s, d: [], sleep=lambda s: None)
     assert _aapl(project)[2] == 0 and "statements reshaped 0" in rep.steps[0].message
+
+
+def test_steps_include_funds_after_sec():
+    assert sync.STEPS[sync.STEPS.index("sec") + 1] == "funds" and "funds" in sync.NETWORK_STEPS
+    assert sync.STALE_HOURS["funds"] == 48

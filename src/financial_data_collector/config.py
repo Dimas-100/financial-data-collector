@@ -32,6 +32,9 @@ min_hours = 6                      # ask a connected service (fdc connect) at mo
 market = "SPY"
 # sectors = { "Technology" = "XLK", "Health Care" = "XLV" }   # replaces the default: the 11 Select Sector SPDRs
 
+[fund_proxies]                     # a fund Yahoo has no P/E or yield for: an ETF tracking the same index stands in; fund_snapshots.source says so
+# "XYZFX" = "SPY"
+
 [sources.snaptrade]
 enabled = true                     # owner-only: investing's SnapTrade export. Ignored if dir is missing.
 dir = "../investing/fidelity/dashboard-data"
@@ -137,6 +140,7 @@ class Config:
     share_classes: dict[str, ShareClass] = field(default_factory=dict)
     check: CheckSettings = field(default_factory=CheckSettings)
     benchmarks: Benchmarks = field(default_factory=Benchmarks)
+    fund_proxies: dict[str, str] = field(default_factory=dict)
     tiingo_token: str | None = None
     fred_api_key: str | None = None
     sec_user_agent: str | None = None
@@ -239,6 +243,17 @@ def _benchmarks(raw: object, cfg_path: Path) -> Benchmarks:
     return Benchmarks(market=canonical(market), sectors={name: canonical(symbol) for name, symbol in sector_funds.items()})
 
 
+def _fund_proxies(raw: object, cfg_path: Path) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{cfg_path}: [fund_proxies] must be a table")
+    out: dict[str, str] = {}
+    for fund, proxy in raw.items():
+        if not isinstance(proxy, str) or not proxy.strip():
+            raise ConfigError(f'{cfg_path}: [fund_proxies] "{fund}" needs a symbol, such as "SPY"')
+        out[canonical(str(fund))] = canonical(proxy)
+    return out
+
+
 def load_config(root: Path) -> Config:
     root = Path(root)
     cfg_path = root / "config.toml"
@@ -282,6 +297,7 @@ def load_config(root: Path) -> Config:
         share_classes=_share_classes(raw.get("share_classes", {}), cfg_path),
         check=_check_settings(raw.get("check", {}), cfg_path),
         benchmarks=_benchmarks(raw.get("benchmarks", {}), cfg_path),
+        fund_proxies=_fund_proxies(raw.get("fund_proxies", {}), cfg_path),
         tiingo_token=_secret("TIINGO_API_TOKEN", dotenv),
         fred_api_key=_secret("FRED_API_KEY", dotenv),
         sec_user_agent=_secret("SEC_USER_AGENT", dotenv),

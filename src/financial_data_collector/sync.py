@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from . import check as check_mod, heartbeat, http, statements
-from .collectors import prices as prices_mod
+from .collectors import funds as funds_mod, prices as prices_mod, yahoo as yahoo_mod
 from .collectors.macro import MacroError, collect_macro, start_date as macro_start
 from .collectors.sec_facts import FUND_TYPES, collect_sec
 from .config import Config, ConfigError
@@ -22,10 +22,10 @@ from .models import PriceBar
 from .store import Store, utcnow
 from .universe import build_universe
 
-STEPS = ("connections", "ingest", "prices", "macro", "sec", "derive", "export", "check")
-NETWORK_STEPS = {"connections", "prices", "macro", "sec"}
+STEPS = ("connections", "ingest", "prices", "macro", "sec", "funds", "derive", "export", "check")
+NETWORK_STEPS = {"connections", "prices", "macro", "sec", "funds"}
 ORIGINS = ("scheduled", "manual", "console")       # who started a run: the task, a hand, fdc console
-STALE_HOURS = {"ingest": 48, "prices": 48, "macro": 48, "sec": 336, "derive": 48, "export": 48, "check": 48}
+STALE_HOURS = {"ingest": 48, "prices": 48, "macro": 48, "sec": 336, "funds": 48, "derive": 48, "export": 48, "check": 48}
 
 
 @dataclass
@@ -140,6 +140,22 @@ def _step_sec(store: Store, cfg: Config, *, fetch, now, sleep, progress: Progres
     return sum(r.facts for r in results), msg, status
 
 
+def _step_funds(store: Store, cfg: Config, *, now, yahoo, sleep, progress: Progress, **_) -> tuple[int, str, str]:
+    results = funds_mod.collect_funds(store, _universe(store, cfg), cfg, yahoo=yahoo, now=now, sleep=sleep,
+                                      progress=progress)
+    written = sum(r.written for r in results)
+    nofigures = [r for r in results if r.source is None and not r.failed]
+    failed = [r for r in results if r.failed]
+    noted = [r for r in results if r.message and not r.failed and r.message != "no figures"]
+    msg = f"{written} snapshots written, {len(nofigures)} without figures, {len(failed)} failed"
+    if noted:
+        msg += "; " + ", ".join(f"{r.symbol} ({r.message})" for r in noted)
+    if failed:
+        msg += "; failed: " + ", ".join(f"{r.symbol} ({r.message})" for r in failed)
+    status = "error" if results and len(failed) == len(results) else "ok"
+    return written, msg, status
+
+
 def _step_derive(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple[int, str, str]:
     # Statements are a function of the shaper and the concept map, not of the fetch:
     # reshape every company from its stored facts so a code or seed change applies everywhere.
@@ -201,7 +217,7 @@ def _step_check(store: Store, cfg: Config, *, fetch, now, sleep, progress: Progr
 
 _RUNNERS: dict[str, Callable] = {
     "connections": _step_connections, "ingest": _step_ingest, "prices": _step_prices, "macro": _step_macro, "sec": _step_sec,
-    "derive": _step_derive, "export": _step_export, "check": _step_check,
+    "funds": _step_funds, "derive": _step_derive, "export": _step_export, "check": _step_check,
 }
 
 
@@ -214,6 +230,7 @@ def run_sync(
     fetch: http.Fetch = http.fetch,
     now: datetime | None = None,
     yf: Callable[[str, str], list[PriceBar]] | None = None,
+    yahoo: yahoo_mod.YahooClient | None = None,
     sleep: Callable[[float], None] = time.sleep,
     progress: Callable[[str, str], None] | None = None,
     keys: KeyHome | None = None,
@@ -221,8 +238,10 @@ def run_sync(
 ) -> SyncReport:
     """Run the selected steps. `progress(step, detail)` is called as work advances (for a live display). `keys`
     is where the connections step finds its keys; by default the key store, or .env, beside config.toml.
-    `origin` says who started the run: `scheduled`, `manual` or `console`."""
+    `origin` says who started the run: `scheduled`, `manual` or `console`. `yahoo` is the Yahoo client the collectors
+    ask; by default yfinance, looked up when the run starts."""
     now = now or datetime.now(timezone.utc)
+    yahoo = yahoo or yahoo_mod.default_client()
     run_id = now.strftime("%Y%m%dT%H%M%SZ")
     steps = _select_steps(only, skip)
     report = SyncReport(run_id=run_id, dry_run=dry_run)
@@ -244,8 +263,8 @@ def run_sync(
 
             report_progress("starting")
             try:
-                rows, message, status = _RUNNERS[step](store, cfg, fetch=fetch, now=now, yf=yf, sleep=sleep,
-                                                       progress=report_progress, keys=keys)
+                rows, message, status = _RUNNERS[step](store, cfg, fetch=fetch, now=now, yf=yf, yahoo=yahoo,
+                                                       sleep=sleep, progress=report_progress, keys=keys)
             except ConfigError as e:
                 rows, message, status = 0, str(e), "skipped"
             except Exception as e:  # isolate: log and continue with the next step
