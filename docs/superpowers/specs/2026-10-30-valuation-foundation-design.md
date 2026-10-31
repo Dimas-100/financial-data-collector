@@ -1,7 +1,7 @@
 # Valuation foundation: correct data, an independent checker, a sourced valuation engine
 
-Date: 2026-10-30. Status: draft from the conversation, with the builder check's answers folded in; one
-question (the tilt rule, Part 5) waits on the owner.
+Date: 2026-10-30. Status: written from the conversation, with the builder check's answers folded in;
+waiting for the owner's approval before a plan.
 
 ## Intent
 
@@ -279,9 +279,15 @@ Built by `derive` from the tables above, no network, no AI. Outputs are rebuilt 
      This is now the one implementation of the rule for proposals; a test pins it to the targets file's
      documented examples;
   2. a valuation tilt: an eligible holding's share of the money is multiplied by a factor from its band
-     (`cheap` 1.5, `usual` 1.0, `premium` 0.5; config), then renormalized. **Open, the owner's call:**
-     which band a holding gets when its metrics disagree, and what a fund gets while it has no valuation
-     history (see "Waiting on the owner");
+     (`cheap` 1.5, `usual` 1.0, `premium` 0.5; config), then renormalized. The holding's band leans
+     careful (the owner's choice): its primary metrics are P/E, P/FCF, EV/EBIT and P/S for a company,
+     P/E and yield for a fund, each counted only when its status is `ok`.
+     - `cheap` only when at least two primary metrics are available, most of them say `cheap`, none says
+       `premium`, and the quality check isn't falling (FCF and operating margin not both down on a year);
+     - `premium` when most available primary metrics say `premium`;
+     - `usual` otherwise, including any disagreement, a single available metric, and every fund until it
+       has a year of its own valuation history.
+     The line's reason codes say which metrics decided it;
   3. a held or unsupported score counts as `usual` and the row says so;
   4. amounts rounded to whole dollars; anything under a per-order minimum (config, default $10) is
      folded into the largest line; the remainder, if any, is "waits for next week".
@@ -315,12 +321,8 @@ Built by `derive` from the tables above, no network, no AI. Outputs are rebuilt 
 - Scope: the holdings in the accounts he adds money to weekly; the money to place is what waits in each
   account's money market fund.
 - Every number shows where it came from.
-
-## Waiting on the owner
-
-- **The tilt rule** (Part 5, step 2): which band drives a holding's share of the money when its metrics
-  disagree (P/E cheap, P/FCF premium), and whether a fund is tilted at all before it has a year of its own
-  valuation history. This sets dollar amounts directly.
+- The split's tilt leans careful: a holding gets more money only when its measures mostly agree it is
+  cheap; disagreement, thin data and funds without history stay at their target share.
 
 ## The builder's calls (not discussed; change freely)
 
