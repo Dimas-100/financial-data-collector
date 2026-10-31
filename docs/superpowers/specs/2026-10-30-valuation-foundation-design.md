@@ -341,3 +341,45 @@ Built by `derive` from the tables above, no network, no AI. Outputs are rebuilt 
 - No accepted/edited state here: a proposal is open, replaced or spent.
 - yfinance for fund snapshots, earnings estimates and surprises (sourced as Yahoo); SEC for report dates.
 - Sector ETFs as the sector benchmark.
+
+## Addendum 2026-10-31: the week score, holding bands and targets for the window's "This week" page
+
+The window's "This week" page (its own spec) shows, per account, whether this week's waiting cash goes in. Every
+number on it is published here; the window only displays it. Approved by the owner 2026-10-31 (he picked option A
+of three for the score, and "half the gap is cheap" for the guard).
+
+- **`holding_bands`** (view over `holding_bands_raw`, rebuilt by the engine step under the split's gate): one row per
+  symbol held in a configured `[allocation.accounts]` account (money market funds left out): `holding_band`'s band,
+  its reason codes (comma-joined) and the deciding score rows as `sources`, at the symbol's newest score date,
+  stamped `checked_at`. A hold opened since on a deciding score row blanks the band and lists `hold_ids`.
+- **`allocation_targets`** (view over `allocation_targets_raw`, rebuilt the same way): one row per targets-file
+  entry per configured account (the entry `plan_split` plans; `rule` is `hold` when any entry of the name in the
+  account is), with `plan_split`'s own gap and top (`split.entry_gap`, shared code): `gap` is the distance to the
+  target in dollars, always ≥ 0, and `side` says which way (`short` | `over` | `on`, within half a cent); `top` is
+  the dollars to the band top (negative past it). A ratio entry with no look-through has no gap (`note =
+  no_look_through`).
+- **The week score** (per proposal, 0-10, never a probability), from the money's destinations: the account's
+  entries the split could give money to (not `hold`, a known rule, short of target), each weighted by its share
+  of their total gap (`w`):
+  - starts at **7** (a usual week puts the money in);
+  - **cheap** destinations: `+round(3 × Σw cheap)`;
+  - **premium** destinations: `−round(6 × Σw premium)`;
+  - a destination of `w` ≥ 10% with a `price_moves` drop in the 14 days to the cash date whose first cause is
+    "no cause found": `−1` each, at most `−2` (an unexplained drop is a reason to wait, never to add);
+  - "not known" (held, unsupported, too new) counts as usual and is said in a neutral part; nothing short is a
+    neutral part and changes nothing;
+  - clamped to 0..10. `verdict`: `go` from `go_from` (7), `half` from `half_from` (4), else `hold`; `fraction`
+    1 / 0.5 / 0. The split is made for cash × fraction; the rest waits.
+  - **Guards** (`forced`): money held back `max_wait_weeks` (4) or more goes in whatever the score (`waited`);
+    when the largest-gap destinations that together make up at least half the total gap are all `cheap`, the week
+    is `go` (`under_and_cheap`).
+  - `parts`: a JSON list of `{sign: up|down|neutral, code, symbol, text}`; the score is 7 plus the parts' points,
+    clamped, and each text says its points in plain words. Codes: `base`, `cheap`, `premium`, `drop_no_cause`,
+    `not_known`, `nothing_short`, `forced_waited`, `forced_cheap`.
+  - `weeks_waited`: whole weeks since `waiting_since`, the cash date of the first proposal in an unbroken run of
+    the account's proposals that held money back (fraction < 1): a proposal replacing one that held money back,
+    or following one spent with at least `min_new` left, keeps its `waiting_since`; else it starts at its own cash
+    date. A proposal that held money back is re-scored once its cash date is 7 or more days before the account's
+    newest cash row, with the same cash (the week turned), so the guard can fire without a deposit.
+- The `split` check also holds a proposal whose lines add up to more than cash × fraction, or whose fraction is
+  not the one its verdict gives.
