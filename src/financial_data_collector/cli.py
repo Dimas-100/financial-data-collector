@@ -64,6 +64,8 @@ def _parser() -> argparse.ArgumentParser:
     e.add_argument("--dir", help="target folder (default: [export.cockpit].dir from config.toml)")
     ck = sub.add_parser("check", help="run the independent checks of the valuation numbers and record what they find")
     ck.add_argument("--only", nargs="+", metavar="NAME", help="run only these checks")
+    ck.add_argument("--summary", action="store_true",
+                    help="list every open finding (holds first) instead of running the checks")
     c = sub.add_parser("connect", help="connect a brokerage (snaptrade) or a bank (simplefin) with your own key")
     c.add_argument("service", choices=service.NAMES)
     c.add_argument("--with-user", action="store_true", help="a SnapTrade key that has a registered user (four values)")
@@ -171,6 +173,7 @@ def cmd_status(root: Path) -> int:
             rows.append([step, status, f"{age} h ago", r["rows_written"], (r["message"] or "")[:110]])
         ui.console.print(ui.table(["step", "status", "age", "rows", "message"], rows, title="last sync"))
         ui.console.print(Text("latest snapshot: ") + Text(store.latest_snapshot_date() or "none", style="bold"))
+        ui.console.print(_check_line(store))
         counts = store.counts()
         ui.console.print(ui.table(["table", "rows"], [[k, v] for k, v in counts.items()], title="rows"))
     finally:
@@ -180,6 +183,21 @@ def cmd_status(root: Path) -> int:
     if not cfg.tiingo_token:
         ui.hint("TIINGO_API_TOKEN is not set; prices come from yfinance (add a free Tiingo token for a faster, cleaner feed)")
     return 0
+
+
+def _check_line(store: Store) -> Text:
+    """`check  <age>  <holds> holds, <warns> warnings`: the checker's last run and what is open now."""
+    from .console.model import checker_state, fmt_age
+
+    c = checker_state(store, datetime.now(timezone.utc))
+    if c.age_hours is None:
+        return Text("check  never run", style="dim")
+    line = f"check  {fmt_age(c.age_hours)}  {c.holds} holds, {c.warns} warnings"
+    if c.errored:
+        line += ", last run had errors"
+    if c.stale:
+        line += "  STALE"
+    return Text(line, style="dark_orange" if c.stale or c.errored else "")
 
 
 def cmd_query(root: Path, args) -> int:
@@ -221,10 +239,39 @@ def cmd_export(root: Path, args) -> int:
     return 0
 
 
+_SEVERITY_ORDER = {"hold": 0, "warn": 1, "info": 2}
+
+
+def _check_summary(cfg) -> int:
+    """One line per open finding, holds first, then warnings, then notes; within a severity by symbol, then field.
+    Reads only: it runs no check."""
+    from . import readonly
+
+    if not cfg.db_path.exists():
+        ui.error("no database yet")
+        ui.hint("run: fdc init")
+        return 2
+    store = readonly.open_store(cfg.db_path)
+    try:
+        rows = sorted(store.check_open_findings(),
+                      key=lambda r: (_SEVERITY_ORDER[r["severity"]], r["symbol"], r["field"], r["date_from"]))
+    finally:
+        store.close()
+    if not rows:
+        ui.console.print("check: nothing open")
+    for r in rows:
+        # soft_wrap: a finding is one line however long its message; Text: the message is a check's words, not markup
+        ui.console.print(Text(f"{r['severity'].upper()}  {r['symbol']}  {r['field']}  from {r['date_from']}  "
+                              f"{r['check_name']}: {r['message']}"), soft_wrap=True)
+    return 0
+
+
 def cmd_check(root: Path, args) -> int:
     from . import check
 
     cfg = load_config(root)
+    if args.summary:
+        return _check_summary(cfg)
     rep = check.run_check(cfg, fetch=http.fetch, only=args.only)
     errs = len(rep.errors)
     line = (f"check: {rep.holds} holds found, {rep.open_holds} open, {rep.warns} warnings, "

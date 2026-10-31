@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `fdc check --summary` lists every open finding of the checker, holds first, without running a check; `fdc status` and the console's steps table show when the checker last ran and how many holds and warnings are open; `scripts/schedule_check.ps1` registers a daily 07:00 `fdc check` task as a backstop for a day the sync did not run.
 - Known: SEC's companyfacts answer can lag a filing by months. A large-cap's 10-Q filed in July was absent from
   SEC's companyfacts answer three months later (no fact carried its accession number and no period ended after
   March), although SEC's submissions list showed the filing with XBRL. fdc stores every fact companyfacts returns

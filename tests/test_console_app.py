@@ -183,3 +183,21 @@ def test_bracketed_messages_render_without_markup_errors(tmp_path: Path):
             await pilot.pause(0.2)
             assert app.refresh_error == "" and tricky in app.schedule_text.plain
     asyncio.run(go())
+
+
+def test_the_checker_is_the_last_row_of_the_steps_table(tmp_path: Path):
+    import dataclasses
+
+    from financial_data_collector.console.model import CheckerState
+
+    ov = dataclasses.replace(overview(), checker=CheckerState(6.0, 2, 3, False, False))
+
+    async def go():
+        app = _app(_cfg(tmp_path), ov=ov)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(app, pilot, lambda a: a.overview is not None and a.query_one("#steps", DataTable).row_count == 7)
+            await pilot.press("down", "down", "down", "down", "down", "down")
+            await _settle(app, pilot, lambda a: a.step_detail_text.plain.startswith("checker"))
+            await pilot.press("up")
+            await _settle(app, pilot, lambda a: "message of export" in a.step_detail_text.plain)
+    asyncio.run(go())

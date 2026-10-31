@@ -242,6 +242,8 @@ class ConsoleApp(App):
         steps.clear()
         for s in ov.steps:
             steps.add_row(*report.step_row(s))
+        if ov.checker is not None:
+            steps.add_row(*report.checker_row(ov.checker))      # after the steps, so a row index still names a step
         steps.move_cursor(row=min(row, max(steps.row_count - 1, 0)))
         self._show_step(steps.cursor_row)
         sources = self.query_one("#sources_table", DataTable)
@@ -265,9 +267,14 @@ class ConsoleApp(App):
         self._render_status()
 
     def _show_step(self, row: int) -> None:
-        if self.overview is None or not 0 <= row < len(self.overview.steps):
+        if self.overview is None or row < 0:
             return
-        self.step_detail_text = report.step_detail(self.overview.steps[row])
+        if row == len(self.overview.steps) and self.overview.checker is not None:
+            self.step_detail_text = report.checker_detail(self.overview.checker)
+        elif row < len(self.overview.steps):
+            self.step_detail_text = report.step_detail(self.overview.steps[row])
+        else:
+            return
         self.query_one("#step_detail_text", Static).update(self.step_detail_text)
 
     def _show_source(self, row: int) -> None:

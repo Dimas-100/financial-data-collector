@@ -191,3 +191,32 @@ def test_sources_list_parked_symbols_with_their_reason(project):
     ov = M.load_overview(project, now=NOW, heartbeat_read=lambda p: None)
     names = [x.name for x in ov.sources]
     assert "Parked: PRIVCO (no price from any provider, no CIK, not held)" in names
+
+
+def _check_run(cfg, finished_at, *, error=None, holds=0, warns=0):
+    s = Store.open(cfg.db_path, migrate=False)
+    try:
+        from financial_data_collector.check import Finding
+
+        found = [Finding("recompute", f"H{i}", "pe", "2026-02-01", None, "hold", "m", {}) for i in range(holds)]
+        found += [Finding("figures", f"W{i}", "ps", "2026-02-01", None, "warn", "m", {}) for i in range(warns)]
+        s.check_record("recompute", [f for f in found if f.check_name == "recompute"], finished_at)
+        s.check_record("figures", [f for f in found if f.check_name == "figures"], finished_at)
+        s.check_log_run("20260301T060000Z", started_at=finished_at, finished_at=finished_at, derive_run_id=None,
+                        checks_run=2, holds=holds, warns=warns, error=error)
+    finally:
+        s.close()
+
+
+def test_overview_checker_never_run_then_run(project):
+    ov = M.load_overview(project, now=NOW, heartbeat_read=lambda p: None)
+    assert ov.checker == M.CheckerState(None, 0, 0, False, False)
+    _check_run(project, "2026-03-01T06:00:00Z", holds=2, warns=3)
+    ov = M.load_overview(project, now=NOW, heartbeat_read=lambda p: None)
+    assert ov.checker == M.CheckerState(6.0, 2, 3, False, False)
+
+
+def test_overview_checker_is_stale_after_two_days_and_notes_errors(project):
+    _check_run(project, "2026-02-25T06:00:00Z", error="figures: RuntimeError: boom")
+    ov = M.load_overview(project, now=NOW, heartbeat_read=lambda p: None)
+    assert ov.checker.stale and ov.checker.errored and ov.checker.age_hours == 102.0

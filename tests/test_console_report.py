@@ -158,3 +158,21 @@ def test_external_strings_are_plain_text_not_markup():
     assert R.status_text(overview(Running("running", H.Heartbeat("r", 1, "console", "2026-03-01T11:58:00Z",
                                                                   "2026-03-01T11:59:50Z", "prices", tricky), 1.0)),
                          tz=UTC).plain.count(tricky) == 1
+
+
+def test_checker_row_is_styled_like_a_step_row_and_is_the_last_step():
+    from financial_data_collector.console.model import CheckerState
+
+    row = R.checker_row(CheckerState(6.0, 2, 3, False, False))
+    assert [c.plain for c in row] == ["checker", "ok", "6 h ago", "", "2 holds, 3 warnings"] and all(isinstance(c, Text) for c in row)
+    stale = R.checker_row(CheckerState(80.0, 0, 0, True, False))
+    assert stale[1].plain == "ok STALE" and stale[2].plain == "3.3 d ago"
+    bad = R.checker_row(CheckerState(1.0, 1, 0, False, True))
+    assert bad[1].plain == "error" and bad[4].plain == "1 holds, 0 warnings, last run had errors"
+    never = R.checker_row(CheckerState(None, 0, 0, False, False))
+    assert [c.plain for c in never] == ["checker", "never", "", "", ""]
+    import dataclasses
+    ov = dataclasses.replace(overview(), checker=CheckerState(6.0, 2, 3, False, False))
+    text = ui.to_text(R.steps_table(ov), width=160)
+    assert "checker" in text and "2 holds, 3 warnings" in text
+    assert "checker" not in ui.to_text(R.steps_table(overview()), width=160)       # no checker state, no row

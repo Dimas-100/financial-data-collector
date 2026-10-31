@@ -64,6 +64,17 @@ class Running:
 
 
 @dataclass(frozen=True)
+class CheckerState:
+    """The checker's last run and what is open now: the one extra row of the steps table. The checker also runs
+    on its own daily task, outside the sync, so this is not the sync's `check` step."""
+    age_hours: float | None     # None: never run
+    holds: int                  # open holds, from every check
+    warns: int                  # open warnings
+    stale: bool                 # the last run is older than a step may be
+    errored: bool               # the last run had a check that raised
+
+
+@dataclass(frozen=True)
 class Overview:
     root: Path
     now: datetime
@@ -75,6 +86,7 @@ class Overview:
     latest_snapshot: str | None
     schedule: Schedule | None = None
     schedule_reason: str = ""
+    checker: CheckerState | None = None
 
 
 # ---- formatting helpers (shared by the screen and the report) ------------------------------------------
@@ -185,6 +197,18 @@ def _step_state(step: str, row: Mapping | None, running: Running, now: datetime)
     return StepState(step, row["status"], age, stale, int(row["rows_written"] or 0), row["message"] or "", marker)
 
 
+def checker_state(store: Store, now: datetime) -> CheckerState:
+    """The checker's last run and open counts, from any open store (a read)."""
+    last = store.check_last_run()
+    age = None
+    if last is not None:
+        finished = parse_iso(last["finished_at"])
+        age = round((now - finished).total_seconds() / 3600, 1) if finished else None
+    return CheckerState(age, store.check_open_count("hold"), store.check_open_count("warn"),
+                        age is not None and age > STALE_HOURS["check"],
+                        last is not None and bool(last["error"]))
+
+
 def _count(n: int, noun: str) -> str:
     return f"{n} {noun}{'' if n == 1 else 's'}"
 
@@ -267,13 +291,14 @@ def load_overview(cfg: Config, *, now: datetime | None = None, store_open: Calla
         runs = recent_window(summarize_runs(store.recent_run_rows(runs_limit)), now)
         universe = len(universe_symbols(store, cfg.watchlist, classify=cfg.classify, investing_dir=cfg.investing_dir))
         latest = store.latest_snapshot_date()
+        checker = checker_state(store, now)
     finally:
         store.close()
     return Overview(
         root=cfg.root, now=now,
         steps=[_step_state(step, status.get(step), running, now) for step in STEPS],
         sources=_sources(cfg, facts, status), universe_size=universe, runs=runs, running=running,
-        latest_snapshot=latest, schedule=schedule, schedule_reason=schedule_reason,
+        latest_snapshot=latest, schedule=schedule, schedule_reason=schedule_reason, checker=checker,
     )
 
 

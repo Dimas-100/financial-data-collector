@@ -659,9 +659,14 @@ class Store:
                           "AND severity IN ('hold', 'warn') ORDER BY date_from, id", (check_name, symbol))
 
     def check_open_count(self, severity: str) -> int:
-        """How many findings of this severity are open now, from every check."""
-        return self.query("SELECT COUNT(*) FROM check_findings WHERE cleared_at IS NULL AND severity = ?",
-                          (severity,))[0][0]
+        """How many findings of this severity are open now, from every check (0 before migration 0012)."""
+        try:
+            return self.query("SELECT COUNT(*) FROM check_findings WHERE cleared_at IS NULL AND severity = ?",
+                              (severity,))[0][0]
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e):
+                raise
+            return 0
 
     def check_record(self, check_name: str, findings: "Iterable[Finding]", now: str) -> None:
         """Record what one check found. A finding seen before gets its last_seen (and message, severity,
@@ -685,6 +690,17 @@ class Store:
                                        "WHERE check_name = ? AND cleared_at IS NULL", (check_name,)).fetchall():
                 if (r["symbol"], r["field"], r["date_from"]) not in keep:
                     self.conn.execute("UPDATE check_findings SET cleared_at = ? WHERE id = ?", (now, r["id"]))
+
+    def check_last_run(self) -> sqlite3.Row | None:
+        """The newest check_runs row, or None when the checker never ran (or the database predates migration 0012:
+        a status read does not migrate)."""
+        try:
+            rows = self.query("SELECT * FROM check_runs ORDER BY finished_at DESC, run_id DESC LIMIT 1")
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e):
+                raise
+            return None
+        return rows[0] if rows else None
 
     def check_log_run(self, run_id: str, *, started_at: str, finished_at: str, derive_run_id: str | None,
                       checks_run: int, holds: int, warns: int, error: str | None) -> None:

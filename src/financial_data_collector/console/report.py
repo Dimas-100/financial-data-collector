@@ -13,7 +13,7 @@ from .. import ui
 from ..sync import STEPS
 from .actions import LaunchState
 from .model import (
-    Overview, RunStep, RunSummary, SourceRow, StepState, fmt_age, fmt_duration, local_time, parse_iso,
+    CheckerState, Overview, RunStep, RunSummary, SourceRow, StepState, fmt_age, fmt_duration, local_time, parse_iso,
 )
 from .schedule import Schedule
 
@@ -86,6 +86,18 @@ def status_cell(s: StepState) -> Text:
 def step_row(s: StepState) -> list:
     age = Text(fmt_age(s.age_hours), style="dark_orange" if s.stale else "dim")
     return [s.step, status_cell(s), age, Text(ui.fmt_number(s.rows), justify="right"), plain(shorten(s.message))]
+
+
+def checker_row(c: CheckerState) -> list:
+    """The checker as one more step row: status, age, nothing in the rows column, then what is open."""
+    if c.age_hours is None:
+        return [Text("checker"), ui.badge("never"), Text(""), Text(""), Text("")]
+    message = f"{c.holds} holds, {c.warns} warnings" + (", last run had errors" if c.errored else "")
+    status = ui.badge("error" if c.errored else "ok")
+    if c.stale:
+        status = Text(f"{'error' if c.errored else 'ok'} STALE", style="dark_orange")
+    return [Text("checker"), status, Text(fmt_age(c.age_hours), style="dark_orange" if c.stale else "dim"),
+            Text(""), plain(message)]
 
 
 def source_row(s: SourceRow, root: Path) -> list:
@@ -182,6 +194,17 @@ def step_detail(s: StepState) -> Text:
     return t
 
 
+def checker_detail(c: CheckerState) -> Text:
+    t = Text()
+    t.append("checker", style="bold")
+    t.append("  ")
+    t.append_text(checker_row(c)[1])
+    t.append("\n")
+    t.append("the independent checks of the valuation numbers, run by the sync's last step and by the daily check task; "
+             "`fdc check --summary` lists what is open")
+    return t
+
+
 def source_detail(s: SourceRow) -> Text:
     t = Text()
     t.append(s.name, style="bold")
@@ -245,7 +268,8 @@ def universe_text(ov: Overview) -> str:
 
 # ---- the one-shot report ---------------------------------------------------------------------------------
 def steps_table(ov: Overview) -> Table:
-    return ui.table(["step", "status", "age", "rows", "message"], [step_row(s) for s in ov.steps], title="steps")
+    rows = [step_row(s) for s in ov.steps] + ([checker_row(ov.checker)] if ov.checker else [])
+    return ui.table(["step", "status", "age", "rows", "message"], rows, title="steps")
 
 
 def sources_table(ov: Overview) -> Table:

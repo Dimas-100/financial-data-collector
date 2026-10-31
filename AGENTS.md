@@ -27,6 +27,10 @@ projects consume the database; this one owns collection and storage. Design spec
 - **A key is never in the repo, the database, a log or a message.** Connections keep keys in the key store (or `.env`);
   every message from a fetcher passes through `connections/redact.py`. Tests use `MemoryKeyStore`; `conftest.py`
   keeps them off the real one.
+- **The checker imports nothing it checks.** `check/` reads the warehouse only through `Store.check_*` methods and
+  imports nothing from `derive/`, `statements.py` or the collectors (except `http`), so it cannot share their bugs.
+  Its outside questions (SEC, Yahoo, Tiingo) are read-only GETs through an injected `fetch`/`outside`; tests never
+  touch the network. A hold only ever blanks `valuation_latest`; raw tables are not changed by it.
 - **The console only reads.** `fdc console` opens the store once to apply pending migrations, as every command
   does; every refresh after that is a read. The only writer it causes is the `fdc sync` subprocess it starts.
   Strings from outside (a step's message, a path, a service's error) reach the screen as `Text`, never as bare
@@ -42,7 +46,7 @@ src/financial_data_collector/
   console/          model.py (read-only Overview), schedule.py (Windows Task Scheduler reader), actions.py (one fdc sync subprocess), report.py (rich, --once), app.py (Textual screen)
   connections/      names.py (labels, kinds, external keys), keys.py (key store / .env), snaptrade.py + simplefin.py (read-only fetchers -> models), service.py (connect / disconnect / run), redact.py
   derive/           history.py (replay -> holdings_daily, cash_daily, lots, realized_gains, reconciliation, unexplained_daily), valuation.py (valuation_daily)
-  check/            the independent checker: __init__.py (CHECKS, CheckContext, run_check), findings.py (Finding), offline.py (fresh, impossible, gaps, recompute; thresholds in config `[check]`), calendar.py (NYSE trading days); imports nothing from derive/, statements.py or the collectors
+  check/            the independent checker: __init__.py (CHECKS, CheckContext, run_check), findings.py (Finding), offline.py (fresh, impossible, gaps, recompute; thresholds in config `[check]`), filings.py (SEC lists a filing the warehouse lacks), outside.py (prices2, figures: a second price source and outside statement figures), calendar.py (NYSE trading days); imports nothing from derive/, statements.py or the collectors
   export/cockpit.py prices.json / dividends.json / fundamentals.json for the investing cockpit
   ingest.py         inbox routing by file signature; SnapTrade folder walk; hash-based idempotency
   adapters/         fidelity_positions.py, fidelity_history.py, snaptrade.py -> models.Snapshot / TransactionRow
@@ -64,6 +68,7 @@ src/financial_data_collector/
 - `holdings_daily`, `cash_daily`, `portfolio_daily_full` (replayed from transactions back to the first trade, re-anchored on snapshots; `basis` says which), `lots`, `realized_gains`, `reconciliation`
 - `unexplained_daily` (per account and day, the change no transaction or split explains, at least a dollar and not cancelled within a week: `cash`, `holdings` at the day's close, `amount`; most often a deposit the balance shows before the activity feed posts it. A consumer counts `amount` as money moved, not growth)
 - `sec_facts` (raw XBRL, every filing's value for every period), `financial_line_items` (shaped), `concept_map`
+- `check_runs` (one row per `fdc check` run: `run_id`, `started_at`, `finished_at`, `derive_run_id`, `checks_run`, `holds`, `warns` found by that run, `error`) and `check_findings` (what the checks found: `check_name`, `symbol`, `field` = a `valuation_daily` column or `*`, `date_from`/`date_to`, `severity` `hold|warn|info`, `message`, `evidence` JSON, `first_seen`, `last_seen`, `cleared_at`; unique on check, symbol, field, date_from). An open hold (not cleared) covering a row NULLs its fields in `valuation_latest` and sets `status = 'held'` (only on a row that was `ok`); `valuation_daily` is never changed by a hold. `fdc check --summary` lists the open ones
 - `sync_status` / `sync_runs` (each run's `origin`: `scheduled`, `manual`, `console`; `unknown` before migration 0008), `ingested_files`, `securities`, `accounts` (with `external_key`, `origin`, `kind_confirmed`, `credit_limit`, `rate_pct`, `flows` for a connected account), `connections`
 
 More examples: `docs/QUERIES.md`.
@@ -77,4 +82,6 @@ fdc sync --only prices                    # one step
 fdc query "select * from sync_status"
 fdc console --once                        # the screen's content, printed once
 scripts\open_console.ps1                   # the live screen in its own window
+fdc check --summary                       # every open finding of the checker, holds first (runs nothing)
+scripts\schedule_check.ps1                # registers the daily 07:00 `fdc check` task (backstop; owner's OK first)
 ```

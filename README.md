@@ -82,6 +82,7 @@ waits its turn too. Older history: `fdc query "select * from sync_runs order by 
 | `holdings_daily`, `cash_daily`, `portfolio_daily_full` | the portfolio replayed from your first transaction, re-anchored on every real snapshot (`basis` tells you which) |
 | `lots`, `realized_gains`, `reconciliation` | FIFO cost-basis lots, gains per sale, and dates where the replay disagrees with a snapshot (splits, missing rows) |
 | `unexplained_daily` | each day's change in an account that no transaction explains, such as a deposit the balance shows before the activity feed posts it: money moved, not growth |
+| `check_runs`, `check_findings` | the checker's runs and what it found; open `hold` findings blank the matching fields of `valuation_latest` (see "Checker") |
 | `sync_runs`, `sync_status` | what ran, when, and whether it worked |
 
 Quarterly cash-flow items are computed from year-to-date filings where companies only report
@@ -97,6 +98,37 @@ its day, so that day's trades land on top of it; one fetched later (or a CSV, wh
 contains them and anchors after.
 
 See `docs/QUERIES.md` for a cookbook.
+
+## Checker
+
+`fdc check` is an independent second opinion on the numbers `derive` writes into `valuation_daily`. It is code of its
+own (`check/`) and imports nothing from the code it checks. The sync runs it as its last step; a daily task is the
+backstop (below). What it looks at:
+
+- **fresh**: prices and statements recent enough for the day's numbers to mean something;
+- **impossible**: values that cannot be right (a negative market cap, a P/E that its own inputs cannot give);
+- **gaps**: holes in a price history or a statement series;
+- **recompute**: P/E, P/S, P/FCF, yield and market cap recomputed from the row's own inputs and compared with what is stored;
+- **filings**: a filing SEC lists for a company that the warehouse does not have;
+- **prices2** and **figures**: a second price source and outside statement figures (Yahoo, Tiingo), compared with ours.
+
+It records into two tables. `check_runs` has one row per run (when, how many checks, how many holds and warnings it
+found, and any check that raised). `check_findings` has one row per problem: `check_name`, `symbol`, `field` (a
+`valuation_daily` column, or `*` for every value column), the days it covers (`date_from`, `date_to`), `severity`
+(`hold`, `warn` or `info`), a plain-words `message`, `evidence` as JSON, and `first_seen` / `last_seen` / `cleared_at`.
+A finding the checks stop finding is cleared (never deleted); one that returns is reopened.
+
+`fdc check --summary` prints every open finding, holds first (`HOLD  KO  pe  from 2026-10-01  recompute: stored 25.0,
+recomputed 20.0`) without running any check; `fdc status` shows the last run's age and the open hold and warning counts.
+
+**What a hold means for a consumer.** Read `valuation_latest`, not `valuation_daily`. A hold is the checker saying a
+number is probably wrong and should not be used until someone looks. In `valuation_latest` a hold blanks only what it
+names: the held fields (and the ratios built on them) are `NULL`; the other values on the row are still the stored
+ones, so a `NULL` is "not known", never zero. Its `status` is `held` when an open hold covers the row (the row was
+otherwise `ok`); a row that was already `stale` or `unsupported` keeps that status. `hold_ids` lists the covering
+`check_findings` ids, `status_reason` gives the messages, and `checked_at` is when the checker last covered the newest
+derive. `valuation_daily` itself is never changed by a hold: it stays the raw record, so a cleared hold brings the
+values straight back. Warnings and notes change nothing; they are for a person to look at.
 
 ## Claude Desktop
 
@@ -121,6 +153,13 @@ Claude Code needs no setup: the database is a file, and `fdc query` works from t
 The task runs on battery too. A start that arrives while a sync is running waits for it to finish, so a
 job that writes files the collector reads can end with `Start-ScheduledTask "FinancialDataCollector Sync"`
 and know a sync will read them.
+
+The checker has a backstop task of its own, for a day the sync did not run:
+
+```powershell
+.\scripts\schedule_check.ps1          # daily at 07:00: fdc check
+.\scripts\schedule_check.ps1 -Remove
+```
 
 Logs go to `%LOCALAPPDATA%\financial-data-collector\sync.log`. On macOS/Linux use cron or launchd
 to run `fdc --root /path/to/repo sync`.
