@@ -96,7 +96,8 @@ Stocks (and foreign filers) are asked about once a New York day for their earnin
 `earnings` step also records SEC's industry code in `securities.sic`. yfinance reports a failed request by logging it
 and answering empty, so an error it logs while asking counts as a failed ask, asked again at the next sync; a fund that
 comes back with no figures, or a company with no estimates, after a day it had some is asked again too, not given up
-for the day.
+for the day. A `funds` or `earnings` run with nothing left to ask (all asked today) is `skipped`; `fdc sync` exits 1
+only when every network step that ran failed, and a skipped one is left out.
 
 **Sectors.** Each stock and foreign filer gets a `sector` (one of the eleven) and a `sector_source` saying where it came from: the sibling feed's, else the SEC SIC code's (`seeds/sic_sector.csv`). The sector's benchmark is `[benchmarks] sectors`. Funds have no sector. A feed that cannot be read at all (missing, not JSON, no `by_ticker`) leaves every sector that came from it as it is and the step says "classifications feed unreadable; feed sectors kept"; one odd entry is skipped alone; a company the feed no longer names falls back to SIC. The pass reads only stored data and the sibling file, so it runs at the end of the `earnings` step on every sync.
 

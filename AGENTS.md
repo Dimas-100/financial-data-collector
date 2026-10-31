@@ -41,7 +41,7 @@ projects consume the database; this one owns collection and storage. Design spec
 ```
 src/financial_data_collector/
   cli.py            fdc init | sync | import | status | query | export | check | mcp | connect | connections | disconnect | accounts | console
-  sync.py           runs steps connections -> ingest -> prices -> macro -> sec -> funds -> earnings -> derive -> export -> check, logs sync_runs (with origin), keeps the heartbeat, exit codes
+  sync.py           runs steps connections -> ingest -> prices -> macro -> sec -> funds -> earnings -> derive -> export -> check, logs sync_runs (with origin), keeps the heartbeat, exit codes (1 when every network step that ran failed; a skipped connections, macro, funds or earnings step is left out)
   heartbeat.py      data/sync.heartbeat.json: the running sync's step, progress line, pid and origin; wait_for_turn() for a second sync
   console/          model.py (read-only Overview), schedule.py (Windows Task Scheduler reader), actions.py (one fdc sync subprocess), report.py (rich, --once), app.py (Textual screen)
   connections/      names.py (labels, kinds, external keys), keys.py (key store / .env), snaptrade.py + simplefin.py (read-only fetchers -> models), service.py (connect / disconnect / run), redact.py
