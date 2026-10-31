@@ -1,0 +1,131 @@
+"""The check on the weekly split: `split`.
+
+It reads the open raw proposals (what the split wrote, not the views that apply holds) and holds back one that breaks
+a rule the split itself is meant to keep: lines that add up to more than the cash, a line that is not a whole number
+of dollars (at least one), a line to a name the targets file marks `hold` in that account, a line to a name that
+account has no target for, a line with no sources. The targets file is read here with this file's own code (the shape
+is documented in the README); nothing is imported from `derive/`. A finding's field is `proposal:<id>`, which the
+`allocation_proposals` / `allocation_lines` views hold on.
+
+One proposal is one finding: every fault it has is in its message, a hold if any is a hold. A proposal that is no
+longer open gets no finding, so its old one clears. It never raises on a bad row: a row it cannot read is a finding.
+"""
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+
+from ..symbols import canonical
+from . import CHECKS, CheckContext, Finding
+
+_NOT_ACCOUNTS = ("sleeves", "caps", "planned")
+_KINDS = ("pct_of_account", "pct_of_brokerage", "direct_passive_ratio")
+_BROKERAGE = "brokerage"
+_HALF_CENT = 0.005
+
+
+def _finite(x: object) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def _read_targets(path: Path | None) -> tuple[dict[str, set[str]], dict[str, set[str]]] | None:
+    """(known symbols, hold symbols) per account name, or None when the file is not configured, missing or unreadable.
+
+    Known: an entry with a valid type and a finite target, filed under the account; for `brokerage` also every
+    `pct_of_brokerage` entry wherever it is filed. Hold: any entry whose `rebalance` is exactly "hold", the same way
+    (a hold name is held back even when its entry would not be used)."""
+    if path is None or not Path(path).is_file():
+        return None
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    known: dict[str, set[str]] = {}
+    held: dict[str, set[str]] = {}
+    for key, value in doc.items():
+        if not isinstance(key, str) or key.startswith("_") or key in _NOT_ACCOUNTS or not isinstance(value, list):
+            continue
+        for raw in value:
+            if not isinstance(raw, dict) or not isinstance(raw.get("ticker"), str):
+                continue
+            symbol = canonical(raw["ticker"])
+            if not symbol:
+                continue
+            kind = raw.get("type", "pct_of_account")
+            usable = kind in _KINDS and _finite(raw.get("target"))
+            homes = [key] + ([_BROKERAGE] if kind == "pct_of_brokerage" and key != _BROKERAGE else [])
+            for home in homes:
+                if usable:
+                    known.setdefault(home, set()).add(symbol)
+                if raw.get("rebalance") == "hold":
+                    held.setdefault(home, set()).add(symbol)
+                    known.setdefault(home, set()).add(symbol)      # a hold name is on file: one fault, not two
+    return known, held
+
+
+def _source_problem(sources: object) -> bool:
+    """True when the sources are not a non-empty JSON list of objects that each have a kind and a label."""
+    if not isinstance(sources, list) or not sources:
+        return True
+    return any(not isinstance(s, dict) or not isinstance(s.get("kind"), str) or not s.get("kind")
+               or not isinstance(s.get("label"), str) or not s.get("label") for s in sources)
+
+
+def split(ctx: CheckContext) -> list[Finding]:
+    """One finding per open proposal that has a fault; a hold unless the only fault is that the targets file could
+    not be read to check the hold names (a warn)."""
+    proposals = ctx.store.check_split_rows()
+    if not proposals:
+        return []
+    names = _read_targets(ctx.cfg.allocation.targets)
+    out: list[Finding] = []
+    for p in proposals:
+        holds: list[str] = []
+        warns: list[str] = []
+        evidence: dict = {}
+        lines = p.get("lines") or []
+        total = 0.0
+        bad_amount: list[str] = []
+        for line in lines:
+            d = line.get("dollars")
+            if _finite(d):
+                total += d
+            if not (_finite(d) and d == int(d) and d >= 1):
+                bad_amount.append(str(line.get("symbol")))
+        cash = p.get("cash")
+        if _finite(cash) and total > cash + _HALF_CENT:
+            holds.append(f"lines add up to {total:g}, more than the cash {cash:g}")
+            evidence.update(cash=cash, lines_total=total)
+        if bad_amount:
+            holds.append(f"a line is not a whole number of dollars (at least 1): {', '.join(bad_amount)}")
+            evidence["fractional_lines"] = bad_amount
+        unsourced = [str(line.get("symbol")) for line in lines if _source_problem(line.get("sources"))]
+        if unsourced:
+            holds.append(f"a line has no sources, or sources that are not records with a kind and a label: "
+                         f"{', '.join(unsourced)}")
+            evidence["unsourced_lines"] = unsourced
+        if names is None:
+            warns.append("cannot check hold names: the targets file is missing or unreadable")
+        else:
+            known, held = names
+            key = p.get("account_key")
+            on_hold = sorted({str(l.get("symbol")) for l in lines if l.get("symbol") in held.get(key, ())})
+            no_target = sorted({str(l.get("symbol")) for l in lines if l.get("symbol") not in known.get(key, ())})
+            if on_hold:
+                holds.append(f"a line to a name the targets file holds: {', '.join(on_hold)}")
+                evidence["hold_names"] = on_hold
+            if no_target:
+                holds.append(f"a line to a name with no target in this account: {', '.join(no_target)}")
+                evidence["no_target"] = no_target
+        if not holds and not warns:
+            continue
+        severity = "hold" if holds else "warn"
+        out.append(Finding("split", str(p["account_key"]), f"proposal:{p['id']}", str(p["cash_date"]), None, severity,
+                           "; ".join(holds + warns), evidence))
+    return out
+
+
+CHECKS["split"] = split

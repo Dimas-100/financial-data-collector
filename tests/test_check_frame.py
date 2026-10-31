@@ -327,3 +327,15 @@ def test_a_finding_on_an_unknown_field_is_still_an_error(cfg):
     for bad in ("pe_5y", "score:", "score:nope", "off_high_52w"):       # the bare metric is not a field
         rep = _run(cfg, {"a": lambda ctx, bad=bad: [_finding("a", field=bad)]})
         assert len(rep.errors) == 1 and "not a valuation_daily column" in rep.errors[0], bad
+
+
+def test_a_finding_on_a_split_proposal_is_accepted(cfg):
+    rep = _run(cfg, {"a": lambda ctx: [_finding("a", symbol="brokerage", field="proposal:12")]})
+    assert (rep.holds, rep.errors) == (1, [])
+    assert _rows(cfg)[0]["field"] == "proposal:12"
+
+
+def test_a_finding_on_a_malformed_proposal_field_is_an_error(cfg):
+    for bad in ("proposal:x", "proposal:", "proposal:12x", "proposal:1 2", "xproposal:12", "proposal:-3"):
+        rep = _run(cfg, {"a": lambda ctx, bad=bad: [_finding("a", field=bad)]})
+        assert len(rep.errors) == 1 and "proposal:<id>" in rep.errors[0], bad

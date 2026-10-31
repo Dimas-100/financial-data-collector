@@ -41,6 +41,17 @@ def today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _json_or_raw(text: object) -> object:
+    """A stored JSON text parsed; an empty one is an empty list, one that is not JSON stays the raw text (the checker
+    reads it as a fault; a read for the checker never raises on a bad row)."""
+    if not text:
+        return []
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError, RecursionError):
+        return text
+
+
 class Store:
     def __init__(self, conn: sqlite3.Connection, path: Path):
         self.conn = conn
@@ -1042,7 +1053,7 @@ class Store:
         for r in self.query("SELECT id, account_key, cash_date, cash FROM allocation_proposals_raw "
                             "WHERE status = 'open' ORDER BY id"):
             d = dict(r)
-            d["lines"] = [{"symbol": l[0], "dollars": l[1], "sources": json.loads(l[2]) if l[2] else []}
+            d["lines"] = [{"symbol": l[0], "dollars": l[1], "sources": _json_or_raw(l[2])}
                           for l in self.query("SELECT symbol, dollars, sources FROM allocation_lines_raw "
                                               "WHERE proposal_id = ? ORDER BY rowid", (d["id"],))]
             out.append(d)
@@ -1133,9 +1144,11 @@ class Store:
         return self._newest_derive_run_id()
 
     def check_score_rows(self) -> list[sqlite3.Row]:
-        """Every row of valuation_scores_raw (what the engine wrote, not the view that applies holds), by symbol and metric."""
-        return self.query("SELECT symbol, date, metric, value, percentile_5y, band, status, sources "
-                          "FROM valuation_scores_raw ORDER BY symbol, metric")
+        """Every row of valuation_scores_raw (what the engine wrote, not the view that applies holds), by symbol and metric,
+        with the security's asset type (None when it has no securities row)."""
+        return self.query("SELECT r.symbol, r.date, r.metric, r.value, r.percentile_5y, r.band, r.status, r.sources, "
+                          "s.asset_type FROM valuation_scores_raw r LEFT JOIN securities s ON s.symbol = r.symbol "
+                          "ORDER BY r.symbol, r.metric")
 
     def check_valuation_columns(self) -> list[str]:
         """The column names of valuation_daily: what a finding's `field` may name (besides '*')."""

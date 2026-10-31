@@ -3,7 +3,8 @@
 It reads `valuation_scores_raw` (what the engine wrote, not the view that applies holds) and holds back a score that
 cannot show where it came from or does not follow from itself: an `ok` score with no sources, a source link that was
 not built the way SEC's are, a percentile outside 0..100, or a band that its percentile, its metric and the `[engine]`
-thresholds do not give. The band rule below is this file's own copy: it shares nothing with the code that wrote the
+thresholds do not give. A fund's snapshot score that no fund can have (a P/E at or below 0 or above 200, a yield above
+25%, an expense ratio above 3%) is held too. The band rule below is this file's own copy: it shares nothing with the code that wrote the
 band, so one bug cannot fool both. A finding's field is `score:<metric>`, which the `valuation_scores` view blanks.
 
 It never raises on a bad row: a row it cannot read is a finding on that row (an exception would stop the engine, which
@@ -15,13 +16,16 @@ import json
 import math
 import re
 
-from ..models import ENGINE_CHECK_NAMES, SCORE_METRICS
+from ..models import ENGINE_CHECK_NAMES, FUND_TYPES, SCORE_METRICS
 from . import CHECKS, CheckContext, Finding
 
 ENGINE_CHECKS = ENGINE_CHECK_NAMES      # what the sync runs again right after the engine has written
 
 PREMIUM_HIGH = ("pe", "p_fcf", "ps", "ev_ebit")     # a high percentile of these is dear
 CHEAP_HIGH = ("dividend_yield",)                   # a high percentile of the yield is cheap
+FUND_MAX_PE = 200.0            # a fund snapshot's P/E must be above 0 and at most this
+FUND_MAX_YIELD = 0.25          # fractions: 0.25 = 25%
+FUND_MAX_EXPENSE_RATIO = 0.03
 _FILING_URL = re.compile(r"https://www\.sec\.gov/Archives/edgar/data/(\d+)/(\d{18})/([^/]+)-index\.htm")
 
 
@@ -63,6 +67,20 @@ def _link_problem(source: object) -> str | None:
     return None
 
 
+def _fund_problem(metric: str, value: object) -> str | None:
+    """Why a fund snapshot's value is out of any sane range (yields and expense ratios are fractions: a percent read
+    as a fraction lands far above these), or None."""
+    if not _number(value):
+        return None
+    if metric == "pe" and (value <= 0 or value > FUND_MAX_PE):
+        return f"fund P/E {value:g} is not above 0 and at most {FUND_MAX_PE:g}"
+    if metric == "dividend_yield" and value > FUND_MAX_YIELD:
+        return f"fund yield {value:g} is above {FUND_MAX_YIELD:g}"
+    if metric == "expense_ratio" and value > FUND_MAX_EXPENSE_RATIO:
+        return f"fund expense ratio {value:g} is above {FUND_MAX_EXPENSE_RATIO:g}"
+    return None
+
+
 def scores(ctx: CheckContext) -> list[Finding]:
     """One hold per score row that is unsourced, has an unbuilt link, a percentile out of range, or a band its
     percentile does not give. Several faults in one row are one finding with every message."""
@@ -96,6 +114,11 @@ def scores(ctx: CheckContext) -> list[Finding]:
         if band != expected:        # a band on a row that is not ok or has no percentile, or one the rule does not give
             evidence.update(band=band, expected_band=expected)
             problems.append("band does not follow from its percentile")
+        if r["status"] == "ok" and r["asset_type"] in FUND_TYPES:
+            why = _fund_problem(metric, r["value"])
+            if why:
+                problems.append(why)
+                evidence["value"] = r["value"]
         if problems:
             seen: list[str] = []
             for m in problems:

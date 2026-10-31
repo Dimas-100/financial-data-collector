@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from . import check as check_mod, heartbeat, http, sectors as sectors_mod, statements
-from .check.engine import ENGINE_CHECKS
 from .collectors import earnings as earnings_mod, funds as funds_mod, prices as prices_mod, yahoo as yahoo_mod
 from .collectors.macro import MacroError, collect_macro, start_date as macro_start
 from .collectors.sec_facts import FUND_TYPES, collect_sec
@@ -263,18 +262,28 @@ def _step_engine(store: Store, cfg: Config, *, progress: Progress, fetch=http.fe
     if rep.skipped:
         return 0, rep.skipped, "skipped"
     msg = f"{rep.symbols} symbols, {rep.scores} scores ({rep.held} held), {rep.moves} moves"
-    # What was just written is examined at once by the checker's engine checks. A partial run: it never stamps
-    # checked_at (only a full, error-free run records the derive it covered).
+    # What was just written is examined at once by the checker's scores check (the split is not yet written). A partial
+    # run: it never stamps checked_at (only a full, error-free run records the derive it covered).
     progress("checking scores")
-    chk = check_mod.run_check(cfg, fetch=fetch, now=now, store=store, sleep=sleep, only=list(ENGINE_CHECKS))
+    chk = check_mod.run_check(cfg, fetch=fetch, now=now, store=store, sleep=sleep, only=["scores"])
     msg += f"; checks: {chk.holds} holds, {chk.warns} warnings, {len(chk.errors)} errors"
+    if chk.errors:
+        # The split reads scores a failed re-check could not vouch for: nothing is opened, replaced or closed.
+        return rep.scores + rep.moves, msg + "; split: score re-check failed", "ok"
     # The weekly split, under the same gate and after the re-check, so it reads the scores with any hold that
     # re-check opened (the valuation_scores view applies it). Proposals only, never an order; a skipped split never
     # fails the step.
     progress("split")
     sp = split_mod.run(store, cfg, checked_at=rep.checked_at, now=now or datetime.now(timezone.utc))
-    msg += f"; split: {sp.skipped or f'{sp.opened} new, {sp.replaced} replaced, {sp.spent} spent'}"
-    # (A re-check of what the split just wrote goes here.)
+    if sp.skipped:
+        return rep.scores + rep.moves, msg + f"; split: {sp.skipped}", "ok"
+    msg += f"; split: {sp.opened} new, {sp.replaced} replaced, {sp.spent} spent"
+    if sp.notes:        # keys and counts only; one line
+        msg += " (notes: " + "; ".join(" ".join(str(n).split()) for n in sp.notes) + ")"
+    # What the split just wrote is examined at once, too: a proposal that breaks a rule is held before anyone reads it.
+    progress("checking split")
+    chk = check_mod.run_check(cfg, fetch=fetch, now=now, store=store, sleep=sleep, only=["split"])
+    msg += f"; split checks: {chk.holds} holds, {chk.warns} warnings, {len(chk.errors)} errors"
     return rep.scores + rep.moves, msg, "ok"
 
 

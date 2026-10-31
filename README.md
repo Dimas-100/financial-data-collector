@@ -341,7 +341,9 @@ After the scores and their re-check, the same step proposes how to split cash wa
 adapters turn into cash) across that account's holdings, from your own targets file. It is a proposal written to the
 database, never an order: nothing here can trade, sell, or move money between accounts, and it never proposes more
 than the waiting cash. It runs only under the engine's gate, so a sync whose check failed opens, replaces and closes
-nothing. Set it up in `config.toml`:
+nothing. The checker looks at what it writes at once (the `split` check): a proposal whose lines add up to more than the
+cash, are not whole dollars, go to a name your targets file marks `hold` or has no entry for in that account, or carry no
+sources is held, and `allocation_proposals` then shows it `held` with its dollars blank until the finding clears. Set it up in `config.toml`:
 
 ```toml
 [allocation]
@@ -368,7 +370,8 @@ For each account named there, the waiting cash is the account's newest USD cash 
 - an account with no entries in the targets file ("no targets for <name>"), with no cash row, with a cash row older
   than its newest positions (it may not show what you just placed; an account with no positions counts any row), or
   named twice on one account gets no proposal; one it already has stays open, as does one whose name left
-  `[allocation.accounts]`, and the step's notes say so by the targets-file name.
+  `[allocation.accounts]`, and the step's notes say so by the targets-file name (the notes are part of the step's message in `sync_runs`:
+  `split: 1 new, 0 replaced, 0 spent (notes: ...)`).
 
 Caps and the direct/via-funds ratio are measured on the household: every investment account (one with positions)
 whose newest positions are within `household_days` of the newest of any account, with its cash when its cash row

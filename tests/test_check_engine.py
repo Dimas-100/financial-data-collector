@@ -171,8 +171,8 @@ def test_a_held_score_is_blank_in_the_view(store, cfg):
     assert store.query("SELECT value FROM valuation_scores_raw WHERE metric='pe'")[0][0] == 12.5     # raw untouched
 
 
-def test_scores_is_registered_after_the_others_and_is_an_engine_check():
-    assert list(check.CHECKS)[-1] == "scores" and check_engine.ENGINE_CHECKS == ("scores",)
+def test_scores_and_split_are_registered_last_and_are_the_engine_checks():
+    assert list(check.CHECKS)[-2:] == ["scores", "split"] and check_engine.ENGINE_CHECKS == ("scores", "split")
 
 
 def test_the_engine_check_imports_nothing_it_checks():
@@ -222,3 +222,42 @@ def test_last_run_shows_a_full_run_that_failed_over_an_older_healthy_one(store):
                         derive_run_id="r2", checks_run=1, holds=0, warns=0, error=None)    # the engine's clean re-check
     run = store.check_last_run()
     assert (run["run_id"], run["checks_run"], run["error"]) == ("c2", 1, "gaps: boom; closes: boom")
+
+
+def _fund(store, symbol="FND", asset_type="etf"):
+    store.upsert_security(symbol, asset_type=asset_type, first_seen="2025-01-01")
+
+
+def test_a_fund_snapshot_value_no_fund_can_have_is_held(store, cfg):
+    _fund(store)
+    cases = [("pe", 0.0), ("pe", -3.0), ("pe", 200.5), ("dividend_yield", 0.26), ("expense_ratio", 0.031)]
+    for metric, value in cases:
+        store.conn.execute("DELETE FROM valuation_scores_raw")
+        _raw(store, "FND", metric, value=value, sources=[PRICE], percentile=None, band=None)
+        (f,) = check_engine.scores(_ctx(store, cfg))
+        assert (f.symbol, f.field, f.severity) == ("FND", f"score:{metric}", "hold"), (metric, value)
+        assert f.evidence["value"] == value and "fund" in f.message
+
+
+def test_an_in_range_fund_row_passes(store, cfg):
+    _fund(store)
+    for metric, value in [("pe", 21.3), ("pe", 200.0), ("dividend_yield", 0.25), ("expense_ratio", 0.03),
+                          ("expense_ratio", 0.0)]:
+        store.conn.execute("DELETE FROM valuation_scores_raw")
+        _raw(store, "FND", metric, value=value, percentile=None, band=None)
+        assert check_engine.scores(_ctx(store, cfg)) == [], (metric, value)
+
+
+def test_the_fund_bounds_apply_only_to_ok_rows_of_funds(store, cfg):
+    _fund(store, "FND")
+    store.upsert_security("STK", asset_type="stock", first_seen="2025-01-01")
+    _raw(store, "FND", "pe", status="unsupported", value=500.0, sources="[]", percentile=None, band=None)
+    _raw(store, "STK", "pe", value=500.0, percentile=50.0, band="usual")        # a company's P/E has its own history
+    assert check_engine.scores(_ctx(store, cfg)) == []
+
+
+def test_a_fund_sanity_fault_joins_the_other_faults_of_the_same_score(store, cfg):
+    _fund(store)
+    _raw(store, "FND", "pe", value=-4.0, sources="[]", percentile=None, band=None)
+    (f,) = check_engine.scores(_ctx(store, cfg))
+    assert f.field == "score:pe" and "no sources" in f.message and "fund P/E" in f.message

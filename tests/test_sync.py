@@ -552,17 +552,17 @@ def test_engine_step_message_names_the_split(project, tmp_path: Path):
     _covered_derive(cfg)
     _brokerage_cash(cfg, "2026-02-27", 500.0)
     (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
-    assert step.status == "ok" and step.message.endswith("; checks: 0 holds, 0 warnings, 0 errors; split: 1 new, 0 replaced, 0 spent"), step.message
+    assert step.status == "ok" and step.message.endswith("; checks: 0 holds, 0 warnings, 0 errors; split: 1 new, 0 replaced, 0 spent; split checks: 0 holds, 0 warnings, 0 errors"), step.message
     (row,) = _proposals(cfg)
     s = Store.open(cfg.db_path, migrate=False)
     p = s.open_proposal("brokerage")
     s.close()
     assert p["checked_at"] == "2026-03-01T11:30:00Z" and p["created_at"] == "2026-03-01T12:00:00Z"
     (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
-    assert step.message.endswith("; split: 0 new, 0 replaced, 0 spent") and _proposals(cfg) == [row]
+    assert step.message.endswith("; split: 0 new, 0 replaced, 0 spent; split checks: 0 holds, 0 warnings, 0 errors") and _proposals(cfg) == [row]
     _brokerage_cash(cfg, "2026-02-28", 100.0)
     (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
-    assert step.message.endswith("; split: 0 new, 0 replaced, 1 spent")
+    assert step.message.endswith("; split: 0 new, 0 replaced, 1 spent; split checks: 0 holds, 0 warnings, 0 errors")
 
 
 def test_engine_step_message_says_why_the_split_was_skipped(project, tmp_path: Path):
@@ -572,14 +572,62 @@ def test_engine_step_message_says_why_the_split_was_skipped(project, tmp_path: P
     assert step.status == "ok" and step.message.endswith("; split: no targets file"), step.message
 
 
-def test_engine_step_runs_the_split_after_the_score_recheck(project, tmp_path: Path, monkeypatch):
+def test_engine_step_runs_the_score_recheck_then_the_split_then_the_split_recheck(project, tmp_path: Path, monkeypatch):
     from financial_data_collector import check as check_mod
     from financial_data_collector.derive import split
     cfg = _with_allocation(project, tmp_path)
     _covered_derive(cfg)
     order = []
     real_check, real_split = check_mod.run_check, split.run
-    monkeypatch.setattr(check_mod, "run_check", lambda *a, **k: (order.append("check"), real_check(*a, **k))[1])
+    monkeypatch.setattr(check_mod, "run_check",
+                        lambda *a, **k: (order.append(("check", tuple(k["only"]))), real_check(*a, **k))[1])
     monkeypatch.setattr(split, "run", lambda *a, **k: (order.append("split"), real_split(*a, **k))[1])
     (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
-    assert order == ["check", "split"] and step.message.endswith("; split: 0 new, 0 replaced, 0 spent"), step.message
+    assert order == [("check", ("scores",)), "split", ("check", ("split",))], order
+    assert step.message.endswith("; split: 0 new, 0 replaced, 0 spent (notes: brokerage: no cash row); "
+                                 "split checks: 0 holds, 0 warnings, 0 errors"), step.message
+    assert len(step.message.splitlines()) == 1
+
+
+def test_engine_step_skips_the_split_when_the_score_recheck_fails(project, tmp_path: Path, monkeypatch):
+    from financial_data_collector import check as check_mod
+    from financial_data_collector.derive import split
+    cfg = _with_allocation(project, tmp_path)
+    _covered_derive(cfg)
+    _brokerage_cash(cfg, "2026-02-27", 500.0)
+    real_check = check_mod.run_check
+
+    def fake(*a, **k):
+        if list(k["only"]) == ["scores"]:
+            return check_mod.CheckReport(run_id="x", holds=0, warns=0, errors=["scores: ValueError: boom"])
+        return real_check(*a, **k)
+
+    monkeypatch.setattr(check_mod, "run_check", fake)
+    monkeypatch.setattr(split, "run", lambda *a, **k: pytest.fail("the split ran after a failed re-check"))
+    (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
+    assert step.status == "ok" and step.message.endswith("checks: 0 holds, 0 warnings, 1 errors; split: score re-check failed"), step.message
+    assert _proposals(cfg) == []
+
+
+def test_engine_step_rechecks_what_the_split_wrote_and_reports_the_hold(project, tmp_path: Path, monkeypatch):
+    from financial_data_collector.derive import split
+    from financial_data_collector.models import AllocationProposal, SplitLine
+    cfg = _with_allocation(project, tmp_path)
+    _covered_derive(cfg)
+    real_split = split.run
+
+    def bad(store, cfg, **k):       # the split wrote a line to a name the targets file has no entry for
+        src = ({"kind": "derived", "label": "cash_balances", "date": "2026-02-27", "ref": "c"},)
+        store.write_proposal(AllocationProposal("brokerage", "2026-02-27", 100.0, 1, 0.0,
+                                                (SplitLine("ZZZ", 100, 1.0, "usual", 1.0, ()),), (src,), (), src),
+                             created_at="2026-03-01T12:00:00Z", checked_at=None, replaces=None)
+        return real_split(store, cfg, **k)
+
+    monkeypatch.setattr(split, "run", bad)
+    (step,) = sync.run_sync(cfg, now=NOW, sleep=lambda s: None, only=["engine"]).steps
+    assert step.message.endswith("; split checks: 1 holds, 0 warnings, 0 errors"), step.message
+    s = Store.open(cfg.db_path, migrate=False)
+    try:
+        assert s.query("SELECT status FROM allocation_proposals")[0][0] == "held"
+    finally:
+        s.close()
