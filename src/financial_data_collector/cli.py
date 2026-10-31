@@ -62,6 +62,8 @@ def _parser() -> argparse.ArgumentParser:
     m.add_argument("--print-config", action="store_true", help="print the claude_desktop_config.json snippet")
     e = sub.add_parser("export", help="write the cockpit feed files (prices, dividends, fundamentals) now")
     e.add_argument("--dir", help="target folder (default: [export.cockpit].dir from config.toml)")
+    ck = sub.add_parser("check", help="run the independent checks of the valuation numbers and record what they find")
+    ck.add_argument("--only", nargs="+", metavar="NAME", help="run only these checks")
     c = sub.add_parser("connect", help="connect a brokerage (snaptrade) or a bank (simplefin) with your own key")
     c.add_argument("service", choices=service.NAMES)
     c.add_argument("--with-user", action="store_true", help="a SnapTrade key that has a registered user (four values)")
@@ -217,6 +219,20 @@ def cmd_export(root: Path, args) -> int:
         ui.hint("pass --dir or set [export.cockpit].dir in config.toml")
         return 2
     return 0
+
+
+def cmd_check(root: Path, args) -> int:
+    from . import check
+
+    cfg = load_config(root)
+    rep = check.run_check(cfg, fetch=http.fetch, only=args.only)
+    holds, warns, errs = rep.holds, rep.warns, len(rep.errors)
+    line = (f"check: {holds} hold{'' if holds == 1 else 's'}, {warns} warning{'' if warns == 1 else 's'}, "
+            f"{errs} error{'' if errs == 1 else 's'} (run {rep.run_id})")
+    ui.console.print(Text(line, style="dark_orange" if errs else ""))
+    for e in rep.errors:
+        ui.console.print(Text(f"  {e}", style="dark_orange"))
+    return 1 if errs else 0
 
 
 def cmd_mcp(root: Path, args) -> int:
@@ -384,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_status(root)
         if args.cmd == "query":
             return cmd_query(root, args)
+        if args.cmd == "check":
+            return cmd_check(root, args)
         if args.cmd == "mcp":
             return cmd_mcp(root, args)
         if args.cmd == "export":

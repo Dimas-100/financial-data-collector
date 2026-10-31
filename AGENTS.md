@@ -36,12 +36,13 @@ projects consume the database; this one owns collection and storage. Design spec
 
 ```
 src/financial_data_collector/
-  cli.py            fdc init | sync | import | status | query | export | mcp | connect | connections | disconnect | accounts | console
-  sync.py           runs steps connections -> ingest -> prices -> macro -> sec -> derive -> export, logs sync_runs (with origin), keeps the heartbeat, exit codes
+  cli.py            fdc init | sync | import | status | query | export | check | mcp | connect | connections | disconnect | accounts | console
+  sync.py           runs steps connections -> ingest -> prices -> macro -> sec -> derive -> export -> check, logs sync_runs (with origin), keeps the heartbeat, exit codes
   heartbeat.py      data/sync.heartbeat.json: the running sync's step, progress line, pid and origin; wait_for_turn() for a second sync
   console/          model.py (read-only Overview), schedule.py (Windows Task Scheduler reader), actions.py (one fdc sync subprocess), report.py (rich, --once), app.py (Textual screen)
   connections/      names.py (labels, kinds, external keys), keys.py (key store / .env), snaptrade.py + simplefin.py (read-only fetchers -> models), service.py (connect / disconnect / run), redact.py
   derive/           history.py (replay -> holdings_daily, cash_daily, lots, realized_gains, reconciliation, unexplained_daily), valuation.py (valuation_daily)
+  check/            the independent checker: __init__.py (CHECKS, CheckContext, run_check), findings.py (Finding); imports nothing from derive/, statements.py or the collectors
   export/cockpit.py prices.json / dividends.json / fundamentals.json for the investing cockpit
   ingest.py         inbox routing by file signature; SnapTrade folder walk; hash-based idempotency
   adapters/         fidelity_positions.py, fidelity_history.py, snaptrade.py -> models.Snapshot / TransactionRow
@@ -49,7 +50,7 @@ src/financial_data_collector/
   statements.py     facts + concept_map -> financial_line_items (annual, quarter, YTD differencing, derived Q4)
   store.py          Store: every write; migrate.py: migrations, seed, generated wide views
   readonly.py       SQL guard + mode=ro connection; mcp_server.py: schema/query/status tools
-  migrations/*.sql  0001 tables, 0002 views, 0003 derived tables + TTM/history views, 0006 connections, 0007 unexplained_daily, 0008 sync_runs.origin, 0009 sec_facts(filed) index, 0010 macro_observations, 0011 prices.final + valuation status columns;  seeds/concept_map.csv
+  migrations/*.sql  0001 tables, 0002 views, 0003 derived tables + TTM/history views, 0006 connections, 0007 unexplained_daily, 0008 sync_runs.origin, 0009 sec_facts(filed) index, 0010 macro_observations, 0011 prices.final + valuation status columns, 0012 check_runs + check_findings;  seeds/concept_map.csv
 ```
 
 ## Tables and views (start here when querying)

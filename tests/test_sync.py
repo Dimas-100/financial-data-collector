@@ -49,12 +49,12 @@ def _counts(cfg):
 
 def test_full_sync_then_noop(project, fixtures: Path):
     rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "derive", "export"]
-    assert [s.status for s in rep.steps] == ["skipped", "ok", "ok", "skipped", "ok", "ok", "skipped"], rep.steps   # no connections, no FRED key; export disabled by default
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "derive", "export", "check"]
+    assert [s.status for s in rep.steps] == ["skipped", "ok", "ok", "skipped", "ok", "ok", "skipped", "ok"], rep.steps   # no connections, no FRED key; export disabled by default
     assert rep.exit_code == 0
     c1 = _counts(project)
     assert c1["position_snapshots"] > 0 and c1["prices"] > 0 and c1["sec_facts"] == 35
-    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 7
+    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 8
     assert "without data" in rep.steps[2].message          # KO, VTI, BRK.B had no bars
     rep2 = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert rep2.steps[1].rows == 0
@@ -67,12 +67,12 @@ def test_only_and_skip(project, fixtures: Path):
     rep = sync.run_sync(project, only=["prices"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert [s.step for s in rep.steps] == ["prices"]
     rep = sync.run_sync(project, skip=["sec"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "derive", "export"]
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "derive", "export", "check"]
 
 
 def test_dry_run_touches_nothing(project):
     rep = sync.run_sync(project, dry_run=True)
-    assert rep.dry_run and [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "derive", "export"]
+    assert rep.dry_run and [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "derive", "export", "check"]
     assert not project.db_path.exists()
 
 
@@ -272,3 +272,25 @@ def test_no_heartbeat_is_left_when_the_store_cannot_open(project, monkeypatch):
     with pytest.raises(sqlite3.OperationalError):
         sync.run_sync(project, now=NOW, sleep=lambda s: None, only=["ingest"])
     assert not project.heartbeat_path.exists()
+
+
+def test_sync_runs_check_last_and_a_failing_check_does_not_fail_the_sync(project, fixtures: Path, monkeypatch):
+    from financial_data_collector import check
+
+    def boom(ctx):
+        raise RuntimeError("check is broken")
+
+    monkeypatch.setattr(check, "CHECKS", {"boom": boom})
+    rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    last = rep.steps[-1]
+    assert last.step == "check" and last.status == "ok" and rep.exit_code == 0
+    assert "0 holds, 0 warnings, 1 errors" in last.message and "boom: RuntimeError" in last.message
+    s = Store.open(project.db_path, migrate=False)
+    run = s.query("SELECT * FROM check_runs")[0]
+    s.close()
+    assert run["run_id"] == rep.run_id and run["derive_run_id"] == rep.run_id
+
+
+def test_check_is_not_a_network_step_and_goes_stale_in_two_days():
+    assert "check" not in sync.NETWORK_STEPS and sync.STALE_HOURS["check"] == 48
+    assert sync.STEPS[-1] == "check"

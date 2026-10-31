@@ -1,11 +1,12 @@
 """The only module that writes SQL. Everything else hands it dataclasses."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from . import migrate as _migrate
 from .adapters.base import dedupe_key
@@ -14,11 +15,14 @@ from .models import (
     AccountRef, ConceptRule, Fact, LineItem, MacroObservation, PriceBar, Snapshot, TransactionRow, is_final,
 )
 
+if TYPE_CHECKING:
+    from .check.findings import Finding
+
 COUNT_TABLES = (
     "accounts", "securities", "position_snapshots", "cash_balances", "transactions",
     "prices", "sec_facts", "financial_line_items", "sync_runs", "ingested_files",
     "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily", "connections",
-    "unexplained_daily", "macro_observations",
+    "unexplained_daily", "macro_observations", "check_runs", "check_findings",
 )
 
 
@@ -639,3 +643,51 @@ class Store:
         for r in self.query("SELECT symbol, date, close FROM prices ORDER BY symbol, date"):
             out.setdefault(r[0], []).append((r[1], r[2]))
         return out
+
+    # ---- the checker (prefix check_) ----------------------------------------
+    def check_open_findings(self, check_name: str | None = None) -> list[sqlite3.Row]:
+        """Findings not yet cleared, newest first; just one check's when named."""
+        sql = "SELECT * FROM check_findings WHERE cleared_at IS NULL"
+        params: tuple = ()
+        if check_name is not None:
+            sql, params = sql + " AND check_name = ?", (check_name,)
+        return self.query(sql + " ORDER BY id DESC", params)
+
+    def check_record(self, run_id: str, check_name: str, findings: "Iterable[Finding]", now: str) -> None:
+        """Record what one check found. A finding seen before gets its last_seen (and message, severity,
+        evidence) updated and is reopened if it had been cleared; a new one is added. Then this check's open
+        findings that were not in `findings` are cleared. Other checks' findings are not touched.
+        (`run_id` names the run for the caller's logs; findings keep their own first_seen / last_seen.)"""
+        findings = list(findings)
+        with self.conn:
+            for f in findings:
+                self.conn.execute(
+                    "INSERT INTO check_findings (check_name, symbol, field, date_from, date_to, severity, message, "
+                    "evidence, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT (check_name, symbol, field, date_from) DO UPDATE SET date_to = excluded.date_to, "
+                    "severity = excluded.severity, message = excluded.message, evidence = excluded.evidence, "
+                    "last_seen = excluded.last_seen, cleared_at = NULL",
+                    (check_name, f.symbol, f.field, f.date_from, f.date_to, f.severity, f.message,
+                     json.dumps(f.evidence, sort_keys=True, default=str), now, now),
+                )
+            keep = {(f.symbol, f.field, f.date_from) for f in findings}
+            for r in self.conn.execute("SELECT id, symbol, field, date_from FROM check_findings "
+                                       "WHERE check_name = ? AND cleared_at IS NULL", (check_name,)).fetchall():
+                if (r["symbol"], r["field"], r["date_from"]) not in keep:
+                    self.conn.execute("UPDATE check_findings SET cleared_at = ? WHERE id = ?", (now, r["id"]))
+
+    def check_log_run(self, run_id: str, *, started_at: str, finished_at: str, derive_run_id: str | None,
+                      checks_run: int, holds: int, warns: int, error: str | None) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO check_runs (run_id, started_at, finished_at, derive_run_id, checks_run, "
+                "holds, warns, error) VALUES (?,?,?,?,?,?,?,?)",
+                (run_id, started_at, finished_at, derive_run_id, checks_run, holds, warns,
+                 error[:4000] if error else None),
+            )
+
+    def check_derive_run_id(self) -> str | None:
+        """The run_id of the newest derive step that finished ok: the derive a check run looked at."""
+        r = self.query("SELECT run_id FROM sync_runs WHERE step = 'derive' AND status = 'ok' "
+                       "ORDER BY id DESC LIMIT 1")
+        return r[0][0] if r else None

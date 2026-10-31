@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from . import heartbeat, http, statements
+from . import check as check_mod, heartbeat, http, statements
 from .collectors import prices as prices_mod
 from .collectors.macro import MacroError, collect_macro, start_date as macro_start
 from .collectors.sec_facts import collect_sec
@@ -22,10 +22,10 @@ from .models import PriceBar
 from .store import Store, utcnow
 from .universe import build_universe
 
-STEPS = ("connections", "ingest", "prices", "macro", "sec", "derive", "export")
+STEPS = ("connections", "ingest", "prices", "macro", "sec", "derive", "export", "check")
 NETWORK_STEPS = {"connections", "prices", "macro", "sec"}
 ORIGINS = ("scheduled", "manual", "console")       # who started a run: the task, a hand, fdc console
-STALE_HOURS = {"ingest": 48, "prices": 48, "macro": 48, "sec": 336, "derive": 48, "export": 48}
+STALE_HOURS = {"ingest": 48, "prices": 48, "macro": 48, "sec": 336, "derive": 48, "export": 48, "check": 48}
 
 
 @dataclass
@@ -169,9 +169,20 @@ def _step_export(store: Store, cfg: Config, *, now, progress: Progress, **_) -> 
     return written, msg, "ok"
 
 
+def _step_check(store: Store, cfg: Config, *, fetch, now, progress: Progress, **_) -> tuple[int, str, str]:
+    # The checks' own failures are findings about the checks, not a failed sync: the step is ok unless the
+    # frame itself breaks (that raises and run_sync records an error, which exit_code ignores).
+    progress("checks")
+    rep = check_mod.run_check(cfg, fetch=fetch, now=now, store=store)
+    msg = f"{rep.holds} holds, {rep.warns} warnings, {len(rep.errors)} errors"
+    if rep.errors:
+        msg += ": " + "; ".join(rep.errors)
+    return rep.holds + rep.warns, msg, "ok"
+
+
 _RUNNERS: dict[str, Callable] = {
     "connections": _step_connections, "ingest": _step_ingest, "prices": _step_prices, "macro": _step_macro, "sec": _step_sec,
-    "derive": _step_derive, "export": _step_export,
+    "derive": _step_derive, "export": _step_export, "check": _step_check,
 }
 
 
