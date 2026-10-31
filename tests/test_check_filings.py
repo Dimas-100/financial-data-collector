@@ -142,13 +142,26 @@ def test_uses_the_sec_user_agent_and_pacing(store, cfg):
     assert slept == [1.0]                                # between the two companies, not before the first
 
 
-def test_no_user_agent_is_the_checks_error_and_asks_nobody(store, cfg):
+def test_no_user_agent_is_one_info_finding_asks_nobody_and_keeps_the_holds(store, cfg):
+    _company(store, "AAAA", "0000999005")
+    _company(store, "SMPL")
+    found, _ = _run(store, cfg, {CIK: SAMPLE, "0000999005": SAMPLE})
+    store.check_record("filings", found, "2026-10-29T12:00:00Z")
+    held = {(r["symbol"], r["date_from"]) for r in store.check_open_findings("filings") if r["severity"] == "hold"}
+    assert held
     cfg.sec_user_agent = None
-    _company(store)
-    with pytest.raises(RuntimeError, match="SEC_USER_AGENT is not set"):
-        _run(store, cfg, {CIK: SAMPLE})
     rep = check.run_check(cfg, fetch=lambda u, h=None: pytest.fail("fetched"), now=NOW, only=["filings"], store=store)
-    assert rep.errors == ["filings: RuntimeError: SEC_USER_AGENT is not set"] and rep.holds == 0
+    assert rep.errors == []
+    rows = store.check_open_findings("filings")
+    [info] = [r for r in rows if r["severity"] == "info"]
+    assert (info["symbol"], info["field"]) == ("AAAA", "*") and "SEC_USER_AGENT is not set" in info["message"]
+    assert {(r["symbol"], r["date_from"]) for r in rows if r["severity"] == "hold"} == held   # not asked is not cleared
+
+
+def test_no_user_agent_and_no_companies_is_nothing(store, cfg):
+    cfg.sec_user_agent = None
+    rep = check.run_check(cfg, fetch=lambda u, h=None: pytest.fail("fetched"), now=NOW, only=["filings"], store=store)
+    assert rep.errors == [] and store.check_open_findings("filings") == []
 
 
 def test_a_fetch_error_is_an_info_finding_and_the_next_company_still_runs(store, cfg):

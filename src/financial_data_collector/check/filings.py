@@ -61,14 +61,23 @@ def _headers(user_agent: str) -> dict[str, str]:
 def filings_caught_up(ctx: CheckContext) -> list[Finding]:
     """One hold per missing filing (field "*", from its filing date, still going); one `info` finding for a
     company SEC could not be asked about. Companies are stocks with a CIK that the SEC collector has fetched; a
-    CIK shared by several symbols is asked once."""
+    CIK shared by several symbols is asked once.
+
+    Without SEC_USER_AGENT (SEC refuses anonymous clients) nobody is asked: the check returns one `info` finding,
+    on the first company's symbol (a finding names a real symbol), plus every company's open holds unchanged, so
+    a setup without the agent neither fails `fdc check` nor lifts a hold; with no company it returns nothing."""
     user_agent = ctx.cfg.sec_user_agent
-    if not user_agent:
-        raise RuntimeError("SEC_USER_AGENT is not set")
     today = ctx.now.astimezone(NEW_YORK).date()
     by_cik: dict[str, list[str]] = {}
     for symbol, cik in ctx.store.check_sec_companies():
         by_cik.setdefault(cik, []).append(symbol)
+    if not user_agent:
+        symbols = [s for group in by_cik.values() for s in group]
+        if not symbols:
+            return []
+        note = Finding("filings", symbols[0], "*", today.isoformat(), None, "info",
+                       "SEC was not asked for any filings list: SEC_USER_AGENT is not set", {})
+        return [note] + [k for s in symbols for k in still_open(ctx.store, "filings", s)]
     out: list[Finding] = []
     for n, (cik, symbols) in enumerate(by_cik.items()):
         if n:
