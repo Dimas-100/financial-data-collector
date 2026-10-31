@@ -199,6 +199,19 @@ def test_a_feed_that_no_longer_names_a_company_lets_it_fall_back_to_sic(store, c
     assert _sector(store, "AAPL") == ("Financials", "sec: SIC 6022")
 
 
+def test_a_new_feed_date_rewrites_the_source_but_counts_only_changed_sectors(store, cfg, tmp_path):
+    store.upsert_security("AAPL", asset_type="stock")
+    store.upsert_security("JPM", asset_type="stock")
+    sectors.assign_sectors(store, cfg)
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "data" / "classifications.json").write_text(json.dumps({"as_of": "2026-10-30", "by_ticker": {
+        "AAPL": {"sector": "Technology"}, "JPM": {"sector": "Real Estate"}}}), encoding="utf-8")
+    cfg.investing_dir = tmp_path
+    assert sectors.assign_sectors(store, cfg).changed == 1                 # JPM moved; AAPL only got a new date
+    assert _sector(store, "AAPL") == ("Technology", "feed: classifications.json as of 2026-10-30")
+    assert _sector(store, "JPM") == ("Real Estate", "feed: classifications.json as of 2026-10-30")
+
+
 def test_a_feed_without_a_date_still_names_itself(store, cfg, tmp_path):
     (tmp_path / "data").mkdir(exist_ok=True)
     (tmp_path / "data" / "classifications.json").write_text(

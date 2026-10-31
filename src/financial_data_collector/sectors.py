@@ -93,7 +93,7 @@ def _feed_source(as_of: str | None) -> str:
 
 @dataclass
 class SectorPass:
-    changed: int                        # rows whose sector changed
+    changed: int                        # rows whose sector changed (a source rewritten alone, as a new feed date, is not)
     feed_kept: int = 0                  # companies whose feed sector was kept because the feed could not be read
 
 
@@ -102,7 +102,8 @@ def assign_sectors(store: Store, cfg: Config) -> SectorPass:
     security that is not a company has none. A feed that cannot be read at all (missing, not JSON, no `by_ticker`)
     changes no company whose sector came from it: a hiccup in the sibling file must not swap sectors; a feed that reads
     fine but no longer names a company lets it fall back to SIC. No investing folder configured means no feed. Reads
-    only stored data and the sibling file, so it runs on every sync."""
+    only stored data and the sibling file, so it runs on every sync. The source carries the feed's date, so a new
+    feed rewrites it on every feed-sourced row; only a changed sector is counted."""
     if cfg.investing_dir:
         feed, as_of = read_feed(cfg.investing_dir / "data" / FEED_FILE)
     else:
@@ -120,5 +121,6 @@ def assign_sectors(store: Store, cfg: Config) -> SectorPass:
             else:
                 sector = sector_for_sic(row["sic"], ranges)
                 source = f"sec: SIC {row['sic']}" if sector else None
-        result.changed += store.set_sector(row["symbol"], sector, source)
+        store.set_sector(row["symbol"], sector, source)
+        result.changed += row["sector"] != sector
     return result
