@@ -63,14 +63,53 @@ def apply_migrations(
             dest.close()
     # a migration that repairs stored transactions re-keys them exactly the way an import would
     conn.create_function("fdc_dedupe_key", 6, dedupe_key, deterministic=True)
-    applied: list[int] = []
-    for version, path in pending:
-        sql = path.read_text(encoding="utf-8")
-        conn.executescript("BEGIN;\n" + sql + "\nCOMMIT;")
-        conn.execute("INSERT INTO schema_version (version, applied_at) VALUES (?, ?)", (version, _now()))
+    if conn.in_transaction:
         conn.commit()
-        applied.append(version)
+    applied: list[int] = []
+    # Another process may open the database at the same moment (a sync at logon and the check it missed) and see
+    # the same pending list. Each migration takes the write lock first, waiting out the other opener's migration,
+    # and runs only if it is still unapplied once the lock is held; its statements and its version row commit
+    # together, so a failure leaves nothing half applied.
+    busy = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.execute(f"PRAGMA busy_timeout={MIGRATION_BUSY_MS}")
+    try:
+        for version, path in pending:
+            sql = path.read_text(encoding="utf-8")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if conn.execute("SELECT 1 FROM schema_version WHERE version = ?", (version,)).fetchone():
+                    conn.rollback()
+                    continue
+                for statement in _statements(sql):
+                    conn.execute(statement)
+                conn.execute("INSERT INTO schema_version (version, applied_at) VALUES (?, ?)", (version, _now()))
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            applied.append(version)
+    finally:
+        conn.execute(f"PRAGMA busy_timeout={int(busy)}")
     return applied
+
+
+MIGRATION_BUSY_MS = 120_000   # how long an opener waits for another's migration before giving up
+
+
+def _statements(sql: str) -> list[str]:
+    """Split a migration file into statements (sqlite3.complete_statement knows quotes and comments), so one
+    explicit transaction can hold them all: executescript would commit and drop the lock first."""
+    out: list[str] = []
+    buf = ""
+    for line in sql.splitlines(keepends=True):
+        buf += line
+        if sqlite3.complete_statement(buf):
+            out.append(buf.strip())
+            buf = ""
+    rest = "\n".join(l for l in buf.splitlines() if l.strip() and not l.strip().startswith("--"))
+    if rest:
+        raise ValueError(f"migration text after the last ';' would never run: {rest[:60]!r}")
+    return out
 
 
 def seed_concept_map(conn: sqlite3.Connection, csv_path: Path = SEEDS_DIR / "concept_map.csv") -> int:

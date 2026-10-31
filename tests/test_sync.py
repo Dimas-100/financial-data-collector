@@ -280,6 +280,25 @@ def test_sync_waits_for_another_live_sync(project, fixtures: Path, monkeypatch):
     assert not project.heartbeat_path.exists()
 
 
+def test_the_heartbeat_is_up_before_the_store_opens_and_migrates(project, monkeypatch):
+    """Opening the store applies migrations. A check started meanwhile waits only for a live heartbeat, so the
+    heartbeat must exist while the store opens (found live 2026-10-31: a check 8 s after the logon sync ran the
+    same migration and failed on 'duplicate column name')."""
+    from financial_data_collector import heartbeat as H
+
+    seen = []
+    real_open = sync.Store.open
+
+    def watching_open(*a, **k):
+        seen.append(H.read(project.heartbeat_path))
+        return real_open(*a, **k)
+
+    monkeypatch.setattr(sync.Store, "open", watching_open)
+    sync.run_sync(project, now=NOW, sleep=lambda s: None, only=["ingest"])
+    assert seen and seen[0] is not None
+    assert not project.heartbeat_path.exists()
+
+
 def test_no_heartbeat_is_left_when_the_store_cannot_open(project, monkeypatch):
     def boom(*a, **k):
         raise sqlite3.OperationalError("disk I/O error")

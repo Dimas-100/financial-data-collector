@@ -332,9 +332,12 @@ def run_sync(
         return report
     waited = heartbeat.wait_for_turn(cfg.heartbeat_path, now=now, sleep=sleep)
     beat = heartbeat.Writer(cfg.heartbeat_path, run_id, origin)
-    store = Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
+    # Up before the store opens: opening applies migrations, and a check started meanwhile waits only for a live
+    # heartbeat. The finally removes it again when the open fails.
+    beat.start()
+    store = None
     try:
-        beat.start()                       # inside the try: a failed open leaves no heartbeat behind
+        store = Store.open(cfg.db_path, backup_dir=cfg.backup_dir)
         for step in steps:
             started = utcnow()
 
@@ -358,6 +361,7 @@ def run_sync(
             store.log_run(run_id, step, status, rows, message, started, finished, origin)
             report.steps.append(StepResult(step, status, rows, message, started, finished))
     finally:
-        store.close()
+        if store is not None:
+            store.close()
         beat.finish()
     return report
