@@ -8,7 +8,7 @@ writes one `valuation_scores_raw` row per symbol and metric at the symbol's newe
 covering check run's finish time. Holds opened after the build reach readers through the `valuation_scores` view.
 
 This module is the orchestrator: the coverage gate, the per-symbol loop, the hold helpers and the write. The metrics
-themselves live in pure modules (`shape.py`, ...) that the per-symbol loop calls.
+themselves live in pure modules (`shape.py`, `scores.py`, ...) that the per-symbol loop calls.
 """
 from __future__ import annotations
 
@@ -17,12 +17,16 @@ from dataclasses import dataclass
 from ..config import Config
 from ..models import ScoreRow
 from ..store import Store
-from . import sources
+from . import scores, sources
 from .adjust import adjusted_closes
 from .shape import INPUTS as PRICE_INPUTS, METRICS as PRICE_METRICS, price_shape
+from .valuation import COLUMNS as VALUATION_COLUMNS
 
 PRICE_CHECKS = ("prices2", "impossible", "closes")      # the checks whose '*' hold is about the close itself
 _OPEN_END = "9999-12-31"
+# The valuation_daily columns a hold can blank: every value, not the keys, period markers or status.
+VALUE_FIELDS = tuple(c for c in VALUATION_COLUMNS
+                     if c not in ("symbol", "date", "ttm_period_end", "available_from", "status", "status_reason"))
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,27 @@ def held_adjusted_bars(bars, holds: list[dict]) -> list[tuple]:
             if not any(_covers(h, b[0]) for h in ph)]
 
 
+def statement_holds(holds: list[dict]) -> list[dict]:
+    """The holds as they apply to valuation_daily rows: every hold (a '*' from any check, statements included, as
+    valuation_latest applies them), with a `close` hold widened to '*', since every valuation value of a day is built
+    on its close."""
+    return [dict(h, field="*") if h["field"] == "close" else h for h in holds]
+
+
+def _company_history(store: Store, cfg: Config, symbol: str, cik: str, day: str, bar: tuple,
+                     holds: list[dict]) -> list[ScoreRow]:
+    """P/E, P/FCF, P/S, EV/EBIT and yield against the company's own history (scores.history_scores), from its held
+    valuation_daily rows up to `day`; nothing when it has none."""
+    vrows = [r for r in store.valuation_rows(symbol) if r["date"] <= day]
+    if not vrows:
+        return []
+    sh = statement_holds(holds)
+    period_end = vrows[-1]["ttm_period_end"]
+    filing = store.statement_filing(cik, period_end) if period_end else None
+    return scores.history_scores(symbol, day, apply_holds(vrows, sh, VALUE_FIELDS), store.ttm_rows(cik), filing, cik,
+                                 cfg.engine, bar=bar, holds=sh)
+
+
 def _held_price_rows(symbol: str, day: str, newest: tuple, on_day: list[dict]) -> list[ScoreRow]:
     reason = "; ".join(h["message"] for h in on_day)
     src = (sources.price(newest[4], newest[0], newest[5]),)
@@ -117,5 +142,7 @@ def run(store: Store, cfg: Config) -> EngineReport:
             sector_fund = cfg.benchmarks.sectors.get(sec["sector"]) if sec["sector"] else None
             rows += price_shape(sym, day, held_adjusted_bars(bars, holds), benchmark(cfg.benchmarks.market),
                                 benchmark(sector_fund))
+        if sec["asset_type"] == "stock" and sec["cik"]:
+            rows += _company_history(store, cfg, sym, sec["cik"], day, bars[-1], holds)
     store.replace_scores(rows, cov["checked_at"])
     return EngineReport(len(symbols), len(rows), sum(1 for r in rows if r.status == "held"), 0, None)

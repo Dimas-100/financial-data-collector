@@ -193,7 +193,7 @@ leaves prices alone.
 
 What it scores: every security that is not parked, not a money market or crypto, has a final close, and is not only a
 benchmark (a benchmark you also hold is scored). Each gets one row per metric in `valuation_scores_raw` at its newest
-final close, so far the price shape, on split- and dividend-adjusted closes:
+final close, starting with the price shape, on split- and dividend-adjusted closes:
 
 - `off_high_52w`: the close against the highest close of the 365 days ending that day (needs a close 300 days back);
 - `vs_200d`: the close against the mean of the last 200 closes (needs 200);
@@ -202,8 +202,32 @@ final close, so far the price shape, on split- and dividend-adjusted closes:
 - `week_vs_sector`: the same against its sector's fund (`[benchmarks] sectors`); `unsupported` ("no sector") when it
   has no sector or the config names no fund for it.
 
+Each stock with an SEC CIK and `valuation_daily` rows also gets five scores against its own history:
+
+- `pe`, `p_fcf`, `ps`: the day's P/E, price / free cash flow and price / sales from `valuation_daily`;
+- `ev_ebit`: (market cap + long-term debt - cash - short-term investments) / operating income, each day from the
+  TTM statements in force that day (`unsupported` "no debt or cash figure in its filings" when the filings give no
+  long-term debt or cash, "operating income not positive" on an operating loss; missing short-term investments
+  count 0);
+- `dividend_yield`: trailing 12-month dividends / close.
+
+Each carries `percentile_5y`: where today's value sits among the company's own daily values of the last
+`history_years` (5) calendar years, as a mid-rank percentile (values below it plus half of those equal to it, over
+all of them, today's included). Only `ok` days count; a day a hold covered is left out. A percentile needs history
+reaching `min_history_days` (365) back; until then the row is `not_enough_history` ("<N> days of its own history; a
+band needs 365") and still shows its value. The `band` reads the percentile: for P/E, P/FCF, P/S and EV/EBIT, where
+high means expensive, under `cheap_percentile` (25) is `cheap`, over `premium_percentile` (75) is `premium`, between
+them (both included) `usual`; for the dividend yield, where high means cheap, it is mirrored (over the 75th `cheap`,
+under the 25th `premium`). A band says how the company is priced against its own past, not against other companies
+or the market. All four numbers are `[engine]` settings in `config.toml`, and each row's `sources` lists them with the
+newest close, the 10-Q or 10-K the statements came from (with its SEC link) and the span of history it was ranked
+in. The newest `valuation_daily` row decides the rest: a `stale` or `unsupported` row makes every score
+`unsupported` with its reason; a value a hold blanks (a hold on the metric's own column, a `*` hold from any check,
+or a `close` hold, since every one of these is built on the close) makes it `held`; a value that cannot be computed is
+`unsupported` with why ("earnings not positive", "free cash flow not positive", "no revenue", "no dividend").
+
 A row's `status` is `ok`, `held`, `unsupported` or `not_enough_history`; `inputs` names the `valuation_daily` columns
-it was built from (`,close,` for these); `sources` is a JSON list of where each number came from (`price`, `filing`,
+it was built from (`,close,` for the price shape, `,pe,` for P/E, `,market_cap,` for EV/EBIT); `sources` is a JSON list of where each number came from (`price`, `filing`,
 `feed`, `config`, `derived`); `checked_at` is the finish time of the check run that covered the data. Read the view
 `valuation_scores`: it applies, in the way `valuation_latest` does, a hold opened after the build. An open hold on the
 symbol covering the row's date whose field is `score:<metric>`, one of the row's inputs, or `*` (on a price row only

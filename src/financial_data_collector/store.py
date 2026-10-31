@@ -853,6 +853,26 @@ class Store:
             "SELECT id, check_name, field, date_from, date_to, message FROM check_findings "
             "WHERE symbol = ? AND severity = 'hold' AND cleared_at IS NULL ORDER BY id", (symbol,))]
 
+    def valuation_rows(self, symbol: str) -> list[dict]:
+        """The symbol's valuation_daily rows (every column), ascending by date."""
+        return [dict(r) for r in self.query("SELECT * FROM valuation_daily WHERE symbol = ? ORDER BY date", (symbol,))]
+
+    TTM_ROW_COLUMNS = ("period_end", "available_from", "operating_income", "long_term_debt", "cash",
+                       "short_term_investments", "depreciation_amortization", "buybacks", "revenue", "fcf")
+
+    def ttm_rows(self, cik: str) -> dict[str, dict]:
+        """The company's financials_ttm rows by period_end, each with TTM_ROW_COLUMNS."""
+        return {r["period_end"]: dict(r) for r in self.query(
+            f"SELECT {', '.join(self.TTM_ROW_COLUMNS)} FROM financials_ttm WHERE cik = ? ORDER BY period_end", (cik,))}
+
+    def statement_filing(self, cik: str, period_end: str) -> dict | None:
+        """The earliest-filed 10-Q or 10-K (amendments too) in sec_facts that reports a fact for `period_end`, as
+        {form, accn, filed}; None when none does."""
+        r = self.query("SELECT form, accn, filed FROM sec_facts WHERE cik = ? AND period_end = ? "
+                       "AND form IN ('10-Q', '10-K', '10-Q/A', '10-K/A') ORDER BY filed, accn LIMIT 1",
+                       (cik, period_end))
+        return dict(r[0]) if r else None
+
     def replace_scores(self, rows: Iterable[ScoreRow], checked_at: str) -> int:
         """Make valuation_scores_raw exactly `rows` (each stamped `checked_at`): a row already as it should be is not
         written, a (symbol, metric) no longer built is deleted. One transaction. Returns how many rows it holds."""
