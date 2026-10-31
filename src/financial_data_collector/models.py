@@ -184,3 +184,80 @@ class EarningsEvent:
     date_source: str
     time_source: str | None
     eps_source: str | None
+
+
+# The metrics a valuation score is kept for. The checker keeps its own copy of the band rule, not of these names.
+SCORE_METRICS: tuple[str, ...] = (
+    "pe", "p_fcf", "ps", "ev_ebit", "dividend_yield", "implied_growth", "fcf_growth_5y", "revenue_growth_5y",
+    "fcf_margin_change", "op_margin_change", "net_debt_ebitda", "buyback_yield", "last_surprise",
+    "estimate_change_30d", "insider_net_90d", "expense_ratio", "off_high_52w", "vs_200d", "week_vs_market",
+    "week_vs_sector",
+)
+SCORE_STATUSES: tuple[str, ...] = ("ok", "held", "unsupported", "not_enough_history")
+SCORE_BANDS: tuple[str | None, ...] = (None, "cheap", "usual", "premium")
+
+
+@dataclass(frozen=True)
+class ScoreRow:
+    """One metric of one symbol on one day: the value, where it sits in the symbol's own history (percentile and
+    band), why it has none (status, status_reason), and what it came from (inputs, sources)."""
+    symbol: str
+    date: str
+    metric: str
+    value: float | None
+    percentile_5y: float | None
+    band: str | None
+    status: str
+    status_reason: str | None
+    inputs: tuple[str, ...]
+    sources: tuple[dict, ...]
+
+    def __post_init__(self) -> None:
+        if self.metric not in SCORE_METRICS:
+            raise ValueError(f"unknown score metric {self.metric!r}")
+        if self.status not in SCORE_STATUSES:
+            raise ValueError(f"unknown score status {self.status!r}")
+        if self.band not in SCORE_BANDS:
+            raise ValueError(f"unknown score band {self.band!r}")
+
+
+@dataclass(frozen=True)
+class PriceMove:
+    """A drop worth explaining: `span` is '1d' or '5d' (from `start_date` to `date`), `move` a fraction (-0.05),
+    the market's and the sector fund's move over the same span, how many of its own standard deviations a day's
+    excess over the market was, which triggers fired, and the causes found (each with its sources)."""
+    symbol: str
+    date: str
+    span: str
+    start_date: str
+    move: float
+    market_symbol: str | None
+    market_move: float | None
+    sector_symbol: str | None
+    sector_move: float | None
+    excess_sd: float | None
+    triggers: tuple[str, ...]
+    causes: tuple[dict, ...]
+    sources: tuple[dict, ...]
+
+
+@dataclass(frozen=True)
+class CurrentReport:
+    """An 8-K (or similar) SEC lists for a company: its accession, form, filing date and item numbers."""
+    cik: str
+    accession: str
+    form: str
+    filed: str
+    items: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Headline:
+    """One headline from the sibling news feed; `feed_as_of` is the feed's own date."""
+    symbol: str
+    date: str
+    title: str
+    outlet: str | None
+    url: str | None
+    published: str | None
+    feed_as_of: str | None

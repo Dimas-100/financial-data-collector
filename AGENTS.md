@@ -45,7 +45,7 @@ src/financial_data_collector/
   heartbeat.py      data/sync.heartbeat.json: the running sync's step, progress line, pid and origin; wait_for_turn() for a second sync
   console/          model.py (read-only Overview), schedule.py (Windows Task Scheduler reader), actions.py (one fdc sync subprocess), report.py (rich, --once), app.py (Textual screen)
   connections/      names.py (labels, kinds, external keys), keys.py (key store / .env), snaptrade.py + simplefin.py (read-only fetchers -> models), service.py (connect / disconnect / run), redact.py
-  derive/           history.py (replay -> holdings_daily, cash_daily, lots, realized_gains, reconciliation, unexplained_daily), valuation.py (valuation_daily)
+  derive/           history.py (replay -> holdings_daily, cash_daily, lots, realized_gains, reconciliation, unexplained_daily), valuation.py (valuation_daily), sources.py (pure builders of the `sources` lists engine rows carry: filing links built from CIK + accession, safe feed links)
   check/            the independent checker: __init__.py (CHECKS, CheckContext, run_check), findings.py (Finding), offline.py (fresh, impossible, gaps, closes, recompute; thresholds in config `[check]`), filings.py (SEC lists a filing the warehouse lacks), outside.py (prices2, figures: a second price source and outside statement figures), calendar.py (NYSE trading days); imports nothing from derive/, statements.py or the collectors
   export/cockpit.py prices.json / dividends.json / fundamentals.json for the investing cockpit
   ingest.py         inbox routing by file signature; SnapTrade folder walk; hash-based idempotency

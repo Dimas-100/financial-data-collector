@@ -147,3 +147,51 @@ def test_check_must_be_a_table(tmp_path: Path):
     (tmp_path / "config.toml").write_text("check = 5\n")
     with pytest.raises(C.ConfigError, match=r"\[check\]"):
         C.load_config(tmp_path)
+
+
+def _engine_cfg(tmp_path: Path, extra: str = "") -> C.Config:
+    C.init_project(tmp_path)
+    if extra:
+        (tmp_path / "config.toml").write_text(extra, encoding="utf-8")
+    return C.load_config(tmp_path)
+
+
+def test_engine_defaults_are_the_spec_values(tmp_path: Path):
+    cfg = _engine_cfg(tmp_path)
+    assert (cfg.engine.drop_day, cfg.engine.drop_week, cfg.engine.excess_sd) == (0.04, 0.08, 2.5)
+    assert (cfg.engine.cheap_percentile, cfg.engine.premium_percentile, cfg.engine.history_years) == (25.0, 75.0, 5)
+    assert (cfg.engine.min_history_days, cfg.engine.moves_days) == (365, 365)
+    assert (cfg.engine.discount_rate, cfg.engine.terminal_growth) == (0.09, 0.025)
+    assert C.EngineSettings() == cfg.engine
+
+
+def test_engine_can_be_set(tmp_path: Path):
+    cfg = _engine_cfg(tmp_path, "[engine]\nhistory_years = 3\ndrop_day = 0.05\ncheap_percentile = 20\n")
+    assert (cfg.engine.history_years, cfg.engine.drop_day, cfg.engine.cheap_percentile) == (3, 0.05, 20.0)
+
+
+def test_engine_cheap_must_be_below_premium(tmp_path: Path):
+    with pytest.raises(C.ConfigError, match="cheap_percentile"):
+        _engine_cfg(tmp_path, "[engine]\ncheap_percentile = 80\n")
+
+
+def test_engine_premium_must_be_below_100(tmp_path: Path):
+    with pytest.raises(C.ConfigError, match="premium_percentile"):
+        _engine_cfg(tmp_path, "[engine]\npremium_percentile = 100\n")
+
+
+def test_engine_terminal_growth_must_be_below_the_discount_rate(tmp_path: Path):
+    with pytest.raises(C.ConfigError, match="terminal_growth"):
+        _engine_cfg(tmp_path, "[engine]\nterminal_growth = 0.09\n")
+
+
+def test_engine_unknown_setting_is_named(tmp_path: Path):
+    with pytest.raises(C.ConfigError, match="no_such_thing"):
+        _engine_cfg(tmp_path, "[engine]\nno_such_thing = 1\n")
+
+
+@pytest.mark.parametrize("line", ["history_years = 0", "min_history_days = 1.5", "moves_days = true",
+                                  "drop_day = 0", "excess_sd = -1", "discount_rate = \"x\""])
+def test_engine_bad_values_are_refused(tmp_path: Path, line: str):
+    with pytest.raises(C.ConfigError, match=line.split(" ")[0]):
+        _engine_cfg(tmp_path, f"[engine]\n{line}\n")

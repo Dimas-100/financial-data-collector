@@ -45,6 +45,18 @@ figure_hold = 0.40                 # ... by more than this: hold that figure
 close_warn_days = 2                # the newest final close is this many trading days old: warn
 close_hold_days = 5                # ... this many: hold the symbol's values
 
+[engine]                           # the valuation engine (fdc sync's engine step: no network, no AI); these are the defaults
+history_years = 5                  # a score's percentile is against this many years of the symbol's own daily history
+min_history_days = 365             # ... and needs at least this many days of it (else "not_enough_history", no band)
+cheap_percentile = 25              # under this percentile of its own history: cheap (a yield: over 100 minus this)
+premium_percentile = 75            # over this: premium (a yield: under 100 minus this)
+discount_rate = 0.09               # implied growth: the yearly return the market cap is discounted at
+terminal_growth = 0.025            # ... and the yearly growth after its 10 years
+drop_day = 0.04                    # a drop: a final close down this fraction in a day
+drop_week = 0.08                   # ... or this much over 5 trading days
+excess_sd = 2.5                    # ... or a day's move minus SPY's beyond this many of its own 1-year standard deviations
+moves_days = 365                   # price_moves covers this many calendar days back
+
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"
 

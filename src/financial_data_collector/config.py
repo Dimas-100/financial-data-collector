@@ -58,6 +58,18 @@ figure_hold = 0.40                 # ... by more than this: hold that figure
 close_warn_days = 2                # the newest final close is this many trading days old: warn
 close_hold_days = 5                # ... this many: hold the symbol's values
 
+[engine]                           # the valuation engine (fdc sync's engine step: no network, no AI); these are the defaults
+history_years = 5                  # a score's percentile is against this many years of the symbol's own daily history
+min_history_days = 365             # ... and needs at least this many days of it (else "not_enough_history", no band)
+cheap_percentile = 25              # under this percentile of its own history: cheap (a yield: over 100 minus this)
+premium_percentile = 75            # over this: premium (a yield: under 100 minus this)
+discount_rate = 0.09               # implied growth: the yearly return the market cap is discounted at
+terminal_growth = 0.025            # ... and the yearly growth after its 10 years
+drop_day = 0.04                    # a drop: a final close down this fraction in a day
+drop_week = 0.08                   # ... or this much over 5 trading days
+excess_sd = 2.5                    # ... or a day's move minus SPY's beyond this many of its own 1-year standard deviations
+moves_days = 365                   # price_moves covers this many calendar days back
+
 [classify]                         # manual asset-type overrides: SYMBOL = "stock|etf|mutual_fund|money_market|crypto|fund|foreign_filer"
 # VXUS = "etf"
 
@@ -111,6 +123,21 @@ class CheckSettings:
 
 
 @dataclass(frozen=True)
+class EngineSettings:
+    """Settings of the valuation engine (config [engine]); the defaults are the spec's."""
+    history_years: int = 5
+    min_history_days: int = 365
+    cheap_percentile: float = 25.0
+    premium_percentile: float = 75.0
+    discount_rate: float = 0.09
+    terminal_growth: float = 0.025
+    drop_day: float = 0.04
+    drop_week: float = 0.08
+    excess_sd: float = 2.5
+    moves_days: int = 365
+
+
+@dataclass(frozen=True)
 class Benchmarks:
     """The yardsticks a move is measured against: one fund for the whole market and one per sector."""
     market: str = "SPY"
@@ -143,6 +170,7 @@ class Config:
     classify: dict[str, str] = field(default_factory=dict)
     share_classes: dict[str, ShareClass] = field(default_factory=dict)
     check: CheckSettings = field(default_factory=CheckSettings)
+    engine: EngineSettings = field(default_factory=EngineSettings)
     benchmarks: Benchmarks = field(default_factory=Benchmarks)
     fund_proxies: dict[str, str] = field(default_factory=dict)
     tiingo_token: str | None = None
@@ -231,6 +259,34 @@ def _check_settings(raw: object, cfg_path: Path) -> CheckSettings:
     return CheckSettings(**values)
 
 
+def _engine_settings(raw: object, cfg_path: Path) -> EngineSettings:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{cfg_path}: [engine] must be a table")
+    defaults = EngineSettings()
+    unknown = sorted(set(raw) - set(defaults.__dataclass_fields__))
+    if unknown:
+        raise ConfigError(f"{cfg_path}: [engine] has no setting {', '.join(unknown)}")
+    values: dict[str, object] = {}
+    for name in ("history_years", "min_history_days", "moves_days"):
+        v = raw.get(name, getattr(defaults, name))
+        if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+            raise ConfigError(f"{cfg_path}: [engine] {name} must be a whole number, 1 or more")
+        values[name] = v
+    for name in ("cheap_percentile", "premium_percentile", "discount_rate", "terminal_growth",
+                 "drop_day", "drop_week", "excess_sd"):
+        v = raw.get(name, getattr(defaults, name))
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not v > 0:
+            raise ConfigError(f"{cfg_path}: [engine] {name} must be a number above 0")
+        values[name] = float(v)
+    if not values["cheap_percentile"] < values["premium_percentile"]:
+        raise ConfigError(f"{cfg_path}: [engine] cheap_percentile must be less than premium_percentile")
+    if not values["premium_percentile"] < 100:
+        raise ConfigError(f"{cfg_path}: [engine] premium_percentile must be less than 100")
+    if not values["terminal_growth"] < values["discount_rate"]:
+        raise ConfigError(f"{cfg_path}: [engine] terminal_growth must be less than discount_rate")
+    return EngineSettings(**values)
+
+
 def _benchmarks(raw: object, cfg_path: Path) -> Benchmarks:
     if not isinstance(raw, dict):
         raise ConfigError(f"{cfg_path}: [benchmarks] must be a table")
@@ -307,6 +363,7 @@ def load_config(root: Path) -> Config:
         classify={str(k).upper(): str(v) for k, v in raw.get("classify", {}).items()},
         share_classes=_share_classes(raw.get("share_classes", {}), cfg_path),
         check=_check_settings(raw.get("check", {}), cfg_path),
+        engine=_engine_settings(raw.get("engine", {}), cfg_path),
         benchmarks=_benchmarks(raw.get("benchmarks", {}), cfg_path),
         fund_proxies=_fund_proxies(raw.get("fund_proxies", {}), cfg_path),
         tiingo_token=_secret("TIINGO_API_TOKEN", dotenv),
