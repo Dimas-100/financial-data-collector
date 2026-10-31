@@ -60,7 +60,18 @@ def test_new_tables_and_views_exist(store: Store):
     names = {r[0] for r in store.query("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
     assert {"holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily",
             "financial_line_items_ttm", "financials_ttm", "valuation_latest", "portfolio_daily_full"} <= names
-    assert [r[0] for r in store.query("SELECT version FROM schema_version ORDER BY 1")] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    assert [r[0] for r in store.query("SELECT version FROM schema_version ORDER BY 1")] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+
+
+def test_open_holds_have_a_partial_index(store: Store):                  # 0021: the hold views scan them per row
+    (sql,) = [r[0] for r in store.query("SELECT sql FROM sqlite_master WHERE type = 'index' "
+                                        "AND name = 'idx_check_findings_open_holds'")]
+    assert "check_findings" in sql and "(symbol)" in sql
+    assert "severity = 'hold'" in sql and "cleared_at IS NULL" in sql
+    plan = " ".join(str(tuple(r)) for r in store.query(
+        "EXPLAIN QUERY PLAN SELECT id FROM check_findings WHERE severity = 'hold' AND cleared_at IS NULL "
+        "AND symbol = 'AAA'"))
+    assert "idx_check_findings_open_holds" in plan
 
 
 def test_ttm_available_from_uses_first_filing(store: Store):
