@@ -680,27 +680,27 @@ def test_the_all_under_fold_goes_to_the_largest_share_within_its_room():
 
 
 def test_an_untyped_name_is_capped_as_a_fund_without_a_file_and_says_so():
-    # QQQ's type is unknown and no file shows what it holds: for caps it is a fund without a file, taken at the largest
-    # AAPL weight on file (VOO: 10%). Cap AAPL 5% of 10000 = 500, held 480: room 20 -> QQQ at most 200.
-    hh = Household(10_000.0, {"AAPL": 480.0}, {}, {"VOO": {"AAPL": 0.10}}, frozenset({"VOO", "QQQ"}),
-                   untyped=frozenset({"QQQ"}))
-    plan = _plan([_e("QQQ", 50)], 300, hh=hh, caps=[Cap("AAPL", 5.0)])
-    assert _d(plan) == {"QQQ": 200} and plan.waits == 100.0
-    assert _line(plan, "QQQ").reasons == ("disagree", "type_unknown", "look_through_assumed", "cap_cut:AAPL")
+    # SPY's type is unknown and no file shows what it holds: for caps it is a fund without a file, taken at the largest
+    # AAPL weight on file (VOO: 10%). Cap AAPL 5% of 10000 = 500, held 480: room 20 -> SPY at most 200.
+    hh = Household(10_000.0, {"AAPL": 480.0}, {}, {"VOO": {"AAPL": 0.10}}, frozenset({"VOO", "SPY"}),
+                   untyped=frozenset({"SPY"}))
+    plan = _plan([_e("SPY", 50)], 300, hh=hh, caps=[Cap("AAPL", 5.0)])
+    assert _d(plan) == {"SPY": 200} and plan.waits == 100.0
+    assert _line(plan, "SPY").reasons == ("disagree", "type_unknown", "look_through_assumed", "cap_cut:AAPL")
     # Without a cap it is not cut, and still says its type is unknown.
-    plan = _plan([_e("QQQ", 50)], 300, hh=hh)
-    assert _d(plan) == {"QQQ": 300} and _line(plan, "QQQ").reasons == ("disagree", "type_unknown")
+    plan = _plan([_e("SPY", 50)], 300, hh=hh)
+    assert _d(plan) == {"SPY": 300} and _line(plan, "SPY").reasons == ("disagree", "type_unknown")
 
 
 def test_household_of_charges_an_untyped_holding_at_the_assumed_weight():
-    # A held QQQ of unknown type and no file: a direct holding of itself and a fund value for the caps.
-    positions = [{"account": "A", "symbol": "QQQ", "market_value": 1000.0},
+    # A held SPY of unknown type and no file: a direct holding of itself and a fund value for the caps.
+    positions = [{"account": "A", "symbol": "SPY", "market_value": 1000.0},
                  {"account": "A", "symbol": "VOO", "market_value": 1000.0}]
-    hh = household_of(positions, {}, {"VOO": {"AAPL": 0.07}}, frozenset({"VOO", "QQQ"}), untyped=frozenset({"QQQ"}))
-    assert hh.direct == {"QQQ": 1000.0} and hh.fund_values == {"QQQ": 1000.0, "VOO": 1000.0}
-    assert hh.untyped == frozenset({"QQQ"})
+    hh = household_of(positions, {}, {"VOO": {"AAPL": 0.07}}, frozenset({"VOO", "SPY"}), untyped=frozenset({"SPY"}))
+    assert hh.direct == {"SPY": 1000.0} and hh.fund_values == {"SPY": 1000.0, "VOO": 1000.0}
+    assert hh.untyped == frozenset({"SPY"})
     from financial_data_collector.derive.split import cap_used
-    assert cap_used(hh, "AAPL") == pytest.approx(70.0 + 70.0)       # via VOO's file + QQQ at the assumed 7%
+    assert cap_used(hh, "AAPL") == pytest.approx(70.0 + 70.0)       # via VOO's file + SPY at the assumed 7%
 
 
 def test_with_pending_adds_another_accounts_open_lines():

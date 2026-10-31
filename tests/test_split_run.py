@@ -691,40 +691,40 @@ def test_a_household_cap_holds_across_two_accounts_in_one_run(store: Store, tmp_
 
 
 def test_an_untyped_symbol_with_a_look_through_file_is_a_fund(store: Store, tmp_path: Path):
-    # QQQ has no asset type but a look-through file (AAPL 50%): it is a fund, so the AAPL cap cuts its line through the
+    # SPY has no asset type but a look-through file (AAPL 50%): it is a fund, so the AAPL cap cuts its line through the
     # file (0.5 of each dollar) and its band is read from the fund metrics (pe, dividend_yield).
     _types(store)
     funds = tmp_path / "fund_holdings"
     funds.mkdir()
-    (funds / "QQQ.csv").write_text("ticker,name,weight_pct\nAAPL,Apple,50\n", encoding="utf-8")
+    (funds / "SPY.csv").write_text("ticker,name,weight_pct\nAAPL,Apple,50\n", encoding="utf-8")
     for m in ("pe", "dividend_yield"):
-        _score(store, "QQQ", m, "cheap")
-    doc = {"last_revised": "2026-10-01", "brokerage": [{"ticker": "QQQ", "target": 60.0}],
+        _score(store, "SPY", m, "cheap")
+    doc = {"last_revised": "2026-10-01", "brokerage": [{"ticker": "SPY", "target": 60.0}],
            "caps": [{"ticker": "AAPL", "max": 10.0}]}
     _day(store, "2026-10-30", 500.0, ACCT, (("KO", 400.0), ("AAPL", 80.0)))
     rep = _run(store, _cfg(tmp_path, doc, fund_holdings=funds, accounts={"brokerage": "Sample Brokerage"}), 2)
     assert rep.opened == 1
     (line,) = store.open_proposal("brokerage")["lines"]
-    # household 980: cap 98, AAPL held 80 -> room 18 -> QQQ at most 36.
-    assert line["symbol"] == "QQQ" and line["dollars"] == 36
+    # household 980: cap 98, AAPL held 80 -> room 18 -> SPY at most 36.
+    assert line["symbol"] == "SPY" and line["dollars"] == 36
     assert line["band"] == "cheap" and "cheap_by:pe+dividend_yield" in line["reasons"]
     assert "type_unknown" not in line["reasons"] and "look_through_assumed" not in line["reasons"]
 
 
 def test_an_untyped_symbol_without_a_file_is_capped_at_the_assumed_weight(store: Store, tmp_path: Path):
-    # QQQ: no type, no file. VOO's file names AAPL at 10%: QQQ is taken at 10% for an AAPL cap and says type_unknown.
+    # SPY: no type, no file. VOO's file names AAPL at 10%: SPY is taken at 10% for an AAPL cap and says type_unknown.
     _types(store)
     funds = tmp_path / "fund_holdings"
     funds.mkdir()
     (funds / "VOO.csv").write_text("ticker,name,weight_pct\nAAPL,Apple,10\n", encoding="utf-8")
-    doc = {"last_revised": "2026-10-01", "brokerage": [{"ticker": "QQQ", "target": 60.0}],
+    doc = {"last_revised": "2026-10-01", "brokerage": [{"ticker": "SPY", "target": 60.0}],
            "caps": [{"ticker": "AAPL", "max": 10.0}]}
     _day(store, "2026-10-30", 500.0, ACCT, (("KO", 400.0), ("AAPL", 80.0)))
     rep = _run(store, _cfg(tmp_path, doc, fund_holdings=funds, accounts={"brokerage": "Sample Brokerage"}), 2)
     assert rep.opened == 1
     (line,) = store.open_proposal("brokerage")["lines"]
-    # household 980: cap 98, AAPL held 80 -> room 18 -> QQQ at most 180.
-    assert line["symbol"] == "QQQ" and line["dollars"] == 180
+    # household 980: cap 98, AAPL held 80 -> room 18 -> SPY at most 180.
+    assert line["symbol"] == "SPY" and line["dollars"] == 180
     assert "type_unknown" in line["reasons"] and "look_through_assumed" in line["reasons"]
 
 
