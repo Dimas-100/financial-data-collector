@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from . import check as check_mod, heartbeat, http, statements
+from . import check as check_mod, heartbeat, http, sectors as sectors_mod, statements
 from .collectors import earnings as earnings_mod, funds as funds_mod, prices as prices_mod, yahoo as yahoo_mod
 from .collectors.macro import MacroError, collect_macro, start_date as macro_start
 from .collectors.sec_facts import FUND_TYPES, collect_sec
@@ -164,7 +164,10 @@ def _step_earnings(store: Store, cfg: Config, *, fetch, now, yahoo, sleep, progr
     changed = sum(r.events for r in results)
     written = sum(r.estimates for r in results)
     failed = [r for r in results if r.failed]
-    msg = f"{len(results)} companies asked, {changed} events changed, {written} estimate rows written"
+    # Sectors need no network (stored SEC codes and the sibling feed), so the pass runs even when no company was asked.
+    sectors_changed = sectors_mod.assign_sectors(store, cfg)
+    msg = (f"{len(results)} companies asked, {changed} events changed, {written} estimate rows written, "
+           f"{sectors_changed} sectors changed")
     if failed:
         msg += f"; {len(failed)} failed: " + ", ".join(f"{r.symbol} ({r.message})" for r in failed)
     if not cfg.sec_user_agent:       # the Yahoo part still ran; the message says what was left out
@@ -172,7 +175,7 @@ def _step_earnings(store: Store, cfg: Config, *, fetch, now, yahoo, sleep, progr
     # No company to ask (all asked today, or none typed a stock yet) is skipped, not ok: it says nothing about the
     # network, so exit_code leaves it out, as it does an unconfigured connections or macro step.
     status = "skipped" if not results else "error" if len(failed) == len(results) else "ok"
-    return changed + written, msg, status
+    return changed + written + sectors_changed, msg, status
 
 
 def _step_derive(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple[int, str, str]:

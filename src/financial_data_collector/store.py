@@ -185,6 +185,14 @@ class Store:
         with self.conn:
             self.conn.execute("UPDATE securities SET sic = ? WHERE symbol = ?", (sic, symbol))
 
+    def set_sector(self, symbol: str, sector: str | None, source: str | None) -> bool:
+        """Set the company's sector and the words saying where it came from; True when either changed."""
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE securities SET sector = ?, sector_source = ? WHERE symbol = ? "
+                "AND (sector IS NOT ? OR sector_source IS NOT ?)", (sector, source, symbol, sector, source))
+        return cur.rowcount > 0
+
     def set_asset_type(self, symbol: str, asset_type: str) -> None:
         with self.conn:
             self.conn.execute("UPDATE securities SET asset_type = ? WHERE symbol = ?", (asset_type, symbol))

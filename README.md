@@ -95,6 +95,8 @@ Funds (ETFs, mutual funds) get positions, prices and a daily `fund_snapshots` ro
 Stocks (and foreign filers) are asked about once a New York day for their earnings history and estimates; the
 `earnings` step also records SEC's industry code in `securities.sic`.
 
+**Sectors.** Each stock and foreign filer gets a `sector` (one of the eleven) and a `sector_source` saying where it came from: the sibling feed's, else the SEC SIC code's (`seeds/sic_sector.csv`). The sector's benchmark is `[benchmarks] sectors`. Funds have no sector. The pass reads only stored data and the sibling file, so it runs at the end of the `earnings` step on every sync.
+
 **Benchmarks.** A sync also collects prices for the market fund (`SPY`) and the eleven Select Sector SPDRs (`XLC`, `XLY`,
 `XLP`, `XLE`, `XLF`, `XLV`, `XLI`, `XLB`, `XLRE`, `XLK`, `XLU`), so a later measure has something to compare a move against.
 They are marked in `securities.benchmark`, collected like any symbol, and never counted as holdings. `fdc export` leaves

@@ -1,0 +1,56 @@
+sic_from,sic_to,sector,what
+100,999,Consumer Staples,agriculture
+1000,1299,Materials,metal and coal mining
+1300,1399,Energy,oil and gas extraction
+1400,1499,Materials,nonmetallic minerals
+1500,1799,Industrials,construction
+2000,2199,Consumer Staples,food and tobacco
+2200,2399,Consumer Discretionary,textiles and apparel
+2400,2499,Materials,lumber and wood
+2500,2599,Consumer Discretionary,furniture
+2600,2699,Materials,paper
+2700,2799,Communication Services,printing and publishing
+2800,2899,Materials,chemicals
+2830,2836,Health Care,drugs
+2840,2844,Consumer Staples,soap and cosmetics
+2900,2999,Energy,petroleum refining
+3000,3099,Materials,rubber and plastics
+3100,3199,Consumer Discretionary,leather
+3200,3399,Materials,stone clay glass and primary metals
+3400,3499,Industrials,fabricated metal
+3500,3599,Industrials,machinery
+3570,3579,Technology,computers and office equipment
+3600,3699,Industrials,electrical equipment
+3630,3639,Consumer Discretionary,household appliances
+3651,3652,Consumer Discretionary,household audio and video
+3660,3679,Technology,communications equipment and electronic components
+3700,3799,Industrials,transportation equipment
+3710,3716,Consumer Discretionary,motor vehicles
+3800,3899,Industrials,instruments
+3820,3829,Technology,measuring instruments
+3840,3851,Health Care,medical instruments
+3900,3999,Consumer Discretionary,miscellaneous manufacturing
+4000,4799,Industrials,transportation
+4800,4899,Communication Services,communications
+4900,4999,Utilities,electric gas and water
+4950,4959,Industrials,refuse systems
+5000,5199,Industrials,wholesale
+5120,5122,Health Care,drug wholesale
+5140,5149,Consumer Staples,grocery wholesale
+5200,5999,Consumer Discretionary,retail
+5400,5499,Consumer Staples,food stores
+5912,5912,Consumer Staples,drug stores
+6000,6499,Financials,finance and insurance
+6500,6599,Real Estate,real estate
+6700,6799,Financials,holding and investment offices
+6798,6798,Real Estate,real estate investment trusts
+7000,7099,Consumer Discretionary,hotels
+7200,7299,Consumer Discretionary,personal services
+7300,7399,Industrials,business services
+7370,7379,Technology,computer services and software
+7500,7599,Consumer Discretionary,auto services
+7800,7899,Communication Services,motion pictures
+7900,7999,Consumer Discretionary,amusement and recreation
+8000,8099,Health Care,health services
+8200,8299,Consumer Discretionary,education
+8700,8799,Industrials,engineering and management services
