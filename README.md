@@ -98,7 +98,7 @@ and answering empty, so an error it logs while asking counts as a failed ask, as
 comes back with no figures, or a company with no estimates, after a day it had some is asked again too, not given up
 for the day.
 
-**Sectors.** Each stock and foreign filer gets a `sector` (one of the eleven) and a `sector_source` saying where it came from: the sibling feed's, else the SEC SIC code's (`seeds/sic_sector.csv`). The sector's benchmark is `[benchmarks] sectors`. Funds have no sector. The pass reads only stored data and the sibling file, so it runs at the end of the `earnings` step on every sync.
+**Sectors.** Each stock and foreign filer gets a `sector` (one of the eleven) and a `sector_source` saying where it came from: the sibling feed's, else the SEC SIC code's (`seeds/sic_sector.csv`). The sector's benchmark is `[benchmarks] sectors`. Funds have no sector. A feed that cannot be read at all (missing, not JSON, no `by_ticker`) leaves every sector that came from it as it is and the step says "classifications feed unreadable; feed sectors kept"; one odd entry is skipped alone; a company the feed no longer names falls back to SIC. The pass reads only stored data and the sibling file, so it runs at the end of the `earnings` step on every sync.
 
 **Benchmarks.** A sync also collects prices for the market fund (`SPY`) and the eleven Select Sector SPDRs (`XLC`, `XLY`,
 `XLP`, `XLE`, `XLF`, `XLV`, `XLI`, `XLB`, `XLRE`, `XLK`, `XLU`), so a later measure has something to compare a move against.

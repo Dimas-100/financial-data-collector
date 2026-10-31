@@ -166,9 +166,12 @@ def _step_earnings(store: Store, cfg: Config, *, fetch, now, yahoo, sleep, progr
     failed = [r for r in results if r.failed]
     again = [r for r in results if r.again]
     # Sectors need no network (stored SEC codes and the sibling feed), so the pass runs even when no company was asked.
-    sectors_changed = sectors_mod.assign_sectors(store, cfg)
+    sector_pass = sectors_mod.assign_sectors(store, cfg)
+    sectors_changed = sector_pass.changed
     msg = (f"{len(results)} companies asked, {changed} events changed, {written} estimate rows written, "
            f"{sectors_changed} sectors changed")
+    if sector_pass.feed_kept:
+        msg += "; " + sectors_mod.FEED_UNREADABLE
     if failed:
         msg += f"; {len(failed)} failed: " + ", ".join(f"{r.symbol} ({r.message})" for r in failed)
     if again:

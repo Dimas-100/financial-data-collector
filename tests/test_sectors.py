@@ -48,11 +48,25 @@ def test_feed_maps_yahoo_names_and_skips_unknown_ones(fixtures):
     assert as_of == "2026-10-27T19:03:48+00:00"
 
 
-@pytest.mark.parametrize("content", [None, "not json", "[1, 2]", '{"by_ticker": [1]}'])
-def test_missing_or_unreadable_feed_is_empty(tmp_path, content):
+@pytest.mark.parametrize("content", [None, "not json", "[1, 2]", '{"by_ticker": [1]}', '{"as_of": "x"}', '"text"'])
+def test_missing_or_unreadable_feed_is_none(tmp_path, content):
     path = tmp_path / "classifications.json"
     if content is not None:
         path.write_text(content, encoding="utf-8")
+    assert sectors.read_feed(path) == (None, None)
+
+
+def test_one_odd_entry_is_skipped_not_the_whole_feed(tmp_path):
+    path = tmp_path / "classifications.json"
+    path.write_text(json.dumps({"as_of": "2026-10-27", "by_ticker": {
+        "AAPL": {"sector": ["Technology"]}, "MSFT": {"sector": {"a": 1}}, "ODD": "Technology",
+        "JPM": {"sector": "Financial Services"}}}), encoding="utf-8")
+    assert sectors.read_feed(path) == ({"JPM": "Financials"}, "2026-10-27")
+
+
+def test_an_empty_feed_is_read_not_unreadable(tmp_path):
+    path = tmp_path / "classifications.json"
+    path.write_text('{"by_ticker": {}}', encoding="utf-8")
     assert sectors.read_feed(path) == ({}, None)
 
 
@@ -79,7 +93,7 @@ def _sector(store, symbol):
 def test_feed_wins_over_sic_and_says_where_it_came_from(store, cfg):
     store.upsert_security("AAPL", asset_type="stock")
     store.set_sic("AAPL", 6022)
-    assert sectors.assign_sectors(store, cfg) == 1
+    assert sectors.assign_sectors(store, cfg).changed == 1
     assert _sector(store, "AAPL") == ("Technology", FEED_SOURCE)
 
 
@@ -92,7 +106,7 @@ def test_the_feeds_dotted_symbol_matches_a_canonical_one(store, cfg):
 def test_sic_is_the_fallback_and_says_so(store, cfg):
     store.upsert_security("SMPL", asset_type="stock")
     store.set_sic("SMPL", 2834)
-    assert sectors.assign_sectors(store, cfg) == 1
+    assert sectors.assign_sectors(store, cfg).changed == 1
     assert _sector(store, "SMPL") == ("Health Care", "sec: SIC 2834")
 
 
@@ -106,7 +120,7 @@ def test_a_foreign_filer_gets_a_sector_too(store, cfg):
 def test_no_feed_and_no_sic_leaves_both_empty(store, cfg):
     store.upsert_security("NONE", asset_type="stock")
     store.set_sic("NONE", 9999)
-    assert sectors.assign_sectors(store, cfg) == 0
+    assert sectors.assign_sectors(store, cfg).changed == 0
     assert _sector(store, "NONE") == (None, None)
 
 
@@ -114,7 +128,7 @@ def test_a_fund_gets_no_sector(store, cfg):
     store.upsert_security("AAPL", asset_type="etf")        # in the feed, but typed a fund
     store.upsert_security("FUND", asset_type="mutual_fund")
     store.set_sic("FUND", 3571)
-    assert sectors.assign_sectors(store, cfg) == 0
+    assert sectors.assign_sectors(store, cfg).changed == 0
     assert _sector(store, "AAPL") == (None, None) and _sector(store, "FUND") == (None, None)
 
 
@@ -122,7 +136,7 @@ def test_a_company_retyped_as_a_fund_loses_its_sector(store, cfg):
     store.upsert_security("AAPL", asset_type="stock")
     sectors.assign_sectors(store, cfg)
     store.set_asset_type("AAPL", "etf")
-    assert sectors.assign_sectors(store, cfg) == 1
+    assert sectors.assign_sectors(store, cfg).changed == 1
     assert _sector(store, "AAPL") == (None, None)
 
 
@@ -130,8 +144,8 @@ def test_assign_twice_changes_nothing_the_second_time(store, cfg):
     store.upsert_security("AAPL", asset_type="stock")
     store.upsert_security("SMPL", asset_type="stock")
     store.set_sic("SMPL", 2834)
-    assert sectors.assign_sectors(store, cfg) == 2
-    assert sectors.assign_sectors(store, cfg) == 0
+    assert sectors.assign_sectors(store, cfg).changed == 2
+    assert sectors.assign_sectors(store, cfg).changed == 0
 
 
 def test_missing_feed_file_falls_back_to_sic(store, cfg, tmp_path):
@@ -142,8 +156,47 @@ def test_missing_feed_file_falls_back_to_sic(store, cfg, tmp_path):
     assert _sector(store, "AAPL") == ("Technology", "sec: SIC 3571")
     cfg.investing_dir = None
     store.set_sic("AAPL", 2834)
-    assert sectors.assign_sectors(store, cfg) == 1
+    assert sectors.assign_sectors(store, cfg).changed == 1
     assert _sector(store, "AAPL") == ("Health Care", "sec: SIC 2834")
+
+
+@pytest.mark.parametrize("content", [None, "not json", '{"by_ticker": [1]}'])
+def test_an_unreadable_feed_keeps_the_feed_sectors(store, cfg, tmp_path, content):
+    store.upsert_security("AAPL", asset_type="stock")
+    store.set_sic("AAPL", 6022)                                      # SIC would say Financials
+    store.upsert_security("SMPL", asset_type="stock")
+    store.set_sic("SMPL", 2834)
+    sectors.assign_sectors(store, cfg)
+    (tmp_path / "data").mkdir(exist_ok=True)
+    if content is not None:
+        (tmp_path / "data" / "classifications.json").write_text(content, encoding="utf-8")
+    cfg.investing_dir = tmp_path
+    store.set_sic("SMPL", 3571)
+    done = sectors.assign_sectors(store, cfg)
+    assert (done.changed, done.feed_kept) == (1, 1)
+    assert _sector(store, "AAPL") == ("Technology", FEED_SOURCE)     # kept as the feed gave it
+    assert _sector(store, "SMPL") == ("Technology", "sec: SIC 3571")  # not from the feed: still follows its SIC
+
+
+def test_an_unreadable_feed_still_clears_a_company_retyped_as_a_fund(store, cfg, tmp_path):
+    store.upsert_security("AAPL", asset_type="stock")
+    sectors.assign_sectors(store, cfg)
+    store.set_asset_type("AAPL", "etf")
+    cfg.investing_dir = tmp_path / "nowhere"
+    assert sectors.assign_sectors(store, cfg) == sectors.SectorPass(1, 0)
+    assert _sector(store, "AAPL") == (None, None)
+
+
+def test_a_feed_that_no_longer_names_a_company_lets_it_fall_back_to_sic(store, cfg, tmp_path):
+    store.upsert_security("AAPL", asset_type="stock")
+    store.set_sic("AAPL", 6022)
+    sectors.assign_sectors(store, cfg)
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "data" / "classifications.json").write_text(
+        json.dumps({"by_ticker": {"JPM": {"sector": "Financial Services"}}}), encoding="utf-8")
+    cfg.investing_dir = tmp_path
+    assert sectors.assign_sectors(store, cfg) == sectors.SectorPass(1, 0)
+    assert _sector(store, "AAPL") == ("Financials", "sec: SIC 6022")
 
 
 def test_a_feed_without_a_date_still_names_itself(store, cfg, tmp_path):
@@ -176,6 +229,22 @@ def test_the_earnings_step_reports_sectors_changed_and_counts_them(store, cfg):
     assert "1 companies asked, 0 events changed, 0 estimate rows written, 1 sectors changed" in msg
     assert rows == 1
     assert _sector(store, "AAPL")[0] == "Technology"
+
+
+def test_the_earnings_step_says_when_the_feed_was_unreadable_and_its_sectors_kept(store, cfg, tmp_path):
+    store.upsert_security("AAPL", asset_type="stock")
+    sectors.assign_sectors(store, cfg)
+    cfg.investing_dir = tmp_path / "nowhere"
+    rows, msg, status = _run_earnings_step(store, cfg)
+    assert "0 sectors changed; classifications feed unreadable; feed sectors kept" in msg
+    assert _sector(store, "AAPL") == ("Technology", FEED_SOURCE)
+
+
+def test_the_earnings_step_says_nothing_of_a_missing_feed_with_nothing_to_keep(store, cfg, tmp_path):
+    store.upsert_security("SMPL", asset_type="stock")
+    cfg.investing_dir = tmp_path / "nowhere"
+    rows, msg, status = _run_earnings_step(store, cfg)
+    assert "unreadable" not in msg
 
 
 def test_the_sector_pass_runs_even_when_no_company_was_asked(store, cfg):

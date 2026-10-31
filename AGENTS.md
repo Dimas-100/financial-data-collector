@@ -51,7 +51,7 @@ src/financial_data_collector/
   ingest.py         inbox routing by file signature; SnapTrade folder walk; hash-based idempotency
   adapters/         fidelity_positions.py, fidelity_history.py, snaptrade.py -> models.Snapshot / TransactionRow
   collectors/       prices.py (Tiingo|yfinance), macro.py (FRED: CPI, core CPI, the Fed range, 10-year, unemployment; needs FRED_API_KEY), sec_cik.py, sec_facts.py (EDGAR company facts), yahoo.py (the `YahooClient` seam over yfinance, `default_client()`), funds.py (daily fund snapshots: P/E, yield, expense ratio; a `[fund_proxies]` ETF stands in when a fund has none), earnings.py (report dates from SEC 8-K item 2.02, EPS and surprise from Yahoo, merged by plain rules; daily EPS estimate snapshots)
-  sectors.py        SECTORS (the eleven sector names), DEFAULT_SECTOR_ETFS (the fund that stands for each; config `[benchmarks]` builds on them), and `assign_sectors` (a company's sector: the sibling classifications feed, else its SEC SIC code through `seeds/sic_sector.csv`)
+  sectors.py        SECTORS (the eleven sector names), DEFAULT_SECTOR_ETFS (the fund that stands for each; config `[benchmarks]` builds on them), and `assign_sectors` (a company's sector: the sibling classifications feed, else its SEC SIC code through `seeds/sic_sector.csv`; an unreadable feed keeps the sectors it gave)
   statements.py     facts + concept_map -> financial_line_items (annual, quarter, YTD differencing, derived Q4)
   store.py          Store: every write; migrate.py: migrations, seed, generated wide views
   readonly.py       SQL guard + mode=ro connection; mcp_server.py: schema/query/status tools
