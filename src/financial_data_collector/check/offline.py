@@ -104,13 +104,18 @@ def impossible(ctx: CheckContext) -> list[Finding]:
 
 def gaps(ctx: CheckContext) -> list[Finding]:
     """A held symbol should have a final close on every NYSE trading day of the last 60 (today excluded),
-    counted from its first price. One warning per symbol naming the first missing day."""
+    counted from its first price and up to, not including, its newest final bar: a day after that is one no sync
+    has fetched yet (yesterday, before the evening sync), not a hole. One warning per symbol naming the first
+    missing day."""
     end = ctx.now.astimezone(NEW_YORK).date() - timedelta(days=1)
     window = nyse.trading_days(end - timedelta(days=130), end)[-GAP_WINDOW_DAYS:]
     out: list[Finding] = []
     for symbol in ctx.store.check_held_symbols():
         first = ctx.store.check_first_price_date(symbol)
-        days = [d.isoformat() for d in window if first is not None and d.isoformat() >= first]
+        newest = ctx.store.check_newest_final_bar(symbol)
+        if first is None or newest is None:
+            continue
+        days = [d.isoformat() for d in window if first <= d.isoformat() < newest[0]]
         if not days:
             continue
         have = ctx.store.check_final_dates(symbol, days[0], days[-1])

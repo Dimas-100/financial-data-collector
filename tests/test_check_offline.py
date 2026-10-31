@@ -230,15 +230,29 @@ def test_gaps_ignore_days_before_the_first_price_and_before_the_window(store, cf
     assert offline.gaps(_ctx(store, cfg, APRIL)) == []                   # Jan 13 is older than the 60 trading days
 
 
-def test_gaps_count_yesterday_not_today_and_only_final_bars(store, cfg):
+def test_gaps_count_only_days_before_the_newest_final_bar(store, cfg):
     _security(store, "AAA"), _hold(store, "AAA")
-    _bars_on(store, "AAA", _weekdays(date(2026, 4, 1), date(2026, 4, 16), skip=("2026-04-03",)))     # Friday the 17th missing
+    # Thursday the 9th is a hole; Friday the 17th has no bar yet because no sync ran after its close
+    _bars_on(store, "AAA", _weekdays(date(2026, 4, 1), date(2026, 4, 16), skip=("2026-04-03", "2026-04-09")))
     (f,) = offline.gaps(_ctx(store, cfg, APRIL))
-    assert f.evidence["missing"] == ["2026-04-17"]
+    assert f.evidence["missing"] == ["2026-04-09"] and f.date_to == "2026-04-09"
     store.write_prices("AAA", [PriceBar("2026-04-17", 100.0, 100.0)], "test",
                        fetched_at=datetime(2026, 4, 17, 15, 0, tzinfo=timezone.utc))   # before the close: not final
     (f,) = offline.gaps(_ctx(store, cfg, APRIL))
-    assert f.evidence["missing"] == ["2026-04-17"]
+    assert f.evidence["missing"] == ["2026-04-09"]
+
+
+def test_gaps_say_nothing_about_the_days_after_the_last_sync(store, cfg):
+    _security(store, "AAA"), _hold(store, "AAA")
+    _bars_on(store, "AAA", _weekdays(date(2026, 4, 1), date(2026, 4, 15), skip=("2026-04-03",)))     # 16th, 17th not yet
+    assert offline.gaps(_ctx(store, cfg, APRIL)) == []
+
+
+def test_gaps_today_is_never_counted_even_with_a_final_bar_on_it(store, cfg):
+    _security(store, "AAA"), _hold(store, "AAA")
+    _bars_on(store, "AAA", _weekdays(date(2026, 4, 1), date(2026, 4, 20), skip=("2026-04-03", "2026-04-17")))
+    (f,) = offline.gaps(_ctx(store, cfg, datetime(2026, 4, 20, 23, 0, tzinfo=timezone.utc)))
+    assert f.evidence["missing"] == ["2026-04-17"]                      # the 17th: before the newest bar (the 20th)
 
 
 def test_impossible_move_also_covers_a_held_symbol_with_no_valuation_row(store, cfg):
