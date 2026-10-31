@@ -139,8 +139,9 @@ thresholds are in `[check]` of `config.toml`. What it looks at:
   counted from its first price and up to its newest final bar, so a day no sync has fetched yet is not a gap. A warning;
 - **closes**: a stopped price feed. For each held symbol and each benchmark (money markets and crypto left out), the NYSE
   trading days after its newest final close and before today. `close_warn_days` (2) of them is a warning on the close,
-  `close_hold_days` (5) a hold on every value. A symbol with only a bar fetched before the close, or with no price from any
-  provider at all, is a warning too;
+  `close_hold_days` (5) a hold on every value. Both are dated from the newest final close itself, open-ended, so the hold
+  covers the stale row in `valuation_latest`, `valuation_scores` and the engine's build. A symbol with only a bar fetched
+  before the close, or with no price from any provider at all, is a warning too;
 - **recompute**: P/E, P/S, P/FCF, yield and market cap worked out again from the row's own inputs (rows with status
   `ok`). A stored value more than `recompute_tolerance` (1%) away is held, and so is one stored when its own inputs
   cannot give one (a P/E with no EPS);

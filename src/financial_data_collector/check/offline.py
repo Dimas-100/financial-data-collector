@@ -136,8 +136,10 @@ def closes(ctx: CheckContext) -> list[Finding]:
     """A held symbol or benchmark whose newest final close has fallen behind: the trading days strictly after it
     and strictly before today are the ones a sync should have fetched by now. `close_warn_days` of them is a
     warning on the close, `close_hold_days` a hold on every value of the symbol (a stopped feed leaves a valuation
-    priced on a stale close). A symbol with only a bar fetched before the close, or with no bar at all, warns
-    too; money markets and crypto have no feed to watch."""
+    priced on a stale close). Both are dated from the newest final close itself, open-ended: the stale close is the
+    value being withheld, and every reader (valuation_latest, the engine, valuation_scores) is dated on it. A symbol
+    with only a bar fetched before the close, or with no bar at all, warns too; money markets and crypto have no feed
+    to watch."""
     today = ctx.now.astimezone(NEW_YORK).date()
     warn_days, hold_days = ctx.cfg.check.close_warn_days, ctx.cfg.check.close_hold_days
     held = set(ctx.store.check_held_symbols())
@@ -166,7 +168,7 @@ def closes(ctx: CheckContext) -> list[Finding]:
         hold = len(missed) >= hold_days
         days = f"{len(missed)} trading day" + ("" if len(missed) == 1 else "s")
         out.append(Finding(
-            "closes", symbol, "*" if hold else "close", missed[0], None, "hold" if hold else "warn",
+            "closes", symbol, "*" if hold else "close", newest[0], None, "hold" if hold else "warn",
             f"no final close for {days} since {newest[0]} (the feed may have stopped)",
             {"newest": newest[0], "missed": missed}))
     return out

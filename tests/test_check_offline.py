@@ -295,7 +295,7 @@ def test_a_close_two_trading_days_old_warns(store, cfg):
     _security(store, "AAA"), _hold(store, "AAA")
     _priced_to(store, "AAA", "2026-10-26")                         # Tue and Wed missed (Thu is today)
     (f,) = offline.closes(_ctx(store, cfg, THU))
-    assert (f.check_name, f.symbol, f.severity, f.field, f.date_from, f.date_to) ==            ("closes", "AAA", "warn", "close", "2026-10-27", None)
+    assert (f.check_name, f.symbol, f.severity, f.field, f.date_from, f.date_to) ==            ("closes", "AAA", "warn", "close", "2026-10-26", None)
     assert f.evidence == {"newest": "2026-10-26", "missed": ["2026-10-27", "2026-10-28"]}
     assert f.message == "no final close for 2 trading days since 2026-10-26 (the feed may have stopped)"
 
@@ -311,7 +311,7 @@ def test_five_missed_trading_days_hold_every_value(store, cfg):
     _security(store, "AAA"), _hold(store, "AAA")
     _priced_to(store, "AAA", "2026-10-21")                         # 22, 23, 26, 27, 28 missed
     (f,) = offline.closes(_ctx(store, cfg, THU))
-    assert (f.severity, f.field, f.date_from) == ("hold", "*", "2026-10-22")
+    assert (f.severity, f.field, f.date_from) == ("hold", "*", "2026-10-21")      # dated from the stale close itself
     assert f.evidence["missed"] == ["2026-10-22", "2026-10-23", "2026-10-26", "2026-10-27", "2026-10-28"]
     assert "no final close for 5 trading days since 2026-10-21" in f.message
     _security(store, "BBB"), _hold_all(store, "AAA", "BBB")
@@ -383,6 +383,19 @@ def test_one_missed_day_is_said_in_the_singular(store, cfg):
     _priced_to(store, "AAA", "2026-10-27")                         # one missed day
     (f,) = offline.closes(_ctx(store, replace(cfg, check=replace(cfg.check, close_warn_days=1)), THU))
     assert f.message == "no final close for 1 trading day since 2026-10-27 (the feed may have stopped)"
+
+
+def test_a_stopped_feeds_hold_covers_the_stale_row_in_valuation_latest(store, cfg):      # R16
+    _security(store, "AAA"), _hold(store, "AAA")
+    _priced_to(store, "AAA", "2026-10-21")                         # five missed trading days: a hold
+    _valuation(store, _row("AAA", d="2026-10-21", **_full()))      # the newest valuation row is on the stale close
+    found = offline.closes(_ctx(store, cfg, THU))
+    assert [(f.severity, f.date_from, f.date_to) for f in found] == [("hold", "2026-10-21", None)]
+    store.check_record("closes", found, "2026-10-29T12:00:00Z")
+    r = store.query("SELECT * FROM valuation_latest WHERE symbol = 'AAA'")[0]
+    assert r["date"] == "2026-10-21" and r["status"] == "held"
+    assert (r["pe"], r["ps"], r["p_fcf"], r["market_cap"], r["dividend_yield"]) == (None, None, None, None, None)
+    assert "no final close for 5 trading days since 2026-10-21" in r["status_reason"]
 
 
 # ---- recompute ---------------------------------------------------------------------------------

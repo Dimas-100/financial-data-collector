@@ -1,15 +1,17 @@
 """Company scores against their own history: P/E, P/FCF, P/S, EV/EBIT and dividend yield, each with a percentile
 over the symbol's own 5-year daily history and a cheap / usual / premium band (Task 4 of the valuation engine)."""
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from financial_data_collector.check import CheckContext, offline
 from financial_data_collector.config import EngineSettings
 from financial_data_collector.derive import engine, scores
 from financial_data_collector.derive import valuation as V
 from financial_data_collector.models import EarningsEvent, Estimate, Fact, LineItem, PriceBar
-from tests.test_engine import END, FETCHED, _cover, _hold, _scores, _weekday_bars, cfg, store  # noqa: F401  (fixtures)
+from tests.test_engine import (END, FETCHED, _cover, _held_position, _hold, _scores, _weekday_bars,  # noqa: F401
+                               cfg, store)  # (fixtures)
 
 CIK = "0000999002"
 ACCN = "0000999002-26-000031"
@@ -249,6 +251,46 @@ def test_view_a_statements_star_hold_after_the_build_blanks_history_rows_not_pri
     view = _scores(store, "AAA", "valuation_scores")
     assert all(view[m]["status"] == "held" for m in HISTORY)
     assert view["vs_200d"]["status"] == "ok"                                       # inputs ',close,': a price row
+
+
+STALE_NOW = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)   # a Friday: 10-30, 11-02 .. 11-05 missed since END
+PRICE_SHAPE = ("off_high_52w", "vs_200d", "week_vs_market", "week_vs_sector")
+
+
+def _stopped_feed_holds(store, cfg) -> list:
+    """What the real closes check finds for AAA (held, priced to END) a week later, recorded as fdc check would."""
+    found = offline.closes(CheckContext(store=store, cfg=cfg, fetch=None, outside=None, now=STALE_NOW))
+    assert [(f.symbol, f.severity, f.field, f.date_from) for f in found] == [("AAA", "hold", "*", END)]
+    store.check_record("closes", found, "2026-11-06T12:00:00Z")
+    return found
+
+
+def test_a_stopped_feed_holds_the_price_and_history_rows_at_build(store, cfg):          # R16
+    _company(store)
+    _statements(store, {"2026-03-31": 200.0, "2026-06-30": 200.0})
+    _held_position(store, "AAA")
+    _stopped_feed_holds(store, cfg)
+    rows = _run(store, cfg)
+    view = _scores(store, "AAA", "valuation_scores")
+    for m in PRICE_SHAPE + HISTORY:
+        for r in (rows[m], view[m]):
+            assert (r["date"], r["status"], r["value"], r["band"]) == (END, "held", None, None), m
+            assert "no final close for 5 trading days since 2026-10-29" in r["status_reason"]
+
+
+def test_a_stopped_feed_found_after_the_build_holds_them_in_the_view(store, cfg):        # R16
+    _company(store)
+    _statements(store, {"2026-03-31": 200.0, "2026-06-30": 200.0})
+    _held_position(store, "AAA")
+    raw = _run(store, cfg)
+    assert all(raw[m]["status"] != "held" for m in PRICE_SHAPE + HISTORY)
+    _stopped_feed_holds(store, cfg)
+    view = _scores(store, "AAA", "valuation_scores")
+    for m in PRICE_SHAPE + HISTORY:
+        if raw[m]["status"] == "ok":
+            assert (view[m]["status"], view[m]["value"], view[m]["band"]) == ("held", None, None), m
+    assert all(view[m]["status"] == "held" for m in HISTORY)
+    assert view["off_high_52w"]["status"] == "held"
 
 
 def test_a_hold_on_an_unrelated_field_does_not_hold_the_metric(store, cfg):
