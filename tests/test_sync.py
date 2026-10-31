@@ -50,12 +50,13 @@ def _counts(cfg):
 def test_full_sync_then_noop(project, fixtures: Path):
     fetch = _with_submissions(fixtures, {"filings": {"recent": {}}})      # SEC answers the earnings step: no 8-Ks
     rep = sync.run_sync(project, fetch=fetch, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "funds", "earnings", "derive", "export", "check"]
-    assert [s.status for s in rep.steps] == ["skipped", "ok", "ok", "skipped", "ok", "ok", "ok", "ok", "skipped", "ok"], rep.steps   # no connections, no FRED key; export disabled by default
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "funds", "earnings", "derive", "export", "check", "engine"]
+    assert [s.status for s in rep.steps] == ["skipped", "ok", "ok", "skipped", "ok", "ok", "ok", "ok", "skipped", "ok", "ok"], rep.steps   # no connections, no FRED key; export disabled by default
     assert rep.exit_code == 0
     c1 = _counts(project)
     assert c1["position_snapshots"] > 0 and c1["prices"] > 0 and c1["sec_facts"] == 35
-    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 10
+    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 11
+    assert c1["valuation_scores_raw"] > 0 and rep.steps[-1].message.endswith("0 moves")
     assert "without data" in rep.steps[2].message          # KO, VTI, BRK.B had no bars
     rep2 = sync.run_sync(project, fetch=fetch, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert rep2.steps[1].rows == 0
@@ -70,12 +71,12 @@ def test_only_and_skip(project, fixtures: Path):
     rep = sync.run_sync(project, only=["prices"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert [s.step for s in rep.steps] == ["prices"]
     rep = sync.run_sync(project, skip=["sec"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "funds", "earnings", "derive", "export", "check"]
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "funds", "earnings", "derive", "export", "check", "engine"]
 
 
 def test_dry_run_touches_nothing(project):
     rep = sync.run_sync(project, dry_run=True)
-    assert rep.dry_run and [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "funds", "earnings", "derive", "export", "check"]
+    assert rep.dry_run and [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "funds", "earnings", "derive", "export", "check", "engine"]
     assert not project.db_path.exists()
 
 
@@ -297,9 +298,11 @@ def test_sync_runs_check_last_and_a_failing_check_does_not_fail_the_sync(project
 
     monkeypatch.setattr(check, "CHECKS", {"boom": boom})
     rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    last = rep.steps[-1]
+    last = rep.steps[-2]
     assert last.step == "check" and last.status == "ok" and rep.exit_code == 0
     assert "0 holds found, 0 open, 0 warnings, 1 errors" in last.message and "boom: RuntimeError" in last.message
+    eng = rep.steps[-1]                                          # a check run with an error covers no derive
+    assert (eng.step, eng.status) == ("engine", "skipped") and eng.message.startswith("waiting for a check run")
     s = Store.open(project.db_path, migrate=False)
     run = s.query("SELECT * FROM check_runs")[0]
     s.close()
@@ -308,7 +311,11 @@ def test_sync_runs_check_last_and_a_failing_check_does_not_fail_the_sync(project
 
 def test_check_is_not_a_network_step_and_goes_stale_in_two_days():
     assert "check" not in sync.NETWORK_STEPS and sync.STALE_HOURS["check"] == 48
-    assert sync.STEPS[-1] == "check"
+
+
+def test_engine_runs_after_check():
+    assert sync.STEPS[-2:] == ("check", "engine")
+    assert "engine" not in sync.NETWORK_STEPS and sync.STALE_HOURS["engine"] == 48
 
 
 def _with_submissions(fixtures: Path, answer):
@@ -326,7 +333,7 @@ def test_sync_check_step_holds_a_company_for_a_filing_sec_lists_and_the_warehous
         "form": ["10-Q"], "accessionNumber": ["0000000001-26-000007"], "filingDate": ["2026-02-10"], "isXBRL": [1]}}}
     rep = sync.run_sync(project, fetch=_with_submissions(fixtures, answer), now=NOW, yf=lambda s, d: [],
                         sleep=lambda s: None)
-    last = rep.steps[-1]
+    last = rep.steps[-2]
     assert last.step == "check" and last.status == "ok" and rep.exit_code == 0 and "filings:" not in last.message
     s = Store.open(project.db_path, migrate=False)
     rows = s.check_open_findings("filings")
@@ -338,7 +345,7 @@ def test_sync_check_step_holds_a_company_for_a_filing_sec_lists_and_the_warehous
 
 def test_sync_check_step_when_sec_has_no_submissions_is_an_info_finding_and_no_error(project, fixtures: Path):
     rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    last = rep.steps[-1]
+    last = rep.steps[-2]
     assert last.status == "ok" and "0 errors" in last.message
     s = Store.open(project.db_path, migrate=False)
     rows = s.check_open_findings("filings")

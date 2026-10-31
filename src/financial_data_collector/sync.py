@@ -15,18 +15,19 @@ from .collectors.sec_facts import FUND_TYPES, collect_sec
 from .config import Config, ConfigError
 from .connections.keys import KeyHome
 from .connections.service import run as run_connections
-from .derive import history, valuation
+from .derive import engine as engine_mod, history, valuation
 from .export.cockpit import export_cockpit
 from .ingest import ingest_inbox, ingest_news, ingest_snaptrade, news_feed
 from .models import PriceBar
 from .store import Store, utcnow
 from .universe import build_universe
 
-STEPS = ("connections", "ingest", "prices", "macro", "sec", "funds", "earnings", "derive", "export", "check")
+STEPS = ("connections", "ingest", "prices", "macro", "sec", "funds", "earnings", "derive", "export", "check",
+         "engine")
 NETWORK_STEPS = {"connections", "prices", "macro", "sec", "funds", "earnings"}
 ORIGINS = ("scheduled", "manual", "console")       # who started a run: the task, a hand, fdc console
 STALE_HOURS = {"ingest": 48, "prices": 48, "macro": 48, "sec": 336, "funds": 48, "earnings": 48, "derive": 48,
-               "export": 48, "check": 48}
+               "export": 48, "check": 48, "engine": 48}
 
 
 @dataclass
@@ -252,10 +253,21 @@ def _step_check(store: Store, cfg: Config, *, fetch, now, sleep, progress: Progr
     return rep.holds + rep.warns, msg, "ok"
 
 
+def _step_engine(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple[int, str, str]:
+    # After the check: the engine builds only from a derive a full, error-free check run has covered, so a sync whose
+    # check failed (or was left out) skips it and the previous scores stay, with their older checked_at.
+    progress("scores")
+    rep = engine_mod.run(store, cfg)
+    if rep.skipped:
+        return 0, rep.skipped, "skipped"
+    return (rep.scores + rep.moves,
+            f"{rep.symbols} symbols, {rep.scores} scores ({rep.held} held), {rep.moves} moves", "ok")
+
+
 _RUNNERS: dict[str, Callable] = {
     "connections": _step_connections, "ingest": _step_ingest, "prices": _step_prices, "macro": _step_macro, "sec": _step_sec,
     "funds": _step_funds, "earnings": _step_earnings, "derive": _step_derive, "export": _step_export,
-    "check": _step_check,
+    "check": _step_check, "engine": _step_engine,
 }
 
 

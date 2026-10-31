@@ -13,7 +13,7 @@ from .adapters.base import dedupe_key
 from .connections.names import slug_for
 from .models import (
     AccountRef, ConceptRule, CurrentReport, EarningsEvent, Estimate, Fact, FundSnapshot, Headline, LineItem,
-    MacroObservation, PriceBar, Snapshot, TransactionRow, is_final,
+    MacroObservation, PriceBar, ScoreRow, Snapshot, TransactionRow, is_final,
 )
 
 if TYPE_CHECKING:
@@ -24,7 +24,7 @@ COUNT_TABLES = (
     "prices", "sec_facts", "financial_line_items", "sync_runs", "ingested_files",
     "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily", "connections",
     "unexplained_daily", "macro_observations", "check_runs", "check_findings", "fund_snapshots", "earnings_events",
-    "estimate_snapshots", "current_reports", "news_headlines",
+    "estimate_snapshots", "current_reports", "news_headlines", "valuation_scores_raw",
 )
 
 
@@ -806,6 +806,63 @@ class Store:
         for r in self.query("SELECT symbol, date, close FROM prices ORDER BY symbol, date"):
             out.setdefault(r[0], []).append((r[1], r[2]))
         return out
+
+    # ---- the valuation engine -----------------------------------------------
+    def engine_coverage(self) -> dict | None:
+        """The newest derive that finished ok and the newest error-free check run that covered it (a full run:
+        only those stamp derive_run_id), as {derive_run_id, check_run_id, checked_at}; None when either is missing."""
+        d = self.query("SELECT run_id FROM sync_runs WHERE step = 'derive' AND status = 'ok' ORDER BY id DESC LIMIT 1")
+        if not d:
+            return None
+        c = self.query("SELECT run_id, finished_at FROM check_runs WHERE derive_run_id = ? AND error IS NULL "
+                       "ORDER BY finished_at DESC, run_id DESC LIMIT 1", (d[0][0],))
+        if not c:
+            return None
+        return {"derive_run_id": d[0][0], "check_run_id": c[0][0], "checked_at": c[0][1]}
+
+    def engine_symbols(self) -> list[sqlite3.Row]:
+        """What the engine scores: securities not parked, not cash or crypto, with at least one final bar, that are
+        not only a benchmark (a benchmark the owner also holds is scored). Columns: symbol, asset_type, cik, sector,
+        benchmark, held (1 when in positions_latest)."""
+        return self.query(
+            """SELECT s.symbol, s.asset_type, s.cik, s.sector, s.benchmark,
+                      CASE WHEN s.symbol IN (SELECT symbol FROM positions_latest) THEN 1 ELSE 0 END AS held
+               FROM securities s
+               WHERE s.parked_reason IS NULL AND s.asset_type NOT IN ('money_market', 'crypto')
+                 AND EXISTS (SELECT 1 FROM prices p WHERE p.symbol = s.symbol AND p.final = 1)
+                 AND (s.benchmark = 0 OR s.symbol IN (SELECT symbol FROM positions_latest))
+               ORDER BY s.symbol""")
+
+    def final_bars(self, symbol: str) -> list[tuple[str, float, float, float, str, str | None]]:
+        """The symbol's final bars, ascending: (date, close, dividend, split_factor, source, fetched_at)."""
+        return [tuple(r) for r in self.query(
+            "SELECT date, close, dividend, split_factor, source, fetched_at FROM prices "
+            "WHERE symbol = ? AND final = 1 ORDER BY date", (symbol,))]
+
+    def open_holds(self, symbol: str) -> list[dict]:
+        """The symbol's open holds (severity hold, not cleared) from every check, oldest id first."""
+        return [dict(r) for r in self.query(
+            "SELECT id, check_name, field, date_from, date_to, message FROM check_findings "
+            "WHERE symbol = ? AND severity = 'hold' AND cleared_at IS NULL ORDER BY id", (symbol,))]
+
+    def replace_scores(self, rows: Iterable[ScoreRow], checked_at: str) -> int:
+        """Make valuation_scores_raw exactly `rows` (each stamped `checked_at`): a row already as it should be is not
+        written, a (symbol, metric) no longer built is deleted. One transaction. Returns how many rows it holds."""
+        cols = ("symbol", "date", "metric", "value", "percentile_5y", "band", "status", "status_reason", "inputs",
+                "sources", "checked_at")
+        want: dict[tuple[str, str], tuple] = {}
+        for r in rows:
+            inputs = "," + ",".join(r.inputs) + "," if r.inputs else ""
+            want[(r.symbol, r.metric)] = (r.symbol, r.date, r.metric, r.value, r.percentile_5y, r.band, r.status,
+                                          r.status_reason, inputs, json.dumps(list(r.sources)), checked_at)
+        have = {(r[0], r[2]): tuple(r) for r in self.query(f"SELECT {', '.join(cols)} FROM valuation_scores_raw")}
+        with self.conn:
+            self.conn.executemany("DELETE FROM valuation_scores_raw WHERE symbol = ? AND metric = ?",
+                                  [k for k in have if k not in want])
+            self.conn.executemany(
+                f"INSERT OR REPLACE INTO valuation_scores_raw ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [v for k, v in want.items() if have.get(k) != v])
+        return len(want)
 
     # ---- the checker (prefix check_) ----------------------------------------
     def check_open_findings(self, check_name: str | None = None) -> list[sqlite3.Row]:

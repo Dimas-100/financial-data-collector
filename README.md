@@ -88,6 +88,7 @@ waits its turn too. Older history: `fdc query "select * from sync_runs order by 
 | `lots`, `realized_gains`, `reconciliation` | FIFO cost-basis lots, gains per sale, and dates where the replay disagrees with a snapshot (splits, missing rows) |
 | `unexplained_daily` | each day's change in an account that no transaction explains, such as a deposit the balance shows before the activity feed posts it: money moved, not growth |
 | `check_runs`, `check_findings` | the checker's runs and what it found; open `hold` findings blank the matching fields of `valuation_latest` (see "Checker") |
+| `valuation_scores`, `valuation_scores_raw` | the valuation engine's scores: one row per symbol and metric at the symbol's newest final close, with its status, what it was built from (`inputs`, `sources`) and when the checker covered the data (`checked_at`); read the view, which also applies holds opened since (see "Valuation engine") |
 | `sync_runs`, `sync_status` | what ran, when, and whether it worked |
 
 Quarterly cash-flow items are computed from year-to-date filings where companies only report
@@ -123,8 +124,8 @@ See `docs/QUERIES.md` for a cookbook.
 ## Checker
 
 `fdc check` is an independent second opinion on the numbers `derive` writes into `valuation_daily`. It is code of its
-own (`check/`) and imports nothing from the code it checks. The sync runs it as its last step; a daily task is the
-backstop (below). Run on its own, `fdc check` first waits for a sync that is running, as a second sync does. The
+own (`check/`) and imports nothing from the code it checks. The sync runs it after `export`, just before the
+`engine` step; a daily task is the backstop (below). Run on its own, `fdc check` first waits for a sync that is running, as a second sync does. The
 thresholds are in `[check]` of `config.toml`. What it looks at:
 
 - **fresh**: statements only. Each symbol's newest valuation row (status `ok` or `stale`): the end of its TTM
@@ -176,6 +177,37 @@ more than 15 months older than the price) names `*`, so it blanks every value co
 yield and trailing dividends included. A row that `derive` itself marked `stale` keeps its close, dividends and dividend yield (only the
 statement figures are `NULL`) and keeps the status `stale`; with the `fresh` hold over it, `valuation_latest` shows
 those as `NULL` too.
+
+## Valuation engine
+
+The sync's last step, `engine`, turns the warehouse into scores: no network, no AI, only stored data. It runs after
+the checker on purpose: it builds only from a derive that a full, error-free check run has covered (the newest ok
+`derive` and a `check_runs` row with that `derive_run_id` and no error). Until one has, it writes nothing, leaves the
+scores it had, and the step is `skipped` with "waiting for a check run to cover derive <id>".
+
+It reads the checker's open holds as missing values. A held close (a `close` hold, or a `*` hold from `prices2`,
+`impossible` or `closes`) is left out of every window; when one covers the newest day, every price-shape row is `held`
+(no value; the hold messages are the reason). A `*` hold from `fresh`, `filings` or `figures` is about statements and
+leaves prices alone.
+
+What it scores: every security that is not parked, not a money market or crypto, has a final close, and is not only a
+benchmark (a benchmark you also hold is scored). Each gets one row per metric in `valuation_scores_raw` at its newest
+final close, so far the price shape, on split- and dividend-adjusted closes:
+
+- `off_high_52w`: the close against the highest close of the 365 days ending that day (needs a close 300 days back);
+- `vs_200d`: the close against the mean of the last 200 closes (needs 200);
+- `week_vs_market`: its return over the last 5 trading bars minus the market fund's (`[benchmarks] market`, SPY)
+  between the same two dates; `unsupported` ("no SPY close on <date>") when the fund lacks either date;
+- `week_vs_sector`: the same against its sector's fund (`[benchmarks] sectors`); `unsupported` ("no sector") when it
+  has no sector or the config names no fund for it.
+
+A row's `status` is `ok`, `held`, `unsupported` or `not_enough_history`; `inputs` names the `valuation_daily` columns
+it was built from (`,close,` for these); `sources` is a JSON list of where each number came from (`price`, `filing`,
+`feed`, `config`, `derived`); `checked_at` is the finish time of the check run that covered the data. Read the view
+`valuation_scores`: it applies, in the way `valuation_latest` does, a hold opened after the build. An open hold on the
+symbol covering the row's date whose field is `score:<metric>`, one of the row's inputs, or `*` (on a price row only
+from a price check) blanks `value`, `percentile_5y` and `band`, makes an `ok` row `held` with the hold messages as its
+reason, and lists the hold in `hold_ids`. The raw table is never changed by a hold.
 
 ## Claude Desktop
 
