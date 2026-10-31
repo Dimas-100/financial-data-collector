@@ -226,6 +226,35 @@ in. The newest `valuation_daily` row decides the rest: a `stale` or `unsupported
 or a `close` hold, since every one of these is built on the close) makes it `held`; a value that cannot be computed is
 `unsupported` with why ("earnings not positive", "free cash flow not positive", "no revenue", "no dividend").
 
+Each stock with an SEC CIK also gets ten fundamentals, with no percentile or band:
+
+- `implied_growth`: the yearly free-cash-flow growth over 10 years, then `terminal_growth` (2.5%) forever, discounted
+  at `discount_rate` (9%), that makes the cash flows worth today's market cap (newest `valuation_daily` row; bisection
+  between -50% and +100%, 4 places); `unsupported` "free cash flow not positive" or "needs more than 100% or less
+  than -50% a year".
+- `fcf_growth_5y`, `revenue_growth_5y`: compound yearly growth from the `financials_annual` row whose fiscal year is
+  5 lower to the newest (`not_enough_history` without that row; `unsupported` when either is missing or not positive).
+- `fcf_margin_change`, `op_margin_change`: free cash flow / revenue and operating income / revenue of the TTM row in
+  force, minus the same of the TTM row ending 350-380 days earlier (`not_enough_history` without one).
+- `net_debt_ebitda`: (long-term debt - cash - short-term investments) / (operating income + depreciation and
+  amortization) of the TTM row in force; `unsupported` when EBITDA is not positive or debt or cash is missing.
+- `buyback_yield`: TTM buybacks / the newest market cap; no buybacks line counts 0 (companies report the concept only
+  when they bought back).
+- `last_surprise`: the surprise (percent) of the newest earnings report on or before the day that has one; its
+  sources are the 8-K (when SEC dated the report) and Yahoo's date.
+- `estimate_change_30d`: (now - then) / |then| of this year's (`0y`) EPS estimate, now the newest snapshot, then the
+  newest at least 30 days before it; `not_enough_history` ("estimate snapshots start <date>") until one is,
+  `unsupported` when an earnings report fell between the two (the fiscal year may have rolled) or then is 0.
+- `insider_net_90d`: buys minus sells among the sibling `<investing content_dir>/data/insider.json` feed's Form 4
+  entries filed in the 90 days ending the day (`mixed` and `other` count 0); each counted filing's SEC link is built
+  from the CIK and accession, never taken from the feed; `unsupported` "insider feed not found" or "not in the insider
+  feed". The feed is read once per run.
+
+The newest valuation row decides the four built on it (`implied_growth`, the margins, `net_debt_ebitda`,
+`buyback_yield`): not on the day, `stale` or `unsupported` makes them `unsupported` with its reason. `implied_growth`
+names `market_cap`, `fcf_ttm` and `close` as inputs and `buyback_yield` `market_cap` and `close`, so a hold on those
+holds them; the rest name none, so only a `*` hold holds them, at build time as in the view.
+
 A row's `status` is `ok`, `held`, `unsupported` or `not_enough_history`; `inputs` names the `valuation_daily` columns
 it was built from (`,close,` for the price shape; a company history score names its own column and the close it is
 built on, `,pe,close,` for P/E, `,market_cap,close,` for EV/EBIT, so a `close` hold opened after the build holds it in

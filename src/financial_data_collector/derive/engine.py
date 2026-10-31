@@ -91,18 +91,44 @@ def statement_holds(holds: list[dict]) -> list[dict]:
     return [dict(h, field="*") if h["field"] == "close" else h for h in holds]
 
 
-def _company_history(store: Store, cfg: Config, symbol: str, cik: str, day: str, bar: tuple,
-                     holds: list[dict]) -> list[ScoreRow]:
-    """P/E, P/FCF, P/S, EV/EBIT and yield against the company's own history (scores.history_scores), from its held
-    valuation_daily rows up to `day`; nothing when it has none."""
+ANNUAL_ROWS = 12                     # the newest annual rows read for 5-year growth (FY and FY - 5, with room)
+
+
+def _company(store: Store, cfg: Config, symbol: str, cik: str, day: str, bar: tuple, holds: list[dict],
+             insider: tuple[list[dict] | None, str | None] | None) -> list[ScoreRow]:
+    """A company's scores from its held valuation_daily rows up to `day`: P/E, P/FCF, P/S, EV/EBIT and yield against
+    its own history (scores.history_scores; nothing when it has no rows) and the ten fundamentals
+    (scores.fundamental_scores, always)."""
     vrows = [r for r in store.valuation_rows(symbol) if r["date"] <= day]
-    if not vrows:
-        return []
     sh = statement_holds(holds)
-    period_end = vrows[-1]["ttm_period_end"]
-    filing = store.statement_filing(cik, period_end) if period_end else None
-    return scores.history_scores(symbol, day, apply_holds(vrows, sh, VALUE_FIELDS), store.ttm_rows(cik), filing, cik,
-                                 cfg.engine, bar=bar, holds=sh)
+    held = apply_holds(vrows, sh, VALUE_FIELDS)
+    ttm = store.ttm_rows(cik)
+    filings: dict[str, dict | None] = {}
+
+    def filing_of(period_end: str) -> dict | None:
+        if period_end not in filings:
+            filings[period_end] = store.statement_filing(cik, period_end)
+        return filings[period_end]
+
+    out: list[ScoreRow] = []
+    if vrows:
+        period_end = vrows[-1]["ttm_period_end"]
+        out += scores.history_scores(symbol, day, held, ttm, filing_of(period_end) if period_end else None, cik,
+                                     cfg.engine, bar=bar, holds=sh)
+    out += scores.fundamental_scores(
+        symbol, day, held[-1] if held else None, ttm, store.annual_statement_rows(cik, ANNUAL_ROWS),
+        store.earnings_events_of(symbol), store.estimate_rows(symbol, scores.ESTIMATE_PERIOD), insider, cik,
+        cfg.engine, bar=bar, holds=holds, filing_of=filing_of)
+    return out
+
+
+def _insider_feed(cfg: Config):
+    """The insider feed, read once per run: a function symbol -> what scores.fundamental_scores takes as `insider`
+    (None when the feed is missing or unreadable, (None, as_of) when it does not name the symbol)."""
+    path = cfg.investing_dir / "data" / scores.INSIDER_FILE if cfg.investing_dir is not None else None
+    by_symbol, as_of = scores.read_insider(path) if path is not None else ({}, None)
+    found = bool(by_symbol) or as_of is not None
+    return lambda symbol: (by_symbol.get(symbol), as_of) if found else None
 
 
 def _held_price_rows(symbol: str, day: str, newest: tuple, on_day: list[dict]) -> list[ScoreRow]:
@@ -128,6 +154,7 @@ def run(store: Store, cfg: Config) -> EngineReport:
             benches[symbol] = (symbol, held_adjusted_bars(store.final_bars(symbol), store.open_holds(symbol)))
         return benches[symbol]
 
+    insider_of = _insider_feed(cfg)
     symbols = store.engine_symbols()
     rows: list[ScoreRow] = []
     for sec in symbols:
@@ -143,6 +170,6 @@ def run(store: Store, cfg: Config) -> EngineReport:
             rows += price_shape(sym, day, held_adjusted_bars(bars, holds), benchmark(cfg.benchmarks.market),
                                 benchmark(sector_fund))
         if sec["asset_type"] == "stock" and sec["cik"]:
-            rows += _company_history(store, cfg, sym, sec["cik"], day, bars[-1], holds)
+            rows += _company(store, cfg, sym, sec["cik"], day, bars[-1], holds, insider_of(sym))
     store.replace_scores(rows, cov["checked_at"])
     return EngineReport(len(symbols), len(rows), sum(1 for r in rows if r.status == "held"), 0, None)

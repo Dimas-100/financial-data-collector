@@ -865,6 +865,13 @@ class Store:
         return {r["period_end"]: dict(r) for r in self.query(
             f"SELECT {', '.join(self.TTM_ROW_COLUMNS)} FROM financials_ttm WHERE cik = ? ORDER BY period_end", (cik,))}
 
+    def estimate_rows(self, symbol: str, period: str) -> list[dict]:
+        """The company's estimate snapshots of one period (`0q`, `+1q`, `0y`, `+1y`) as {date, eps_avg}, ascending
+        (a day with no average included, eps_avg None)."""
+        return [dict(r) for r in self.query(
+            "SELECT date, eps_avg FROM estimate_snapshots WHERE symbol = ? AND period = ? ORDER BY date",
+            (symbol, period))]
+
     def statement_filing(self, cik: str, period_end: str) -> dict | None:
         """The earliest-filed 10-Q or 10-K (amendments too) in sec_facts that reports a fact for `period_end`, as
         {form, accn, filed}; None when none does."""

@@ -9,23 +9,40 @@ is simply missing from the history, and a held newest day makes the score `held`
 The band reads the percentile through the metric's direction: a high P/E, P/FCF, P/S or EV/EBIT is expensive
 (`HIGH_IS_PREMIUM`), a high dividend yield is cheap (`HIGH_IS_CHEAP`). With the default thresholds a value under the
 25th percentile of its own history is `cheap`, over the 75th `premium`, anything between (both included) `usual`.
+
+Beside them, `fundamental_scores` gives ten company fundamentals with no percentile or band: the growth the price
+implies, 5-year free cash flow and revenue growth, the year's change in free cash flow and operating margin, net debt /
+EBITDA, the buyback yield, the last earnings surprise, the 30-day change in this year's EPS estimate and net insider
+buying. Each one that cannot be known is `unsupported` or `not_enough_history` and says why. Pure too, except
+`read_insider`, which reads the sibling insider feed once per engine run.
 """
 from __future__ import annotations
 
-from datetime import date
+import json
+from collections.abc import Callable
+from datetime import date, timedelta
+from pathlib import Path
 
 from ..config import EngineSettings
-from ..models import ScoreRow
+from ..models import EarningsEvent, ScoreRow
+from ..symbols import canonical
 from . import sources
 
 HIGH_IS_PREMIUM = ("pe", "p_fcf", "ps", "ev_ebit")
 HIGH_IS_CHEAP = ("dividend_yield",)
 HISTORY_METRICS = ("pe", "p_fcf", "ps", "ev_ebit", "dividend_yield")
+FUNDAMENTAL_METRICS = ("implied_growth", "fcf_growth_5y", "revenue_growth_5y", "fcf_margin_change", "op_margin_change",
+                       "net_debt_ebitda", "buyback_yield", "last_surprise", "estimate_change_30d", "insider_net_90d")
 # Each metric's own column plus the close it is built on, so a `close` hold opened after the build blanks the row in
-# the valuation_scores view as the build itself does (engine.statement_holds).
+# the valuation_scores view as the build itself does (engine.statement_holds). A fundamental read from the statements,
+# the earnings events, the estimates or the insider feed names no valuation_daily column: only a `*` hold (or one on
+# `score:<metric>`) blanks it in the view, and only a `*` hold holds it at build time.
 INPUTS: dict[str, tuple[str, ...]] = {
     "pe": ("pe", "close"), "p_fcf": ("p_fcf", "close"), "ps": ("ps", "close"), "ev_ebit": ("market_cap", "close"),
     "dividend_yield": ("dividend_yield", "close"),
+    "implied_growth": ("market_cap", "fcf_ttm", "close"), "buyback_yield": ("market_cap", "close"),
+    "fcf_growth_5y": (), "revenue_growth_5y": (), "fcf_margin_change": (), "op_margin_change": (),
+    "net_debt_ebitda": (), "last_surprise": (), "estimate_change_30d": (), "insider_net_90d": (),
 }
 NOT_COMPUTED = {                      # why an `ok` row has no value when no hold blanked it
     "pe": "earnings not positive",
@@ -184,3 +201,346 @@ def history_scores(symbol: str, day: str, rows: list[dict], ttm: dict[str, dict]
             sources.config("cheap_percentile", s.cheap_percentile),
             sources.config("premium_percentile", s.premium_percentile))))
     return out
+
+
+# ---- company fundamentals -------------------------------------------------------------------------------------------
+
+GROWTH_RANGE = (-0.5, 1.0)            # implied growth is searched in this range, a year
+GROWTH_YEARS = 10
+GROWTH_TOLERANCE = 1e-6
+IMPLIED_METHOD = "10 years of FCF growth, then terminal_growth, discounted at discount_rate, = market cap"
+OUT_OF_RANGE = "needs more than 100% or less than -50% a year"
+CAGR_YEARS = 5
+YEAR_EARLIER_DAYS = (350, 380)        # the TTM row a margin is compared with ends this many days earlier
+ESTIMATE_DAYS = 30
+ESTIMATE_PERIOD = "0y"
+INSIDER_DAYS = 90
+INSIDER_FILE = "insider.json"
+REPORT_BETWEEN = "a report fell between the two snapshots; the year may have rolled"
+
+
+def _present_value(fcf: float, growth: float, discount_rate: float, terminal_growth: float) -> float:
+    """Free cash flow growing `growth` a year for GROWTH_YEARS years, then `terminal_growth` forever, discounted."""
+    pv, cash = 0.0, fcf
+    for year in range(1, GROWTH_YEARS + 1):
+        cash *= 1 + growth
+        pv += cash / (1 + discount_rate) ** year
+    terminal = cash * (1 + terminal_growth) / (discount_rate - terminal_growth)
+    return pv + terminal / (1 + discount_rate) ** GROWTH_YEARS
+
+
+def implied_growth(fcf: float, market_cap: float, discount_rate: float, terminal_growth: float) -> float | None:
+    """The yearly free-cash-flow growth over the next GROWTH_YEARS years at which the discounted cash flows equal the
+    market cap: bisection on GROWTH_RANGE to GROWTH_TOLERANCE, rounded to 4 places. None when free cash flow is not
+    positive, the market cap is not positive, the discount rate does not exceed the terminal growth, or the answer lies
+    outside the range."""
+    if fcf is None or market_cap is None or fcf <= 0 or market_cap <= 0 or discount_rate <= terminal_growth:
+        return None
+    lo, hi = GROWTH_RANGE
+    if not (_present_value(fcf, lo, discount_rate, terminal_growth) <= market_cap
+            <= _present_value(fcf, hi, discount_rate, terminal_growth)):
+        return None
+    while hi - lo > GROWTH_TOLERANCE:                    # the present value rises with growth
+        mid = (lo + hi) / 2
+        if _present_value(fcf, mid, discount_rate, terminal_growth) < market_cap:
+            lo = mid
+        else:
+            hi = mid
+    return round((lo + hi) / 2, 4) + 0.0                 # + 0.0: never -0.0
+
+
+def cagr(new: float | None, old: float | None, years: int) -> float | None:
+    """Compound yearly growth from `old` to `new` over `years`; None unless both are positive."""
+    if new is None or old is None or new <= 0 or old <= 0 or years <= 0:
+        return None
+    return (new / old) ** (1 / years) - 1
+
+
+def _iso_day(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value.strip()[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def _text(value: object) -> str | None:
+    return (value.strip() or None) if isinstance(value, str) else None
+
+
+def read_insider(path: Path) -> tuple[dict[str, list[dict]], str | None]:
+    """The sibling insider feed: canonical symbol -> its entries, each {filed, accession, direction} (nothing else is
+    read: never the feed's links), and the feed's `as_of`. An entry without a readable filing day, or that is no
+    object, is skipped alone; so is a ticker whose entries are no list. Missing or unreadable -> ({}, None)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        tickers = list(data["by_ticker"].items())
+        as_of = _text(data.get("as_of"))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}, None
+    out: dict[str, list[dict]] = {}
+    for ticker, entries in tickers:
+        symbol = canonical(ticker) if isinstance(ticker, str) else ""
+        if not symbol or not isinstance(entries, list):
+            continue
+        kept = out.setdefault(symbol, [])
+        for e in entries:
+            if not isinstance(e, dict) or (filed := _iso_day(e.get("filed"))) is None:
+                continue
+            direction = _text(e.get("direction"))
+            kept.append({"filed": filed, "accession": _text(e.get("accession")),
+                         "direction": direction.lower() if direction else "other"})
+    return out, as_of
+
+
+def _covers(hold: dict, day: str) -> bool:
+    return hold["date_from"] <= day <= (hold["date_to"] or "9999-12-31")
+
+
+def _newest_problem(newest: dict | None, day: str) -> str | None:
+    """Why the newest valuation row cannot be used for `day`, or None."""
+    if newest is None:
+        return f"no valuation row on {day}"
+    if newest["date"] != day:
+        return f"no valuation row on {day}; the newest is {newest['date']}"
+    if newest["status"] != "ok":
+        return newest["status_reason"] or newest["status"]
+    return None
+
+
+def _margin(t: dict, item: str) -> float | None:
+    revenue, part = t.get("revenue"), t.get(item)
+    if revenue is None or revenue <= 0 or part is None:
+        return None
+    return part / revenue
+
+
+def _why_no_margin(t: dict, label: str) -> str:
+    if t.get("revenue") is None or t["revenue"] <= 0:
+        return f"no revenue in the TTM ending {t['period_end']}"
+    return f"no {label} figure in the TTM ending {t['period_end']}"
+
+
+def _year_earlier(ttm: dict[str, dict], period_end: str) -> dict | None:
+    """The TTM row whose period ends YEAR_EARLIER_DAYS before `period_end`, the one nearest a year when several do."""
+    end = date.fromisoformat(period_end)
+    lo, hi = YEAR_EARLIER_DAYS
+    found = [(abs(gap - 365), -gap, pe) for pe in ttm if lo <= (gap := (end - date.fromisoformat(pe)).days) <= hi]
+    return ttm[min(found)[2]] if found else None
+
+
+def fundamental_scores(symbol: str, day: str, newest: dict | None, ttm: dict[str, dict], annual: list[dict],
+                       events: list[EarningsEvent], estimates: list[dict],
+                       insider: tuple[list[dict] | None, str | None] | None, cik: str, s: EngineSettings, *,
+                       bar: tuple | None = None, holds: list[dict] | tuple = (),
+                       filing_of: Callable[[str], dict | None] | None = None) -> list[ScoreRow]:
+    """The ten fundamental rows of a company on `day`, in FUNDAMENTAL_METRICS order; none has a percentile or band.
+
+    newest: the symbol's newest valuation_daily row up to `day` with the holds applied (engine.apply_holds over
+    engine.statement_holds), or None. ttm: financials_ttm rows by period_end. annual: financials_annual rows,
+    ascending. events: its earnings events. estimates: its `0y` estimate snapshots ({date, eps_avg}, ascending).
+    insider: None when the insider feed was not found; (None, as_of) when the feed does not name the symbol;
+    (entries, as_of) otherwise. bar: the newest final bar, for the price source. holds: the symbol's open holds as the
+    checker wrote them (a `close` hold keeps its field), so a row is held as the valuation_scores view would hold it:
+    an `ok` row whose date an open hold covers, with field `*` or one of the row's inputs, is `held` with no value.
+    filing_of: period_end -> its statement filing ({form, accn, filed}) or None.
+    """
+    filing_of = filing_of or (lambda period_end: None)
+    holds_by_id = {h["id"]: h for h in holds}
+    price_src = (sources.price(bar[4], bar[0], bar[5]),) if bar is not None else ()
+    problem = _newest_problem(newest, day)
+    period = None if problem else newest.get("ttm_period_end")
+    t = ttm.get(period) if period else None
+    no_ttm = f"no TTM statements for {period}" if period else "no TTM statements"
+
+    def filing_src(period_end: str | None) -> tuple[dict, ...]:
+        f = filing_of(period_end) if period_end else None
+        return (sources.filing(cik, f["form"], f["accn"], f["filed"], period_end),) if f else ()
+
+    def row(metric: str, value=None, status="unsupported", reason=None, src=()) -> ScoreRow:
+        return ScoreRow(symbol, day, metric, value, None, None, status, reason, INPUTS[metric], tuple(src))
+
+    def held_or(metric: str, why: str, src) -> ScoreRow:
+        held = _holding(metric, newest, holds_by_id)
+        return row(metric, status="held", reason="; ".join(held), src=src) if held else row(metric, reason=why, src=src)
+
+    out: list[ScoreRow] = []
+
+    # implied growth: the newest market cap and free cash flow
+    if problem:
+        out.append(row("implied_growth", reason=problem, src=price_src))
+    else:
+        src = price_src + filing_src(period) + (sources.config("discount_rate", s.discount_rate),
+                                                sources.config("terminal_growth", s.terminal_growth),
+                                                sources.derived("method", IMPLIED_METHOD))
+        mc, fcf = newest.get("market_cap"), newest.get("fcf_ttm")
+        if mc is None or fcf is None:
+            out.append(held_or("implied_growth", NO_MARKET_CAP if mc is None else "no free cash flow figure", src))
+        elif fcf <= 0:
+            out.append(row("implied_growth", reason=NOT_COMPUTED["p_fcf"], src=src))
+        elif mc <= 0:
+            out.append(row("implied_growth", reason=NO_MARKET_CAP, src=src))
+        else:
+            g = implied_growth(fcf, mc, s.discount_rate, s.terminal_growth)
+            out.append(row("implied_growth", g, "ok", src=src) if g is not None
+                       else row("implied_growth", reason=OUT_OF_RANGE, src=src))
+
+    # 5-year growth: the newest annual row against the one whose fiscal_year is 5 lower
+    new_a = annual[-1] if annual else None
+    for metric, item, label in (("fcf_growth_5y", "fcf", "free cash flow"),
+                                ("revenue_growth_5y", "revenue", "revenue")):
+        if new_a is None or new_a.get("fiscal_year") is None:
+            out.append(row(metric, status="not_enough_history", reason="no annual statements"))
+            continue
+        fy, old_fy = new_a["fiscal_year"], new_a["fiscal_year"] - CAGR_YEARS
+        olds = [a for a in annual if a.get("fiscal_year") == old_fy]
+        if not olds:
+            out.append(row(metric, status="not_enough_history",
+                           reason=f"no FY{old_fy} statements to compare FY{fy} with"))
+            continue
+        old_a = olds[-1]
+        src = filing_src(old_a["period_end"]) + filing_src(new_a["period_end"]) + (sources.derived(
+            f"financials_annual {item}", f"FY{old_fy} ({old_a['period_end']})..FY{fy} ({new_a['period_end']})"),)
+        g = cagr(new_a.get(item), old_a.get(item), CAGR_YEARS)
+        if g is not None:
+            out.append(row(metric, g, "ok", src=src))
+            continue
+        missing = [f"FY{y}" for y, a in ((old_fy, old_a), (fy, new_a)) if a.get(item) is None]
+        why = (f"no {label} figure in {' or '.join(missing)}" if missing
+               else f"{label} not positive in FY{old_fy} or FY{fy}")
+        out.append(row(metric, reason=why, src=src))
+
+    # margin changes: the TTM row in force against the one a year earlier
+    for metric, item, label in (("fcf_margin_change", "fcf", "free cash flow"),
+                                ("op_margin_change", "operating_income", "operating income")):
+        if problem or t is None:
+            out.append(row(metric, reason=problem or no_ttm))
+            continue
+        now_m = _margin(t, item)
+        if now_m is None:
+            out.append(row(metric, reason=_why_no_margin(t, label), src=filing_src(period)))
+            continue
+        earlier = _year_earlier(ttm, period)
+        if earlier is None:
+            lo, hi = YEAR_EARLIER_DAYS
+            out.append(row(metric, status="not_enough_history", src=filing_src(period),
+                           reason=f"no TTM statements {lo}-{hi} days before {period}"))
+            continue
+        then_m = _margin(earlier, item)
+        then_end = earlier["period_end"]
+        src = filing_src(then_end) + filing_src(period) + (sources.derived(
+            f"financials_ttm {item} / revenue",
+            f"{then_end} {'-' if then_m is None else round(then_m, 4)} -> {period} {round(now_m, 4)}"),)
+        if then_m is None:
+            out.append(row(metric, reason=_why_no_margin(earlier, label), src=src))
+            continue
+        out.append(row(metric, now_m - then_m, "ok", src=src))
+
+    # net debt / EBITDA of the TTM row in force
+    if problem or t is None:
+        out.append(row("net_debt_ebitda", reason=problem or no_ttm))
+    else:
+        src = filing_src(period) + (sources.derived(
+            "financials_ttm (long_term_debt - cash - short_term_investments) / "
+            "(operating_income + depreciation_amortization)", period),)
+        debt, cash = t.get("long_term_debt"), t.get("cash")
+        oi, da = t.get("operating_income"), t.get("depreciation_amortization")
+        if debt is None or cash is None:
+            out.append(row("net_debt_ebitda", reason=NO_DEBT_OR_CASH, src=src))
+        elif oi is None:
+            out.append(row("net_debt_ebitda", reason="no operating income figure", src=src))
+        elif da is None:
+            out.append(row("net_debt_ebitda", reason="no depreciation and amortization figure", src=src))
+        elif oi + da <= 0:
+            out.append(row("net_debt_ebitda", reason="EBITDA not positive", src=src))
+        else:
+            out.append(row("net_debt_ebitda", (debt - cash - (t.get("short_term_investments") or 0.0)) / (oi + da),
+                           "ok", src=src))
+
+    # buyback yield: TTM buybacks over the newest market cap; a missing buybacks line is 0
+    if problem:
+        out.append(row("buyback_yield", reason=problem, src=price_src))
+    else:
+        mc = newest.get("market_cap")
+        bought = t.get("buybacks") if t is not None else None
+        src = price_src + filing_src(period) + (sources.derived(
+            "financials_ttm buybacks / valuation_daily market_cap",
+            f"{period}" + ("" if bought is not None else "; no buybacks line, counted 0")),)
+        if mc is None:
+            out.append(held_or("buyback_yield", NO_MARKET_CAP, src))
+        elif t is None:
+            out.append(row("buyback_yield", reason=no_ttm, src=src))
+        elif mc <= 0:
+            out.append(row("buyback_yield", reason=NO_MARKET_CAP, src=src))
+        else:
+            out.append(row("buyback_yield", (bought or 0.0) / mc, "ok", src=src))
+
+    # the last earnings surprise on or before `day`
+    known = [e for e in events if e.report_date <= day and e.surprise_pct is not None]
+    if not known:
+        out.append(row("last_surprise", reason="no earnings surprise on record"))
+    else:
+        e = max(known, key=lambda x: x.report_date)
+        src = []
+        if e.accession:
+            try:
+                src.append(sources.filing(cik, "8-K", e.accession, e.report_date))
+            except ValueError:                           # an accession that does not validate gets no link
+                pass
+        src.append(sources.feed("Yahoo earnings dates", None, e.report_date))
+        out.append(row("last_surprise", e.surprise_pct, "ok", src=src))
+
+    # the change in this fiscal year's EPS estimate over at least 30 days
+    snaps = [(r["date"], r["eps_avg"]) for r in estimates if r["eps_avg"] is not None and r["date"] <= day]
+    label = f"Yahoo EPS estimates ({ESTIMATE_PERIOD})"
+    if not snaps:
+        out.append(row("estimate_change_30d", reason="no EPS estimate on record"))
+    else:
+        now_d, now_v = snaps[-1]
+        cutoff = (date.fromisoformat(now_d) - timedelta(days=ESTIMATE_DAYS)).isoformat()
+        older = [x for x in snaps if x[0] <= cutoff]
+        if not older:
+            out.append(row("estimate_change_30d", status="not_enough_history",
+                           reason=f"estimate snapshots start {snaps[0][0]}",
+                           src=(sources.feed(label, now_d, f"{now_d} {now_v}"),)))
+        else:
+            then_d, then_v = older[-1]
+            src = (sources.feed(label, now_d, f"{then_d} {then_v} -> {now_d} {now_v}"),)
+            if any(then_d < ev.report_date <= now_d for ev in events):
+                out.append(row("estimate_change_30d", reason=REPORT_BETWEEN, src=src))
+            elif then_v == 0:
+                out.append(row("estimate_change_30d", reason=f"the estimate on {then_d} was 0", src=src))
+            else:
+                out.append(row("estimate_change_30d", (now_v - then_v) / abs(then_v), "ok", src=src))
+
+    # net insider buying: buys minus sells filed in the 90 days ending `day`
+    if insider is None:
+        out.append(row("insider_net_90d", reason="insider feed not found"))
+    elif insider[0] is None:
+        out.append(row("insider_net_90d", reason="not in the insider feed",
+                       src=(sources.feed(INSIDER_FILE, insider[1], None),)))
+    else:
+        entries, as_of = insider
+        start = (date.fromisoformat(day) - timedelta(days=INSIDER_DAYS)).isoformat()
+        counted = sorted((e for e in entries if start < e["filed"] <= day and e["direction"] in ("buy", "sell")),
+                         key=lambda e: (e["filed"], e["accession"] or ""))
+        buys = sum(1 for e in counted if e["direction"] == "buy")
+        sells = len(counted) - buys
+        src = [sources.feed(INSIDER_FILE, as_of, f"{buys} buys, {sells} sells")]
+        for e in counted:
+            if e["accession"]:
+                try:
+                    src.append(sources.filing(cik, "4", e["accession"], e["filed"]))
+                except ValueError:                       # counted, but no link
+                    pass
+        out.append(row("insider_net_90d", float(buys - sells), "ok", src=src))
+
+    # the holds open now, as the valuation_scores view applies them: an `ok` row is held under a `*` hold covering
+    # `day` or one on its inputs
+    final: list[ScoreRow] = []
+    for r in out:
+        msgs = [h["message"] for h in holds if _covers(h, day) and (h["field"] == "*" or h["field"] in r.inputs)]
+        final.append(row(r.metric, status="held", reason="; ".join(msgs), src=r.sources)
+                     if r.status == "ok" and msgs else r)
+    return final

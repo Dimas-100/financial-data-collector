@@ -1,14 +1,14 @@
 """Company scores against their own history: P/E, P/FCF, P/S, EV/EBIT and dividend yield, each with a percentile
 over the symbol's own 5-year daily history and a cheap / usual / premium band (Task 4 of the valuation engine)."""
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from financial_data_collector.config import EngineSettings
 from financial_data_collector.derive import engine, scores
 from financial_data_collector.derive import valuation as V
-from financial_data_collector.models import Fact, LineItem, PriceBar
+from financial_data_collector.models import EarningsEvent, Estimate, Fact, LineItem, PriceBar
 from tests.test_engine import END, FETCHED, _cover, _hold, _scores, _weekday_bars, cfg, store  # noqa: F401  (fixtures)
 
 CIK = "0000999002"
@@ -438,3 +438,396 @@ def test_history_scores_is_pure_and_in_metric_order():
     assert [r.metric for r in out] == list(HISTORY)
     assert out[0].status == "not_enough_history" and out[0].value == 30.0
     assert out[0].status_reason == "1 days of its own history; a band needs 365"
+
+
+# ==== company fundamentals (Task 5) ==================================================================================
+
+FUNDAMENTALS = ("implied_growth", "fcf_growth_5y", "revenue_growth_5y", "fcf_margin_change", "op_margin_change",
+                "net_debt_ebitda", "buyback_yield", "last_surprise", "estimate_change_30d", "insider_net_90d")
+QUARTERS = ("2024-09-30", "2024-12-31", "2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31", "2026-03-31",
+            "2026-06-30")
+ACCN_8K = "0000999002-26-000077"
+
+
+def _quarters(store, first: dict, second: dict | None = None, annual=()) -> None:
+    """Quarterly line items of Sample Earnings Co: `first` ({line_item: value}) for the four quarters to 2025-06-30,
+    `second` (default `first`) for the four to 2026-06-30, so full TTM rows exist for both; `annual`: (fiscal_year,
+    period_end, {line_item: value}) rows."""
+    items = []
+    for k, e in enumerate(QUARTERS):
+        vals = first if k < 4 or second is None else second
+        filed = (date.fromisoformat(e) + timedelta(days=33)).isoformat()
+        items += [LineItem(it, "quarter", "", e, int(e[:4]), k % 4 + 1, v, it, filed, ACCN)
+                  for it, v in vals.items() if v is not None]
+    for fy, end, vals in annual:
+        items += [LineItem(it, "annual", "", end, fy, None, v, it, f"{fy + 1}-02-15", ACCN)
+                  for it, v in vals.items() if v is not None]
+    store.replace_line_items(CIK, items)
+
+
+def _days_before(day: str, n: int) -> str:
+    return (date.fromisoformat(day) - timedelta(days=n)).isoformat()
+
+
+def _event(day: str, surprise: float | None, accession: str | None = None) -> EarningsEvent:
+    return EarningsEvent("AAA", day, "after_close", accession, 1.0, 1.05 if surprise is not None else None, surprise,
+                         "sec" if accession else "yahoo", "yahoo", "yahoo" if surprise is not None else None)
+
+
+def _estimates(store, by_day: dict) -> None:
+    for d, eps in by_day.items():
+        store.write_estimates("AAA", d, [Estimate("0y", eps, None, None, 20), Estimate("0q", 9.0, None, None, 20)],
+                              d + "T21:00:00Z")
+
+
+def _insider(path, by_ticker, as_of="2026-10-30") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"as_of": as_of, "source": "SEC Form 4", "by_ticker": by_ticker}), encoding="utf-8")
+
+
+def _entry(days: int, direction: str, accession: str | None) -> dict:
+    return {"ticker": "AAA", "filed": _days_before(END, days), "accession": accession, "direction": direction,
+            "url": "https://example.invalid/form4"}
+
+
+# ---- pure pieces ----------------------------------------------------------------------------------------------------
+
+def test_implied_growth_is_zero_when_the_price_needs_none():
+    assert scores.implied_growth(100.0, 1307.8751, 0.09, 0.025) == pytest.approx(0.0, abs=1e-4)
+    assert scores.implied_growth(100.0, 2779.5894, 0.09, 0.025) == pytest.approx(0.10, abs=1e-4)
+    assert str(scores.implied_growth(100.0, 1307.8751, 0.09, 0.025)) == "0.0"         # never -0.0
+
+
+def test_implied_growth_outside_the_range_or_without_fcf_is_none():
+    assert scores.implied_growth(100.0, 50.0, 0.09, 0.025) is None
+    assert scores.implied_growth(-5.0, 1000.0, 0.09, 0.025) is None
+    assert scores.implied_growth(0.0, 1000.0, 0.09, 0.025) is None
+    assert scores.implied_growth(100.0, 10.0 ** 9, 0.09, 0.025) is None           # more than 100% a year
+
+
+def test_implied_growth_is_rounded_to_four_places():
+    g = scores.implied_growth(40.0, 1000.0, 0.09, 0.025)
+    assert g is not None and g == round(g, 4) and -0.5 < g < 1.0
+
+
+def test_cagr():
+    assert scores.cagr(161.051, 100.0, 5) == pytest.approx(0.10)
+    assert scores.cagr(100.0, -5.0, 5) is None
+    assert scores.cagr(-1.0, 100.0, 5) is None
+    assert scores.cagr(None, 100.0, 5) is None and scores.cagr(100.0, None, 5) is None
+    assert scores.cagr(100.0, 0.0, 5) is None
+
+
+def test_read_insider_keeps_canonical_symbols_and_three_fields(tmp_path):
+    p = tmp_path / "insider.json"
+    _insider(p, {"aapl": [{"ticker": "AAPL", "filed": "2026-10-01", "accession": "0000999002-26-000101",
+                           "direction": "buy", "url": "https://example.invalid/x"},
+                          {"ticker": "AAPL", "filed": "not a date", "accession": None, "direction": "buy"},
+                          "not an entry"],
+                 "BRK-B": [{"filed": "2026-09-01T10:00:00", "accession": "bad", "direction": "SELL"}],
+                 "XLK": "not a list"})
+    by, as_of = scores.read_insider(p)
+    assert as_of == "2026-10-30"
+    assert by["AAPL"] == [{"filed": "2026-10-01", "accession": "0000999002-26-000101", "direction": "buy"}]
+    assert by["BRK.B"] == [{"filed": "2026-09-01", "accession": "bad", "direction": "sell"}]
+    assert "XLK" not in by
+
+
+def test_read_insider_missing_or_unreadable_is_empty(tmp_path):
+    assert scores.read_insider(tmp_path / "none.json") == ({}, None)
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert scores.read_insider(bad) == ({}, None)
+    bad.write_text(json.dumps({"as_of": "2026-10-30"}), encoding="utf-8")
+    assert scores.read_insider(bad) == ({}, None)
+
+
+def test_fundamental_scores_is_pure_and_in_metric_order():
+    newest = dict(BASE, symbol="AAA", date="2026-10-29", _held=[])
+    out = scores.fundamental_scores("AAA", "2026-10-29", newest, {}, [], [], [], None, CIK, EngineSettings())
+    assert [r.metric for r in out] == list(FUNDAMENTALS)
+    assert all(r.percentile_5y is None and r.band is None for r in out)
+    by = {r.metric: r for r in out}
+    assert by["implied_growth"].status == "ok"
+    assert by["insider_net_90d"].status_reason == "insider feed not found"
+    assert by["fcf_margin_change"].status == "unsupported"                      # no TTM row for 2026-06-30
+
+
+# ---- through the engine ---------------------------------------------------------------------------------------------
+
+def test_every_fundamental_gets_a_row_with_its_inputs(store, cfg):
+    _company(store)
+    rows = _run(store, cfg)
+    assert set(FUNDAMENTALS) <= set(rows)
+    for m in FUNDAMENTALS:
+        want = {"implied_growth": ",market_cap,fcf_ttm,close,", "buyback_yield": ",market_cap,close,"}.get(m, "")
+        assert rows[m]["inputs"] == want, m
+        assert rows[m]["percentile_5y"] is None and rows[m]["band"] is None
+
+
+def test_implied_growth_from_the_newest_row(store, cfg):
+    _company(store)
+    r = _run(store, cfg)["implied_growth"]
+    assert r["status"] == "ok" and r["value"] == scores.implied_growth(40.0, 1000.0, 0.09, 0.025)
+    src = json.loads(r["sources"])
+    assert src[0]["kind"] == "price"
+    conf = {s["label"]: s["ref"] for s in src if s["kind"] == "config"}
+    assert conf == {"[engine] discount_rate": "0.09", "[engine] terminal_growth": "0.025"}
+    assert {"kind": "derived", "label": "method", "date": None,
+            "ref": "10 years of FCF growth, then terminal_growth, discounted at discount_rate, = market cap"} in src
+
+
+def test_implied_growth_without_positive_fcf_says_why(store, cfg):
+    _company(store, row=lambda i, d: {"fcf_ttm": -4.0, "p_fcf": None})
+    r = _run(store, cfg)["implied_growth"]
+    assert (r["status"], r["value"], r["status_reason"]) == ("unsupported", None, "free cash flow not positive")
+
+
+def test_implied_growth_out_of_range_says_why(store, cfg):
+    _company(store, row=lambda i, d: {"fcf_ttm": 0.1, "p_fcf": 10000.0})     # 10000 times FCF
+    r = _run(store, cfg)["implied_growth"]
+    assert (r["status"], r["status_reason"]) == ("unsupported", "needs more than 100% or less than -50% a year")
+
+
+def test_a_close_hold_holds_implied_growth_and_buybacks_not_margins(store, cfg):
+    _company(store)
+    _quarters(store, {"revenue": 100.0, "ocf": 25.0, "capex": 5.0, "operating_income": 30.0})
+    _hold(store, "closes", "AAA", "close", END, END, "close looks wrong")
+    rows = _run(store, cfg)
+    for m in ("implied_growth", "buyback_yield"):
+        assert (rows[m]["status"], rows[m]["value"], rows[m]["status_reason"]) == ("held", None, "close looks wrong")
+    assert rows["fcf_margin_change"]["status"] == "ok"
+
+
+def test_an_fcf_hold_holds_implied_growth_only(store, cfg):
+    _company(store)
+    _quarters(store, {"revenue": 100.0})
+    _hold(store, "figures", "AAA", "fcf_ttm", END, END, "free cash flow disagrees")
+    rows = _run(store, cfg)
+    assert (rows["implied_growth"]["status"], rows["implied_growth"]["status_reason"]) == \
+           ("held", "free cash flow disagrees")
+    assert rows["buyback_yield"]["status"] == "ok"
+
+
+def test_a_star_hold_holds_every_fundamental_that_would_be_ok(store, cfg, tmp_path):
+    _company(store)
+    _quarters(store, {"revenue": 100.0, "ocf": 25.0, "capex": 5.0, "operating_income": 30.0})
+    store.replace_earnings("AAA", [_event("2026-07-30", 4.2)])
+    cfg.investing_dir = tmp_path / "nowhere"
+    _hold(store, "fresh", "AAA", "*", "2026-10-01", None, "statements are stale")
+    rows = _run(store, cfg)
+    for m in ("implied_growth", "buyback_yield", "fcf_margin_change", "op_margin_change", "last_surprise"):
+        assert (rows[m]["status"], rows[m]["value"], rows[m]["status_reason"]) == \
+               ("held", None, "statements are stale"), m
+    # a row that was not ok keeps its own status and reason, as the view does
+    assert rows["insider_net_90d"]["status_reason"] == "insider feed not found"
+    assert rows["fcf_growth_5y"]["status"] == "not_enough_history"
+
+
+def test_view_blanks_implied_growth_under_a_close_hold_after_the_build_not_margins(store, cfg):
+    _company(store)
+    _quarters(store, {"revenue": 100.0, "ocf": 25.0, "capex": 5.0, "operating_income": 30.0})
+    _run(store, cfg)
+    _hold(store, "closes", "AAA", "close", END, END, "close looks wrong")
+    view = _scores(store, "AAA", "valuation_scores")
+    assert view["implied_growth"]["status"] == "held" and view["buyback_yield"]["status"] == "held"
+    assert view["fcf_margin_change"]["status"] == "ok"
+
+
+def test_five_year_growth_compares_with_the_fiscal_year_five_lower(store, cfg):
+    _company(store)
+    annual = [(2019, "2019-12-31", {"revenue": 50.0, "ocf": 10.0, "capex": 1.0}),
+              (2020, "2020-12-31", {"revenue": 100.0, "ocf": 30.0, "capex": 10.0})]
+    annual += [(y, f"{y}-12-31", {"revenue": 120.0, "ocf": 40.0, "capex": 10.0}) for y in (2021, 2022, 2023, 2024)]
+    annual += [(2025, "2025-12-31", {"revenue": 161.051, "ocf": 50.0, "capex": 10.0})]
+    _quarters(store, {"revenue": 100.0}, annual=annual)
+    store.write_sec_facts(CIK, [_fact("10-K", "0000999002-26-000011", "2026-02-15", "2025-12-31"),
+                                _fact("10-K", "0000999002-21-000011", "2021-02-15", "2020-12-31")])
+    rows = _run(store, cfg)
+    r = rows["revenue_growth_5y"]
+    assert r["status"] == "ok" and r["value"] == pytest.approx(0.10)
+    assert rows["fcf_growth_5y"]["value"] == pytest.approx((40.0 / 20.0) ** 0.2 - 1)
+    filings = [s for s in json.loads(r["sources"]) if s["kind"] == "filing"]
+    assert [(s["ref"], s["period"]) for s in filings] == [("0000999002-21-000011", "2020-12-31"),
+                                                         ("0000999002-26-000011", "2025-12-31")]
+    assert all(s["url"].startswith("https://www.sec.gov/Archives/edgar/data/999002/") for s in filings)
+
+
+def test_five_year_growth_without_the_old_year_is_not_enough_history(store, cfg):
+    _company(store)
+    _quarters(store, {"revenue": 100.0},
+              annual=[(y, f"{y}-12-31", {"revenue": 100.0}) for y in (2022, 2023, 2024, 2025)])
+    r = _run(store, cfg)["revenue_growth_5y"]
+    assert (r["status"], r["status_reason"]) == ("not_enough_history", "no FY2020 statements to compare FY2025 with")
+
+
+def test_five_year_growth_with_a_loss_year_is_unsupported(store, cfg):
+    _company(store)
+    annual = [(y, f"{y}-12-31", {"revenue": 100.0, "ocf": 10.0, "capex": 20.0}) for y in range(2020, 2026)]
+    _quarters(store, {"revenue": 100.0}, annual=annual)
+    r = _run(store, cfg)["fcf_growth_5y"]
+    assert (r["status"], r["value"]) == ("unsupported", None)
+    assert r["status_reason"] == "free cash flow not positive in FY2020 or FY2025"
+
+
+def test_margins_compare_with_the_ttm_a_year_earlier(store, cfg):     # fcf margin 0.20 -> 0.15: change -0.05
+    _company(store)
+    _quarters(store, {"revenue": 100.0, "ocf": 25.0, "capex": 5.0, "operating_income": 30.0},
+              {"revenue": 100.0, "ocf": 20.0, "capex": 5.0, "operating_income": 20.0})
+    rows = _run(store, cfg)
+    assert rows["fcf_margin_change"]["status"] == "ok"
+    assert rows["fcf_margin_change"]["value"] == pytest.approx(-0.05)
+    assert rows["op_margin_change"]["value"] == pytest.approx(-0.10)
+    derived = [s for s in json.loads(rows["fcf_margin_change"]["sources"]) if s["kind"] == "derived"]
+    assert derived and "2025-06-30" in derived[0]["ref"] and "2026-06-30" in derived[0]["ref"]
+
+
+def test_margins_without_a_ttm_a_year_earlier_are_not_enough_history(store, cfg):
+    _company(store)
+    _quarters(store, {}, {"revenue": 100.0, "ocf": 20.0, "capex": 5.0, "operating_income": 20.0})   # one TTM row
+    r = _run(store, cfg)["op_margin_change"]
+    assert (r["status"], r["status_reason"]) == \
+           ("not_enough_history", "no TTM statements 350-380 days before 2026-06-30")
+
+
+def test_net_debt_ebitda_needs_positive_ebitda(store, cfg):
+    _company(store)
+    q = {"operating_income": 25.0, "depreciation_amortization": 25.0, "long_term_debt": 300.0, "cash": 50.0,
+         "short_term_investments": 50.0}
+    _quarters(store, q)
+    r = _run(store, cfg)["net_debt_ebitda"]
+    assert r["status"] == "ok" and r["value"] == pytest.approx((300.0 - 50.0 - 50.0) / 200.0)
+    _quarters(store, dict(q, operating_income=-40.0, depreciation_amortization=10.0))
+    r = _run(store, cfg)["net_debt_ebitda"]
+    assert (r["status"], r["value"], r["status_reason"]) == ("unsupported", None, "EBITDA not positive")
+    _quarters(store, dict(q, long_term_debt=None))
+    r = _run(store, cfg)["net_debt_ebitda"]
+    assert (r["status"], r["status_reason"]) == ("unsupported", "no debt or cash figure in its filings")
+
+
+def test_buyback_yield_counts_a_missing_line_as_zero(store, cfg):
+    _company(store)
+    _quarters(store, {"revenue": 100.0})
+    r = _run(store, cfg)["buyback_yield"]
+    assert (r["status"], r["value"]) == ("ok", 0.0)
+    _quarters(store, {"revenue": 100.0, "buybacks": 10.0})
+    assert _run(store, cfg)["buyback_yield"]["value"] == pytest.approx(40.0 / 1000.0)
+
+
+def test_last_surprise_cites_the_8k(store, cfg):
+    _company(store)
+    store.replace_earnings("AAA", [_event("2026-04-29", -3.1), _event("2026-07-30", 6.74, ACCN_8K),
+                                   _event("2026-10-28", None), _event("2026-11-30", 9.9)])
+    r = _run(store, cfg)["last_surprise"]
+    assert (r["status"], r["value"]) == ("ok", 6.74)
+    src = json.loads(r["sources"])
+    f = [s for s in src if s["kind"] == "filing"][0]
+    assert (f["label"], f["ref"], f["date"]) == ("8-K", ACCN_8K, "2026-07-30")
+    assert f["url"] == "https://www.sec.gov/Archives/edgar/data/999002/000099900226000077/0000999002-26-000077-index.htm"
+    assert {"kind": "feed", "label": "Yahoo earnings dates", "date": None, "ref": "2026-07-30"} in src
+
+
+def test_last_surprise_without_one_says_so(store, cfg):
+    _company(store)
+    store.replace_earnings("AAA", [_event("2026-10-28", None)])
+    r = _run(store, cfg)["last_surprise"]
+    assert (r["status"], r["status_reason"]) == ("unsupported", "no earnings surprise on record")
+
+
+def test_estimate_change_needs_a_snapshot_30_days_old(store, cfg):
+    _company(store)
+    _estimates(store, {_days_before(END, 10): 5.0, _days_before(END, 2): 5.2, END: 5.5})
+    r = _run(store, cfg)["estimate_change_30d"]
+    assert (r["status"], r["value"]) == ("not_enough_history", None)
+    assert r["status_reason"] == f"estimate snapshots start {_days_before(END, 10)}"
+    _estimates(store, {_days_before(END, 45): 4.0, _days_before(END, 31): 5.0, "2026-11-02": 99.0})
+    r = _run(store, cfg)["estimate_change_30d"]
+    assert r["status"] == "ok" and r["value"] == pytest.approx(0.10)       # (5.5 - 5.0) / 5.0, not 4.0 or 99.0
+    src = json.loads(r["sources"])
+    assert src[0]["kind"] == "feed" and _days_before(END, 31) in src[0]["ref"] and END in src[0]["ref"]
+
+
+def test_estimate_change_is_blank_when_a_report_fell_between(store, cfg):
+    _company(store)
+    _estimates(store, {_days_before(END, 40): 5.0, END: 5.5})
+    store.replace_earnings("AAA", [_event(_days_before(END, 20), 1.0)])
+    r = _run(store, cfg)["estimate_change_30d"]
+    assert (r["status"], r["value"]) == ("unsupported", None)
+    assert r["status_reason"] == "a report fell between the two snapshots; the year may have rolled"
+
+
+def test_estimate_change_from_zero_is_unsupported(store, cfg):
+    _company(store)
+    _estimates(store, {_days_before(END, 40): 0.0, END: 0.5})
+    r = _run(store, cfg)["estimate_change_30d"]
+    assert (r["status"], r["value"]) == ("unsupported", None)
+
+
+def test_estimate_rows_are_one_period_ascending(store):
+    _weekday_bars(store, "AAA", n=5)
+    _estimates(store, {"2026-10-20": 5.0, "2026-10-01": 4.0})
+    assert store.estimate_rows("AAA", "0y") == [{"date": "2026-10-01", "eps_avg": 4.0},
+                                                {"date": "2026-10-20", "eps_avg": 5.0}]
+    assert store.estimate_rows("AAA", "+1y") == []
+
+
+def test_insider_counts_buys_minus_sells_in_90_days(store, cfg, tmp_path):
+    # buy, buy (an accession that does not validate: counted, no link), sell, other, a buy 120 days old -> 1
+    _company(store)
+    cfg.investing_dir = tmp_path / "inv"
+    _insider(tmp_path / "inv" / "data" / "insider.json", {"AAA": [
+        _entry(5, "buy", "0000999002-26-000201"), _entry(30, "buy", "not-an-accession"),
+        _entry(60, "sell", "0000999002-26-000203"), _entry(70, "other", "0000999002-26-000204"),
+        _entry(120, "buy", "0000999002-26-000205")]})
+    r = _run(store, cfg)["insider_net_90d"]
+    assert (r["status"], r["value"]) == ("ok", 1.0)
+    src = json.loads(r["sources"])
+    assert src[0] == {"kind": "feed", "label": "insider.json", "date": "2026-10-30", "ref": "2 buys, 1 sells"}
+    filings = [s for s in src if s["kind"] == "filing"]
+    assert [(s["label"], s["ref"], s["date"]) for s in filings] == [            # oldest first
+        ("4", "0000999002-26-000203", _days_before(END, 60)), ("4", "0000999002-26-000201", _days_before(END, 5))]
+    assert "example.invalid" not in r["sources"]
+
+
+def test_insider_feed_missing_says_so(store, cfg, tmp_path):
+    _company(store)
+    cfg.investing_dir = tmp_path / "nowhere"
+    r = _run(store, cfg)["insider_net_90d"]
+    assert (r["status"], r["value"], r["status_reason"]) == ("unsupported", None, "insider feed not found")
+    cfg.investing_dir = None
+    assert _run(store, cfg)["insider_net_90d"]["status_reason"] == "insider feed not found"
+
+
+def test_a_symbol_not_in_the_insider_feed_says_so(store, cfg, tmp_path):
+    _company(store)
+    cfg.investing_dir = tmp_path / "inv"
+    _insider(tmp_path / "inv" / "data" / "insider.json", {"AAPL": []})
+    r = _run(store, cfg)["insider_net_90d"]
+    assert (r["status"], r["status_reason"]) == ("unsupported", "not in the insider feed")
+
+
+def test_the_insider_feed_is_read_once_per_run(store, cfg, tmp_path, monkeypatch):
+    _company(store)
+    _company(store, symbol="BBB")
+    cfg.investing_dir = tmp_path / "inv"
+    _insider(tmp_path / "inv" / "data" / "insider.json", {"AAA": []})
+    calls = []
+    real = scores.read_insider
+    monkeypatch.setattr(scores, "read_insider", lambda p: calls.append(p) or real(p))
+    _run(store, cfg)
+    assert len(calls) == 1
+
+
+def test_second_run_with_fundamentals_changes_no_row(store, cfg, tmp_path):
+    _company(store)
+    _quarters(store, {"revenue": 100.0, "ocf": 25.0, "capex": 5.0, "operating_income": 30.0, "buybacks": 3.0})
+    _estimates(store, {_days_before(END, 40): 5.0, END: 5.5})
+    cfg.investing_dir = tmp_path / "inv"
+    _insider(tmp_path / "inv" / "data" / "insider.json", {"AAA": [_entry(5, "buy", "0000999002-26-000201")]})
+    _cover(store)
+    engine.run(store, cfg)
+    first = [tuple(r) for r in store.query("SELECT * FROM valuation_scores_raw ORDER BY symbol, metric")]
+    before = store.conn.total_changes
+    engine.run(store, cfg)
+    assert [tuple(r) for r in store.query("SELECT * FROM valuation_scores_raw ORDER BY symbol, metric")] == first
+    assert store.conn.total_changes == before
