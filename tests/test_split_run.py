@@ -641,7 +641,7 @@ def test_cash_older_than_positions_keeps_an_open_proposal_open(setup):
                                   [PositionRow(ACCT, s, None, 1.0, v, v) for s, v in B_POSITIONS], [CashRow(ACCT, 0.0)]))
     rep = _run(store, cfg, 3)                                      # 0 would be spent, were the row as new as the positions
     assert (rep.opened, rep.replaced, rep.spent) == (0, 0, 0)
-    assert "brokerage: cash row older than its positions" in rep.notes
+    assert "brokerage: cash row older than its positions; its open proposal stays open" in rep.notes
     assert not any("Sample" in n for n in rep.notes)
     assert store.open_proposal("brokerage")["id"] == before[0][0]
     assert store.query("SELECT COUNT(*) FROM allocation_proposals_raw")[0][0] == 1

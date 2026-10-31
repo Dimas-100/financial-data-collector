@@ -579,9 +579,14 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
     least `min_new`), anything between changes nothing; with none open, cash `min_new` or more above
     the baseline (0 before any proposal; after a spent one, the lower of its closing cash and the lowest balance since
     that day) opens one. An account named twice on one label, with no entries in the targets file, with no cash row,
-    or whose cash row is older than its newest positions (an account with no positions: any row counts) is left alone (an open proposal of it stays open, said in the notes), as is an open proposal whose name is no longer
-    configured. An open proposal's lines are never rewritten; the same cash writes nothing. `now` stamps created_at /
-    closed_at, `checked_at` is the covering check run's finish. Notes name targets-file account names, never a label."""
+    or whose cash row is older than its newest positions (an account with no positions: any row counts) is left alone
+    (an open proposal of it stays open, said in the notes), as is an open proposal whose name is no longer configured.
+    Caps are household-wide across accounts: a new proposal counts every other account's open lines (earlier runs and
+    earlier in this one) as pending holdings (`with_pending`). A fund is a symbol typed as one, or one with a
+    look-through file whose type is unknown or missing; any other symbol of unknown or missing type is, for caps, a fund
+    without a file (`type_unknown`). An open proposal's lines are never rewritten; the same cash writes nothing. `now`
+    stamps created_at / closed_at, `checked_at` is the covering check run's finish. Notes name targets-file account
+    names, never a label."""
     alloc = cfg.allocation
     try:
         targets = read_targets(alloc.targets)
@@ -642,7 +647,7 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
         cash_date, amount = cash_rows[label]
         if label in positions_date and cash_date < positions_date[label]:
             # A cash row older than the account's positions may not show what was just placed: it decides nothing.
-            run_notes.append(f"{key}: cash row older than its positions")
+            run_notes.append(f"{key}: cash row older than its positions{stays}")
             continue
         cash = float(amount or 0.0)
         current = store.open_proposal(key)

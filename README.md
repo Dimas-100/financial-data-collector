@@ -160,10 +160,12 @@ thresholds are in `[check]` of `config.toml`. What it looks at:
 - **split**: an open weekly-split proposal (`allocation_proposals_raw`) that breaks a rule is held: its lines add up to more
   than the cash, a line is not a whole number of dollars of at least 1, a line goes to a name your targets file marks
   `hold` in that account (or whose `rebalance` is not `trades`, `contributions` or `hold`) or that the account has no
-  entry for, the cash is not a number, or it has no sources. One finding per open proposal with every fault in its
-  message, field `proposal:<id>`, symbol the account's targets-file name; a closed proposal gets none. A missing or
-  unreadable targets file is a warning ("cannot check hold names") while a proposal is open. It reads the targets file
-  with its own code. The `engine` step runs it alone right after the split writes ("; split checks: N holds, N
+  entry for, the cash is not a number or is not the account's own USD cash row on the proposal's `cash_date` (half a cent
+  apart; the account found through `[allocation.accounts]`), or it has no sources. One finding per open proposal with
+  every fault in its message, field `proposal:<id>`, symbol the account's targets-file name; a closed proposal gets none.
+  A missing or unreadable targets file is a warning ("cannot check hold names") while a proposal is open, and so is a
+  proposal whose account has no cash row that day or is no longer in `[allocation.accounts]`. It reads the targets file
+  with its own code; a number too large for a float or JSON nested too deeply never makes it fail. The `engine` step runs it alone right after the split writes ("; split checks: N holds, N
   warnings, N errors").
 
 It records into two tables. `check_runs` has one row per run (when, how many checks, how many holds and warnings it
@@ -351,9 +353,10 @@ which the adapters turn into cash) across that account's holdings, from your own
 to the database, never an order: nothing here can trade, sell, or move money between accounts, and it never proposes
 more than the waiting cash. It runs only under the engine's gate, so a sync whose check failed (or whose score re-check
 had errors) opens, replaces and closes nothing; the step's message says why (`; split: score re-check failed`,
-`; split: no targets file`). The checker looks at what it writes at once (the `split` check, see "Checker"): a proposal
-whose lines add up to more than the cash, are not whole dollars, go to a name your targets file marks `hold` or has no
-entry for in that account, or carry no sources is held, and `allocation_proposals` then shows it `held` with its dollars
+`; split: no targets file`; if the split itself fails, the step is an `error` and its re-check still runs). The checker
+looks at what it writes at once (the `split` check, see "Checker"): a proposal whose lines add up to more than the cash,
+are not whole dollars, go to a name your targets file marks `hold` or has no entry for in that account, whose cash is
+not the account's own cash row of that day, or that carry no sources is held, and `allocation_proposals` then shows it `held` with its dollars
 blank until the finding clears. Set it up in `config.toml`:
 
 ```toml
@@ -371,18 +374,23 @@ roth = "Sample Roth"
 ```
 
 Neither path is set in code: without a `targets` line there is no split, so a database never reads a file it was not
-pointed at. A proposal's `account_key` is the targets-file name (`brokerage`), never the label.
+pointed at (a `config.toml` made before the split needs the `[allocation]` `targets` / `fund_holdings` lines and the
+`[allocation.accounts]` table added by hand before any proposal is made). A proposal's `account_key` is the
+targets-file name (`brokerage`), never the label.
 
 **The targets file** is one JSON object. Each key that holds a list (other than `sleeves`, `caps`, `planned` and keys
 starting with `_`) is an account, named as in `[allocation.accounts]`, and each entry is `{ticker, target, type, min,
-max, rebalance}`: `target`, `min` and `max` in percent as written (15 is 15%); `type` is `pct_of_account` (the
-default), `pct_of_brokerage` (measured on, and paid to, the account mapped as `brokerage`, wherever it is filed) or
-`direct_passive_ratio` (a plain ratio, below); with no `min`/`max` the band is 0.75x to 1.25x of the target; `rebalance`
-is `trades` (the default), `contributions` or `hold`. `sleeves` (`{account, label, members, min, max, rebalance}`) and
+max, rebalance}`; `type` is `pct_of_account` (the default), `pct_of_brokerage` (measured on, and paid to, the account
+mapped as `brokerage`, wherever it is filed) or `direct_passive_ratio` (below). For the two percent kinds `target`,
+`min` and `max` are percent as written (15 is 15%); for `direct_passive_ratio` they are plain ratios (1.5 is one and a
+half times). With no `min`/`max` the band is 0.75x to 1.25x of the target; `rebalance` is `trades` (the default),
+`contributions` or `hold`, and a name with any `hold` entry in an account is held there, even when another of its
+entries says otherwise. `sleeves` (`{account, label, members, min, max, rebalance}`) and
 `caps` (`{ticker, max}`, a ceiling in percent of the household) limit; `last_revised` is quoted in the sources. What the
-reader cannot use (an entry with no ticker or target) is skipped and said in the proposal's notes. The optional
-`fund_holdings` folder holds one `<FUND>.csv` per fund (columns `ticker`, `name`, `weight_pct`), which lets a fund count
-toward the names it holds.
+reader cannot use (an entry with no ticker or target, or a number too large to be one) is skipped and said in the
+proposal's notes. The optional `fund_holdings` folder holds one `<FUND>.csv` per fund (columns `ticker`, `name`,
+`weight_pct`), which lets a fund count toward the names it holds. A symbol with a file there is a fund even when the
+warehouse does not know its type.
 
 For each account named in `[allocation.accounts]`, the waiting cash is the account's newest USD cash row, and:
 
@@ -390,8 +398,13 @@ For each account named in `[allocation.accounts]`, the waiting cash is the accou
 - with a proposal open, cash `min_new` or more above its cash makes a new proposal for all of the cash, which
   replaces it (`replaced`); cash at least $1 below it means you placed it, in full or in part (`spent`); anything
   between changes nothing;
-- after a spent proposal, the next one needs the cash `min_new` above the lowest balance since then, and covers all
-  of the cash, so money you left waiting joins the next deposit;
+- a `buy` of a holding (not the money market) in that account dated on or after the proposal's cash date, once a newer
+  cash row is in, also means you placed it (`spent`), even when a deposit since then hides it from the cash; a new
+  proposal for all of the cash then opens at once if it is at least `min_new`. When the transactions feed lags behind
+  the balances, the cash rules above still apply, and a late buy is caught a sync late;
+- after a spent proposal, the next one needs the cash `min_new` above the baseline, the lower of the cash it closed with
+  and the lowest balance since its closing day (that day included), and covers all of the cash, so money you left
+  waiting joins the next deposit;
 - an account with no entries in the targets file ("no targets for <name>"), with no cash row, with a cash row older
   than its newest positions (it may not show what you just placed; an account with no positions counts any row), or
   named twice on one account gets no proposal; one it already has stays open, as does one whose name left
@@ -417,15 +430,24 @@ fresh too; a bank or card account with only cash is not part of it. With a look-
 names it holds, both in a cap and in the `direct_passive_ratio` target (the gap is the target times the household's
 dollars held through funds, less its direct dollars; a name no fund on file holds gets nothing, "no look-through"); a
 fund with no file is counted at the largest weight of the name in any file, so missing look-through never makes room
-(`look_through_assumed`). A sleeve's `min` is never pushed toward: the split does not sell and does not force money in.
+(`look_through_assumed`); a symbol whose type the warehouse does not know and that has no file is counted the same
+way, as a fund without a file (`type_unknown`). Caps hold across accounts: when a proposal is made, the lines of every
+other account's open proposal count as holdings already (a proposal being replaced does not count its own old lines),
+so two deposits in one week cannot together pass a cap. A sleeve's `min` is never pushed toward: the split does not sell and does not force money in.
 A `hold` name or one with a misspelled rule gets nothing, and neither does a holding at or over its target. `trades` and
-`contributions` are treated alike, since the split only ever adds. Shares are floored to whole dollars, lines under
-`min_line` are folded into the largest line as far as its room allows, and what fits nowhere waits for next week
-(`placed` is the sum of the lines, `waits` the rest).
+`contributions` are treated alike, since the split only ever adds (a line says `trades_as_contributions`). Shares are
+floored to whole dollars, lines under `min_line` are folded into the largest line as far as its room allows; when no
+line reaches `min_line`, all of it is folded into the largest share as far as its room allows, and waits if that is
+still under `min_line`. What fits nowhere waits for next week (`placed` is the dollars of the lines, `waits` the rest:
+`cash` = `placed` + `waits` to the cent).
 
 **What a proposal says.** Each line lists its sources: the targets entry (the file's name only, never its path, its
 `last_revised`, and the account the entry is filed under), the scores that decided its band, and the tilt; the proposal
-lists the cash row and the targets file. Its notes say why an entry got no line (`duplicate`, `hold`, `unknown_rule`, `no_look_through`,
+lists the cash row and the targets file. A line's `reasons`, in order: the band's (`held:<metric>`,
+`unsupported:<metric>`, `no_history:<metric>`, `missing:<metric>`, then `one_metric`, `no_metrics`, `premium_by:`,
+`cheap_by:`, `quality_falling`, `quality_unknown` or `disagree`), then the split's: `trades_as_contributions`,
+`no_scores` (no score row at all: `usual`), `type_unknown`, `look_through_assumed`, what stopped it (`sleeve_cut:<label>`,
+`cap_cut:<symbol>`, `band_top`) and `folded`. Its notes say why an entry got no line (`duplicate`, `hold`, `unknown_rule`, `no_look_through`,
 `at_or_over_target`, `no_cash`, `under_min`, `sleeve_cut:`, `cap_cut:`, `band_top`), what the targets file could not be
 used for, and how many accounts were left out of the household for being older than `household_days`, or had a cash row
 too old to count (counts, never a name). The proposals are a record, like the checker's findings: a run only adds one or
