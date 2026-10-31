@@ -48,7 +48,7 @@ class SyncReport:
     @property
     def exit_code(self) -> int:
         network = [s for s in self.steps if s.step in NETWORK_STEPS
-                   and not (s.step in ("connections", "macro", "earnings") and s.status == "skipped")]
+                   and not (s.step in ("connections", "macro", "funds", "earnings") and s.status == "skipped")]
         if network and all(s.status == "error" for s in network):
             return 1
         return 0
@@ -153,7 +153,9 @@ def _step_funds(store: Store, cfg: Config, *, now, yahoo, sleep, progress: Progr
         msg += "; " + ", ".join(f"{r.symbol} ({r.message})" for r in noted)
     if failed:
         msg += "; failed: " + ", ".join(f"{r.symbol} ({r.message})" for r in failed)
-    status = "error" if results and len(failed) == len(results) else "ok"
+    # No fund to ask (all asked today, or none typed a fund yet) is skipped, not ok, as in the earnings step: it says
+    # nothing about the network, so exit_code leaves it out.
+    status = "skipped" if not results else "error" if len(failed) == len(results) else "ok"
     return written, msg, status
 
 

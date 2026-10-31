@@ -6,10 +6,9 @@ the day this first runs. Some funds have none of their own (a mutual fund Yahoo 
 Figures are stored as fractions: a yield or expense ratio of 1.21% is 0.0121."""
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable
 from zoneinfo import ZoneInfo
 
@@ -17,7 +16,7 @@ from ..config import Config
 from ..connections.redact import redact
 from ..models import FundSnapshot
 from ..store import Store
-from .yahoo import PAUSE_SECONDS, YahooClient
+from .yahoo import PAUSE_SECONDS, YahooClient, finite
 
 FUND_TYPES = ("etf", "mutual_fund", "fund")
 NEW_YORK = ZoneInfo("America/New_York")
@@ -36,11 +35,7 @@ class FundResult:
     again: bool = False                 # no figures today, but a snapshot on its last day: not marked, asked again
 
 
-def _number(value: object) -> float | None:
-    """A finite number, or None: NaN, infinity, text and booleans are not figures."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return None
-    return float(value)
+DISAGREE = 10                           # two readings of one figure this many times apart: one is in the wrong unit
 
 
 def _in_range(value: float | None, bounds: tuple[float, float], name: str, notes: list[str]) -> float | None:
@@ -53,18 +48,38 @@ def _in_range(value: float | None, bounds: tuple[float, float], name: str, notes
     return None
 
 
+def _disagree(a: float, b: float) -> bool:
+    """Are two readings of one figure, in one unit, DISAGREE times or more apart (zero against non-zero counts)?"""
+    a, b = abs(a), abs(b)
+    if a == b:
+        return False
+    return min(a, b) == 0 or max(a, b) / min(a, b) >= DISAGREE
+
+
 def figures_from_info(info: dict) -> tuple[dict, list[str]]:
-    """The four figures from Yahoo's `info`, as fractions, plus a note for each value refused as out of range.
-    Yahoo's `yield` is already a fraction (`dividendYield` is in percent and is never read); `netExpenseRatio` is in
-    percent, `annualReportExpenseRatio` a fraction. A yield in percent would pass for a huge one, so it is refused."""
+    """The four figures from Yahoo's `info`, as fractions, plus a note for each value refused.
+    Yahoo's `yield` is already a fraction (`dividendYield` is in percent, read only to check it); `netExpenseRatio` is
+    in percent, `annualReportExpenseRatio` a fraction (the net one wins). A yield in percent would pass for a huge one,
+    so a value out of range is refused, and so is one whose two readings disagree by DISAGREE times or more: Yahoo has
+    changed a unit, and which reading is right cannot be told."""
     notes: list[str] = []
-    net = _number(info.get("netExpenseRatio"))
-    expense = net / 100 if net is not None else _number(info.get("annualReportExpenseRatio"))
+    paid, paid_pct = finite(info.get("yield")), finite(info.get("dividendYield"))
+    if paid is not None and paid_pct is not None and _disagree(paid * 100, paid_pct):
+        notes.append(f"yield {paid:g} disagrees with dividendYield {paid_pct:g}%")
+        dividend_yield = None
+    else:
+        dividend_yield = _in_range(paid, YIELD_RANGE, "yield", notes)
+    net, annual = finite(info.get("netExpenseRatio")), finite(info.get("annualReportExpenseRatio"))
+    if net is not None and annual is not None and _disagree(net / 100, annual):
+        notes.append(f"netExpenseRatio {net:g}% disagrees with annualReportExpenseRatio {annual:g}")
+        expense_ratio = None
+    else:
+        expense_ratio = _in_range(net / 100 if net is not None else annual, EXPENSE_RANGE, "expense ratio", notes)
     figures = {
-        "trailing_pe": _number(info.get("trailingPE")),
-        "forward_pe": _number(info.get("forwardPE")),
-        "dividend_yield": _in_range(_number(info.get("yield")), YIELD_RANGE, "yield", notes),
-        "expense_ratio": _in_range(expense, EXPENSE_RANGE, "expense ratio", notes),
+        "trailing_pe": finite(info.get("trailingPE")),
+        "forward_pe": finite(info.get("forwardPE")),
+        "dividend_yield": dividend_yield,
+        "expense_ratio": expense_ratio,
     }
     return figures, notes
 
@@ -90,7 +105,7 @@ def collect_funds(
     asked again next sync). A fund whose own figures lack a P/E and a yield takes its
     `[fund_proxies]` ETF's, keeping its own expense ratio."""
     day = now.astimezone(NEW_YORK).date().isoformat()
-    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    stamp = now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     secrets = (cfg.sec_user_agent, cfg.tiingo_token)
     kinds = {row["symbol"]: row for row in store.securities()}
     answers: dict[str, dict | None] = {}                    # what Yahoo said this run, so a proxy is asked once
@@ -136,7 +151,7 @@ def collect_funds(
             store.mark_fund_fetch(symbol, day)
             results.append(FundResult(symbol, None, 0, "; ".join(["no figures", *notes])))
             continue
-        store.mark_fund_fetch(symbol, day)
         written = store.write_fund_snapshot(FundSnapshot(symbol, day, source=source, **figures), stamp)
+        store.mark_fund_fetch(symbol, day)                  # only after the write: a failed one is retried
         results.append(FundResult(symbol, source, written, "; ".join(notes)))
     return results

@@ -93,8 +93,31 @@ def test_annual_report_expense_ratio_is_already_a_fraction():
 
 
 def test_net_expense_ratio_wins_over_the_annual_report_one():
-    figs, _ = funds.figures_from_info({"netExpenseRatio": 0.05, "annualReportExpenseRatio": 0.009})
-    assert figs["expense_ratio"] == pytest.approx(0.0005)
+    figs, notes = funds.figures_from_info({"netExpenseRatio": 0.0945, "annualReportExpenseRatio": 0.0009})
+    assert figs["expense_ratio"] == pytest.approx(0.000945) and notes == []
+
+
+def test_expense_ratios_ten_times_apart_are_refused():
+    figs, notes = funds.figures_from_info({"trailingPE": 20.0, "netExpenseRatio": 0.0945,
+                                           "annualReportExpenseRatio": 0.0945})
+    assert figs["expense_ratio"] is None
+    assert notes == ["netExpenseRatio 0.0945% disagrees with annualReportExpenseRatio 0.0945"]
+    assert funds.figures_from_info({"netExpenseRatio": 0.05, "annualReportExpenseRatio": 0.0049})[0]["expense_ratio"] \
+        == pytest.approx(0.0005)                                          # 9.8 times apart: kept
+
+
+def test_a_yield_and_dividend_yield_that_disagree_are_refused():
+    figs, notes = funds.figures_from_info({"trailingPE": 20.0, "yield": 0.99, "dividendYield": 0.99})
+    assert figs["dividend_yield"] is None and notes == ["yield 0.99 disagrees with dividendYield 0.99%"]
+    assert funds.figures_from_info({"yield": 0.0, "dividendYield": 0.5})[0]["dividend_yield"] is None
+    assert funds.figures_from_info({"yield": 0.0, "dividendYield": 0.0})[0]["dividend_yield"] == 0.0
+    assert funds.figures_from_info({"yield": 0.0099, "dividendYield": 0.95})[0]["dividend_yield"] == 0.0099
+
+
+def test_numpy_numbers_are_figures():
+    np = pytest.importorskip("numpy")
+    figs, _ = funds.figures_from_info({"trailingPE": np.int64(24), "yield": np.float64(0.0099)})
+    assert figs["trailing_pe"] == 24.0 and figs["dividend_yield"] == 0.0099
 
 
 def test_a_yield_in_percent_is_refused_not_stored():
@@ -102,7 +125,7 @@ def test_a_yield_in_percent_is_refused_not_stored():
     assert figs["dividend_yield"] is None and notes == ["yield 0.99 out of range"]
 
 
-def test_dividend_yield_key_is_never_read():
+def test_dividend_yield_is_never_stored():
     figs, notes = funds.figures_from_info({"trailingPE": 20.0, "dividendYield": 0.99})
     assert figs["dividend_yield"] is None and notes == []
 
@@ -265,6 +288,23 @@ def test_no_figures_after_a_day_with_figures_is_not_marked_and_is_asked_again(st
     assert blank.calls == ["SPY", "SPY"]                                   # not marked: asked again
     _collect(store, ["SPY"], cfg, _FakeYahoo({"SPY": SPY_INFO}), now=NOW.replace(hour=18))
     assert _snapshot(store, "SPY") is not None and len(store.query("SELECT 1 FROM fund_snapshots")) == 2
+
+
+def test_the_stamp_is_utc_whatever_zone_now_is_in(store, cfg):
+    from zoneinfo import ZoneInfo
+    _security(store, "SPY", "etf")
+    _collect(store, ["SPY"], cfg, _FakeYahoo({"SPY": SPY_INFO}), now=NOW.astimezone(ZoneInfo("America/New_York")))
+    assert _snapshot(store, "SPY")["fetched_at"] == STAMP
+
+
+def test_a_failed_write_is_not_marked(store, cfg, monkeypatch):
+    def broken(*a, **k):
+        raise RuntimeError("disk full")
+    monkeypatch.setattr(store, "write_fund_snapshot", broken)
+    _security(store, "SPY", "etf")
+    with pytest.raises(RuntimeError, match="disk full"):
+        _collect(store, ["SPY"], cfg, _FakeYahoo({"SPY": SPY_INFO}))
+    assert store.query("SELECT last_fund_fetch FROM securities WHERE symbol='SPY'")[0][0] is None
 
 
 def test_sleeps_only_between_calls(store, cfg):
@@ -454,6 +494,22 @@ def test_the_funds_step_names_a_fund_that_went_blank(tmp_path):
                   sleep=lambda s: None)
     rep = sync.run_sync(cfg, only=["funds"], fetch=_no_network, now=NOW, yahoo=_FakeYahoo({}), sleep=lambda s: None)
     assert "SPY (no figures today, had them on 2026-10-28; asked again next sync)" in rep.steps[0].message
+
+
+def test_the_funds_step_is_skipped_when_it_asks_no_fund(tmp_path):
+    cfg = _sync_cfg(tmp_path)
+    yahoo_client = _FakeYahoo({s: SPY_INFO for s in ("SPY",) + ELEVEN})
+    sync.run_sync(cfg, only=["funds"], fetch=_no_network, now=NOW, yahoo=yahoo_client, sleep=lambda s: None)
+    again = sync.run_sync(cfg, only=["funds"], fetch=_no_network, now=NOW, yahoo=yahoo_client, sleep=lambda s: None)
+    assert again.steps[0].status == "skipped" and again.steps[0].message.startswith("0 snapshots written")
+
+
+def test_a_skipped_funds_step_leaves_the_exit_code_to_the_other_network_steps():
+    report = sync.SyncReport("r", [sync.StepResult("prices", "error"), sync.StepResult("sec", "error"),
+                                   sync.StepResult("funds", "skipped"), sync.StepResult("earnings", "skipped")])
+    assert report.exit_code == 1
+    report.steps[2].status = "ok"
+    assert report.exit_code == 0
 
 
 def test_run_sync_uses_the_default_client_when_none_is_given(tmp_path, monkeypatch):
