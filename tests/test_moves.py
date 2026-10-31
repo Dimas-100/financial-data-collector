@@ -1,6 +1,7 @@
 """Drops and their causes (`price_moves`): a day down 4%, a week down 8%, or a day 2.5 of the symbol's own standard
 deviations below the market, each with the causes found in sourced facts, in the spec's order, or "no cause found"."""
 import json
+from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
@@ -171,6 +172,20 @@ def test_after_close_report_the_evening_before_is_the_cause():            # Revi
     m = moves.add_causes(_move("2026-10-28", "2026-10-29"), [_event("2026-10-28", "after_close")], [], [], CIK, None)
     assert m.causes[0]["kind"] == "earnings" and "after the close" in m.causes[0]["text"]
     assert m.causes[0]["text"] == "reported earnings on 2026-10-28 after the close: EPS 2.02 vs 1.89 expected (+6.9%)"
+
+
+@pytest.mark.parametrize("span", ["1d", "5d"])
+def test_after_close_report_on_the_end_day_is_the_next_moves_cause_not_this_ones(span):   # R14
+    ev = [_event("2026-10-29", "after_close")]
+    this = moves.add_causes(replace(_move("2026-10-28", "2026-10-29"), span=span), ev, [], [], CIK, None)
+    assert this.causes == (NONE,)
+    nxt = moves.add_causes(replace(_move("2026-10-29", "2026-10-30"), span=span), ev, [], [], CIK, None)
+    assert [c["kind"] for c in nxt.causes] == ["earnings"] and "after the close" in nxt.causes[0]["text"]
+
+
+def test_unknown_time_report_on_the_end_day_still_counts():               # R14: unknown time is not excluded
+    m = moves.add_causes(_move("2026-10-28", "2026-10-29"), [_event("2026-10-29", None)], [], [], CIK, None)
+    assert m.causes[0]["kind"] == "earnings"
 
 
 def test_before_open_report_on_the_day_before_is_not():                   # Review Focus 4

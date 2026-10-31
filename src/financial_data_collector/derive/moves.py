@@ -182,13 +182,16 @@ def _bench_cause(kind: str, text: str, bench: str, bench_move: float, start: str
 def add_causes(move: PriceMove, events: list[EarningsEvent], reports: list[CurrentReport], headlines: list[Headline],
                cik: str | None, sector_name: str | None) -> PriceMove:
     """`move` with its causes, each {kind, text, sources}, in this order: earnings reported in (start_date, date] or on
-    start_date after the close or at an unknown time; 8-Ks filed in [start_date, date] with an item other than 2.02 and
+    start_date after the close or at an unknown time, but not on `date` after the close (that news came after the
+    close the move ends on: it is the next move's); 8-Ks filed in [start_date, date] with an item other than 2.02 and
     9.01; the market fund and the sector fund when they fell at least MARKET_SHARE of the move; up to NEWS_MAX
     headlines dated in [start_date, date], newest first. None of these: the one cause "no cause found"."""
     start, day = move.start_date, move.date
     causes: list[dict] = []
     for e in sorted(events, key=lambda x: x.report_date):
-        if start < e.report_date <= day or (e.report_date == start and e.time_of_day in ("after_close", None)):
+        in_span = start < e.report_date < day or (e.report_date == day and e.time_of_day != "after_close")
+        evening_before = e.report_date == start and e.time_of_day in ("after_close", None)
+        if in_span or evening_before:
             causes.append(_earnings_cause(e, cik))
     if cik:
         for r in sorted(reports, key=lambda x: (x.filed, x.accession)):

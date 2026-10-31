@@ -3,8 +3,8 @@
 -- crosses), or a day excess_sd of the symbol's own 1-year standard deviations of daily excess moves over the market
 -- fund below it (trigger excess), on closes adjusted over every final bar with held closes then left out. `causes` is
 -- a JSON list of {kind, text, sources} in the order earnings, filing, market, sector, news, or the one
--- {"kind": "none", "text": "no cause found"}; `sources` a JSON list of {kind, label, date, ref[, url]}; `checked_at`
--- the finish time of the check run that covered the derive it was built from. Never a source of truth.
+-- {"kind": "none", "text": "no cause found", "sources": []}; `sources` a JSON list of {kind, label, date, ref[, url]};
+-- `checked_at` the finish time of the check run that covered the derive it was built from. Never a source of truth.
 
 CREATE TABLE price_moves (
   symbol TEXT NOT NULL,

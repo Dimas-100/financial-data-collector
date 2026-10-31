@@ -305,14 +305,15 @@ Each row carries the market fund's and the sector fund's move between the same t
 is stated only from a sourced fact, in this order:
 
 1. `earnings`: a report dated after the start close and up to the day, or on the start day after the close or at an
-   unknown time ("reported earnings on 2026-10-28 after the close: EPS 2.02 vs 1.89 expected (+6.9%)");
+   unknown time ("reported earnings on 2026-10-28 after the close: EPS 2.02 vs 1.89 expected (+6.9%)"); a report on
+   the day itself after the close came out after the close the move ends on, so it explains the next move, not this one;
 2. `filing`: an 8-K filed from the start day to the day with an item other than 2.02 (results) and 9.01 (exhibits),
    its items named ("filed an 8-K on 2026-10-28: a director or officer change"), with its SEC link;
 3. `market`: the market fund fell at least two thirds as much ("the market fell 5.0% (SPY)");
 4. `sector`: the sector fund did ("its sector fell 4.1% (XLK, Technology)"); a symbol with no sector has none;
 5. `news`: up to three stored headlines dated from the start day to the day, newest first ("<title> (<outlet>,
    <date>)"); a headline stays stored after the feed drops it, so an old drop keeps its news;
-6. none of these: `{"kind": "none", "text": "no cause found"}`, never a guess.
+6. none of these: `{"kind": "none", "text": "no cause found", "sources": []}`, never a guess.
 
 `sources` lists the closes used (the symbol's and the funds') and the thresholds that fired. Rows are rebuilt each
 engine run; one already as it should be is not rewritten.
