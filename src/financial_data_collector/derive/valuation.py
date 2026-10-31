@@ -50,9 +50,11 @@ def build(symbol: str, prices: list[tuple[str, float, float, float]], ttm: list[
     calendar months before the price date, the row is "stale": close, dividends and the period
     markers stay, every figure that comes from the statements is NULL.
 
+    When the TTM row in force (and not stale) has neither a share count nor EPS, the row is
+    "unsupported": the value stays NULL and the status says why.
+
     share_class: the company states shares and EPS in another class's terms (config [share_classes]).
-    EPS is divided by the ratio and shares multiplied by it, before the split scaling. When the TTM
-    row in force has neither shares nor EPS there is nothing to restate: the row is "unsupported".
+    EPS is divided by the ratio and shares multiplied by it, before the split scaling.
     """
     if not ttm:
         return []
@@ -100,7 +102,7 @@ def build(symbol: str, prices: list[tuple[str, float, float, float]], ttm: list[
             continue
         shares = current.get("shares_outstanding") or current.get("shares_diluted")
         eps = current.get("eps_diluted")
-        if share_class and not shares and eps is None:
+        if not shares and eps is None:
             rows.append(_unsupported_row(symbol, d, close, NO_SHARE_COUNT))
             continue
         if share_class:

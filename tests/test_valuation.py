@@ -6,7 +6,7 @@ from financial_data_collector import statements
 from financial_data_collector.collectors.sec_facts import parse_company_facts
 from financial_data_collector.config import ShareClass, load_config
 from financial_data_collector.derive import valuation as V
-from financial_data_collector.models import PriceBar
+from financial_data_collector.models import Fact, PriceBar
 from financial_data_collector.store import Store
 
 TTM1 = dict(period_end="2025-03-31", available_from="2025-05-01", revenue=1000.0, net_income=100.0, ocf=150.0,
@@ -70,9 +70,9 @@ def test_rebuild_writes_only_symbols_with_statements(tmp_path: Path, fixtures: P
         s.write_prices(sym, [PriceBar("2026-01-15", 100.0, 100.0), PriceBar("2026-02-02", 110.0, 110.0, 1.0)], "tiingo")
     n = V.rebuild(s, _cfg(tmp_path))
     rows = s.query("SELECT symbol, date, revenue_ttm, shares, pe FROM valuation_daily ORDER BY symbol, date")
-    # 2026-01-15 already has the Q3-2025 10-Q window in force (1090); the 10-K window (1100) starts 2026-02-01
-    assert n == 1 and [tuple(r)[:3] for r in rows] == [("AAPL", "2026-01-15", 1090.0), ("AAPL", "2026-02-02", 1100.0)]
-    assert rows[0]["shares"] is None                                                     # no share count until the 10-K
+    # 2026-01-15 has the Q3-2025 10-Q window in force (revenue 1090) but no share count yet: unsupported, no figures
+    assert n == 1 and [tuple(r)[:3] for r in rows] == [("AAPL", "2026-01-15", None), ("AAPL", "2026-02-02", 1100.0)]
+    assert rows[0]["shares"] is None and rows[0]["pe"] is None                           # no share count until the 10-K
     assert rows[1]["shares"] == 990.0 and rows[1]["pe"] is None                          # no four-quarter EPS in the fixture
     assert s.query("SELECT COUNT(*) FROM valuation_latest")[0][0] == 1
     s.close()
@@ -113,7 +113,7 @@ def test_valuation_ignores_non_final_bars(tmp_path: Path, fixtures: Path):
                    fetched_at=datetime(2026, 2, 2, 19, 37, tzinfo=timezone.utc))        # 14:37 in New York: still intraday
     V.rebuild(s, _cfg(tmp_path))
     rows = s.query("SELECT date, status, status_reason FROM valuation_daily")
-    assert [tuple(r) for r in rows] == [("2026-01-15", "ok", None)]
+    assert [tuple(r) for r in rows] == [("2026-01-15", "unsupported", "share count not in its filings")]   # no 02-02 row; no shares before the 10-K
     s.close()
 
 
@@ -199,10 +199,23 @@ def test_share_class_with_eps_only_is_still_valued():
     assert r["status"] == "ok" and r["eps_ttm"] == 20.0 and r["pe"] == 25.0 and r["shares"] is None
 
 
-def test_company_without_a_share_class_and_no_shares_is_unchanged():
+def test_company_without_a_share_class_and_no_shares_or_eps_is_unsupported():
     ttm = dict(TTM1, eps_diluted=None, shares_outstanding=None, shares_diluted=None)
     (r,) = _rows(V.build("X", [("2025-05-01", 500.0, 0.0, 1.0)], [ttm]))
-    assert r["status"] == "ok" and r["shares"] is None and r["revenue_ttm"] == 1000.0
+    assert r["status"] == "unsupported" and r["status_reason"] == "share count not in its filings"
+    assert r["close"] == 500.0 and r["revenue_ttm"] is None and r["pe"] is None
+
+
+def test_shares_without_eps_stays_ok_and_derives_eps():
+    ttm = dict(TTM1, eps_diluted=None, shares_outstanding=50.0)
+    (r,) = _rows(V.build("X", [("2025-05-01", 20.0, 0.0, 1.0)], [ttm]))
+    assert r["status"] == "ok" and r["eps_ttm"] == 100.0 / 50.0 and r["pe"] == 10.0
+
+
+def test_stale_wins_over_unsupported():
+    ttm = dict(TTM1, period_end="2012-12-31", available_from="2013-04-02", eps_diluted=None, shares_outstanding=None, shares_diluted=None)
+    (r,) = _rows(V.build("X", [("2026-10-29", 11.35, 0.0, 1.0)], [ttm]))
+    assert r["status"] == "stale"
 
 
 def test_rebuild_applies_the_configured_share_class(tmp_path: Path, fixtures: Path):
@@ -212,10 +225,17 @@ def test_rebuild_applies_the_configured_share_class(tmp_path: Path, fixtures: Pa
         s.upsert_security(sym, "SAMPLE HOLDING", "stock", "2026-01-01")
         s.set_security_cik(sym, "0000000001", "Sample Corp")
         s.write_prices(sym, [PriceBar("2026-02-02", 10.0, 10.0)], "tiingo")
+    facts = facts + [Fact("us-gaap", "NetIncomeLoss", "USD", "2025-01-01", end, v, 2025, fp, form, filed, accn)   # net income -> a derived EPS
+                     for end, v, fp, form, filed, accn in (("2025-03-31", 20.0, "Q1", "10-Q", "2025-05-01", "q125"), ("2025-06-30", 50.0, "Q2", "10-Q", "2025-08-01", "q225"),
+                                                           ("2025-09-30", 90.0, "Q3", "10-Q", "2025-11-01", "q325"), ("2025-12-31", 198.0, "FY", "10-K", "2026-02-01", "k25"))]
     s.write_sec_facts("0000000001", facts)
     s.replace_line_items("0000000001", statements.rebuild(facts, s.concept_rules()))
     cfg = _cfg(tmp_path, '[share_classes]\n"XYZ.B" = { per = "XYZ.A", ratio = 1500 }\n')
     assert V.rebuild(s, cfg) == 2
     shares = {r["symbol"]: r["shares"] for r in s.query("SELECT symbol, shares FROM valuation_latest")}
     assert shares["XYZ.B"] == shares["XYZ.A"] * 1500
+    by = {r["symbol"]: r for r in s.query("SELECT symbol, eps_ttm, pe FROM valuation_latest")}
+    assert abs(by["XYZ.A"]["eps_ttm"] - 198.0 / 990.0) < 1e-12                        # derived from net income over shares
+    assert abs(by["XYZ.B"]["eps_ttm"] - by["XYZ.A"]["eps_ttm"] / 1500) < 1e-12
+    assert abs(by["XYZ.B"]["pe"] - by["XYZ.A"]["pe"] * 1500) < 1e-6
     s.close()
