@@ -75,6 +75,8 @@ waits its turn too. Older history: `fdc query "select * from sync_runs order by 
 | `prices` | daily close, adjusted close, dividends and splits per symbol, for what you hold, your watchlist and the benchmarks (see "Benchmarks") |
 | `macro_observations` | FRED economic numbers in FRED's own units: `CPIAUCSL`, `CPILFESL` (inflation indexes), `DFEDTARL`, `DFEDTARU` (the Fed's target range), `DGS10` (10-year yield), `UNRATE`; one row per series and date, a revision overwrites its row |
 | `fund_snapshots` | for each fund (ETF, mutual fund) one row per day: trailing and forward P/E, dividend yield, expense ratio (yields and expense ratios as fractions: 0.0121 is 1.21%) and where they came from (`yfinance`, or `proxy: SPY via yfinance` when a fund Yahoo has no P/E or yield for borrows an ETF's; set `[fund_proxies]` in `config.toml`). History starts the day the `funds` step first runs; Yahoo keeps none |
+| `earnings_events` | each company's earnings reports: the day (from SEC's 8-K with item 2.02, "Results of Operations", when SEC lists one; else Yahoo's), when in the day (`before_open`, `during`, `after_close`, New York time, when Yahoo knows it), EPS expected and reported and the surprise in percent (from Yahoo), and which source gave each part. Reports that SEC's and Yahoo's lists no longer show stay as stored. Without `SEC_USER_AGENT` the days are Yahoo's |
+| `estimate_snapshots` | Yahoo's EPS estimates for this quarter, next quarter, this year and next year (`0q`, `+1q`, `0y`, `+1y`: average, low, high, number of analysts), one row per company, day and period. History starts the day the `earnings` step first runs |
 | `sec_facts` | every XBRL fact each held company ever filed (all forms, all periods) |
 | `financial_line_items` | those facts shaped into income statement, balance sheet and cash-flow line items, annual and quarterly |
 | `financials_annual`, `financials_quarterly` | one wide row per company per period, with margins and free cash flow |
@@ -90,6 +92,8 @@ Quarterly cash-flow items are computed from year-to-date filings where companies
 year-to-date; fourth quarters are derived from the full year. A quarterly row whose line items include
 any computed value carries `has_derived_items = 1`; `financial_line_items.is_derived` says which ones.
 Funds (ETFs, mutual funds) get positions, prices and a daily `fund_snapshots` row; they file no statements.
+Stocks (and foreign filers) are asked about once a New York day for their earnings history and estimates; the
+`earnings` step also records SEC's industry code in `securities.sic`.
 
 **Benchmarks.** A sync also collects prices for the market fund (`SPY`) and the eleven Select Sector SPDRs (`XLC`, `XLY`,
 `XLP`, `XLE`, `XLF`, `XLV`, `XLI`, `XLB`, `XLRE`, `XLK`, `XLU`), so a later measure has something to compare a move against.

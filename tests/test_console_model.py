@@ -78,7 +78,7 @@ def test_overview_after_a_sync(project, fixtures: Path, monkeypatch):
     assert ov.latest_snapshot is not None
     assert len(ov.runs) == 1
     run = ov.runs[0]
-    assert run.origin == "console" and run.statuses == ("", "ok", "", "", "", "", "ok", "", "") and run.errors == 0
+    assert run.origin == "console" and run.statuses == ("", "ok", "", "", "", "", "", "ok", "", "") and run.errors == 0
     src = {s.name: s for s in ov.sources}
     assert src["inbox files"].state == "empty" and src["inbox files"].last != "never"
     assert "file" in src["broker export folder"].last
@@ -112,8 +112,8 @@ def test_run_summary_marks_absent_steps():
     ]
     runs = M.summarize_runs(rows)
     assert [r.run_id for r in runs] == ["b", "a"]
-    assert runs[0].statuses == ("", "ok", "error", "", "", "", "", "", "") and runs[0].errors == 1 and runs[0].rows == 1
-    assert runs[0].seconds == 2.0 and runs[1].statuses == ("", "", "ok", "", "", "", "", "", "")
+    assert runs[0].statuses == ("", "ok", "error", "", "", "", "", "", "", "") and runs[0].errors == 1 and runs[0].rows == 1
+    assert runs[0].seconds == 2.0 and runs[1].statuses == ("", "", "ok", "", "", "", "", "", "", "")
 
 
 def test_sources_inbox_missing_and_connections(project):

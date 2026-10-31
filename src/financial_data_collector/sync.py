@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from . import check as check_mod, heartbeat, http, statements
-from .collectors import funds as funds_mod, prices as prices_mod, yahoo as yahoo_mod
+from .collectors import earnings as earnings_mod, funds as funds_mod, prices as prices_mod, yahoo as yahoo_mod
 from .collectors.macro import MacroError, collect_macro, start_date as macro_start
 from .collectors.sec_facts import FUND_TYPES, collect_sec
 from .config import Config, ConfigError
@@ -22,10 +22,11 @@ from .models import PriceBar
 from .store import Store, utcnow
 from .universe import build_universe
 
-STEPS = ("connections", "ingest", "prices", "macro", "sec", "funds", "derive", "export", "check")
-NETWORK_STEPS = {"connections", "prices", "macro", "sec", "funds"}
+STEPS = ("connections", "ingest", "prices", "macro", "sec", "funds", "earnings", "derive", "export", "check")
+NETWORK_STEPS = {"connections", "prices", "macro", "sec", "funds", "earnings"}
 ORIGINS = ("scheduled", "manual", "console")       # who started a run: the task, a hand, fdc console
-STALE_HOURS = {"ingest": 48, "prices": 48, "macro": 48, "sec": 336, "funds": 48, "derive": 48, "export": 48, "check": 48}
+STALE_HOURS = {"ingest": 48, "prices": 48, "macro": 48, "sec": 336, "funds": 48, "earnings": 48, "derive": 48,
+               "export": 48, "check": 48}
 
 
 @dataclass
@@ -47,7 +48,7 @@ class SyncReport:
     @property
     def exit_code(self) -> int:
         network = [s for s in self.steps if s.step in NETWORK_STEPS
-                   and not (s.step in ("connections", "macro") and s.status == "skipped")]
+                   and not (s.step in ("connections", "macro", "earnings") and s.status == "skipped")]
         if network and all(s.status == "error" for s in network):
             return 1
         return 0
@@ -156,6 +157,24 @@ def _step_funds(store: Store, cfg: Config, *, now, yahoo, sleep, progress: Progr
     return written, msg, status
 
 
+def _step_earnings(store: Store, cfg: Config, *, fetch, now, yahoo, sleep, progress: Progress,
+                   **_) -> tuple[int, str, str]:
+    results = earnings_mod.collect_earnings(store, _universe(store, cfg), cfg, fetch=fetch, yahoo=yahoo, now=now,
+                                            sleep=sleep, progress=progress)
+    changed = sum(r.events for r in results)
+    written = sum(r.estimates for r in results)
+    failed = [r for r in results if r.failed]
+    msg = f"{len(results)} companies asked, {changed} events changed, {written} estimate rows written"
+    if failed:
+        msg += f"; {len(failed)} failed: " + ", ".join(f"{r.symbol} ({r.message})" for r in failed)
+    if not cfg.sec_user_agent:       # the Yahoo part still ran; the message says what was left out
+        msg = earnings_mod.SEC_SKIPPED + msg
+    # No company to ask (all asked today, or none typed a stock yet) is skipped, not ok: it says nothing about the
+    # network, so exit_code leaves it out, as it does an unconfigured connections or macro step.
+    status = "skipped" if not results else "error" if len(failed) == len(results) else "ok"
+    return changed + written, msg, status
+
+
 def _step_derive(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple[int, str, str]:
     # Statements are a function of the shaper and the concept map, not of the fetch:
     # reshape every company from its stored facts so a code or seed change applies everywhere.
@@ -217,7 +236,8 @@ def _step_check(store: Store, cfg: Config, *, fetch, now, sleep, progress: Progr
 
 _RUNNERS: dict[str, Callable] = {
     "connections": _step_connections, "ingest": _step_ingest, "prices": _step_prices, "macro": _step_macro, "sec": _step_sec,
-    "funds": _step_funds, "derive": _step_derive, "export": _step_export, "check": _step_check,
+    "funds": _step_funds, "earnings": _step_earnings, "derive": _step_derive, "export": _step_export,
+    "check": _step_check,
 }
 
 

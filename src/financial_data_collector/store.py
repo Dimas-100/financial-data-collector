@@ -12,7 +12,8 @@ from . import migrate as _migrate
 from .adapters.base import dedupe_key
 from .connections.names import slug_for
 from .models import (
-    AccountRef, ConceptRule, Fact, FundSnapshot, LineItem, MacroObservation, PriceBar, Snapshot, TransactionRow, is_final,
+    AccountRef, ConceptRule, EarningsEvent, Estimate, Fact, FundSnapshot, LineItem, MacroObservation, PriceBar,
+    Snapshot, TransactionRow, is_final,
 )
 
 if TYPE_CHECKING:
@@ -174,6 +175,15 @@ class Store:
         """The fund was asked about on this New York day: the funds step does not ask again until the next one."""
         with self.conn:
             self.conn.execute("UPDATE securities SET last_fund_fetch = ? WHERE symbol = ?", (day, symbol))
+
+    def mark_earnings_fetch(self, symbol: str, day: str | None) -> None:
+        """The company was asked about on this New York day: the earnings step does not ask again until the next one."""
+        with self.conn:
+            self.conn.execute("UPDATE securities SET last_earnings_fetch = ? WHERE symbol = ?", (day, symbol))
+
+    def set_sic(self, symbol: str, sic: int | None) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE securities SET sic = ? WHERE symbol = ?", (sic, symbol))
 
     def set_asset_type(self, symbol: str, asset_type: str) -> None:
         with self.conn:
@@ -474,6 +484,55 @@ class Store:
                 (snap.symbol, snap.date, snap.trailing_pe, snap.forward_pe, snap.dividend_yield, snap.expense_ratio,
                  snap.source, fetched_at))
         return 1 if self.conn.total_changes > before else 0
+
+    # ---- earnings -----------------------------------------------------------
+    _EARNINGS_COLUMNS = ("symbol, report_date, time_of_day, accession, eps_expected, eps_reported, surprise_pct, "
+                         "date_source, time_source, eps_source")
+
+    def earnings_events_of(self, symbol: str) -> list[EarningsEvent]:
+        rows = self.query(f"SELECT {self._EARNINGS_COLUMNS} FROM earnings_events WHERE symbol = ? ORDER BY report_date",
+                          (symbol,))
+        return [EarningsEvent(*row) for row in rows]
+
+    def replace_earnings(self, symbol: str, events: Iterable[EarningsEvent]) -> int:
+        """Make the company's stored events exactly `events`. Nothing is written when they already are, so a repeat
+        run changes nothing. Returns the rows added, removed or changed (a changed row counts once)."""
+        old = {e.report_date: e for e in self.earnings_events_of(symbol)}
+        new = {e.report_date: e for e in events}
+        gone = [day for day, e in old.items() if new.get(day) != e]
+        put = [e for day, e in new.items() if old.get(day) != e]
+        if not gone and not put:
+            return 0
+        with self.conn:
+            self.conn.executemany("DELETE FROM earnings_events WHERE symbol = ? AND report_date = ?",
+                                  [(symbol, day) for day in gone])
+            self.conn.executemany(
+                f"INSERT INTO earnings_events ({self._EARNINGS_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                [(symbol, e.report_date, e.time_of_day, e.accession, e.eps_expected, e.eps_reported, e.surprise_pct,
+                  e.date_source, e.time_source, e.eps_source) for e in put])
+        return len(set(gone) | {e.report_date for e in put})
+
+    def write_estimates(self, symbol: str, day: str, estimates: Iterable[Estimate], fetched_at: str,
+                        source: str = "yfinance") -> int:
+        """Upsert the company's estimate rows for the day, one per period. A row whose figures and source are unchanged
+        is left alone (fetched_at included), so a repeat run changes nothing. Returns the rows inserted or changed."""
+        before = self.conn.total_changes
+        with self.conn:
+            self.conn.executemany(
+                """INSERT INTO estimate_snapshots
+                     (symbol, date, period, eps_avg, eps_low, eps_high, analysts, source, fetched_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(symbol, date, period) DO UPDATE SET
+                     eps_avg = excluded.eps_avg, eps_low = excluded.eps_low, eps_high = excluded.eps_high,
+                     analysts = excluded.analysts, source = excluded.source, fetched_at = excluded.fetched_at
+                   WHERE estimate_snapshots.eps_avg IS NOT excluded.eps_avg
+                      OR estimate_snapshots.eps_low IS NOT excluded.eps_low
+                      OR estimate_snapshots.eps_high IS NOT excluded.eps_high
+                      OR estimate_snapshots.analysts IS NOT excluded.analysts
+                      OR estimate_snapshots.source IS NOT excluded.source""",
+                [(symbol, day, e.period, e.eps_avg, e.eps_low, e.eps_high, e.analysts, source, fetched_at)
+                 for e in estimates])
+        return self.conn.total_changes - before
 
     # ---- SEC --------------------------------------------------------------
     def write_sec_facts(self, cik: str, facts: Iterable[Fact]) -> int:

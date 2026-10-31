@@ -48,15 +48,16 @@ def _counts(cfg):
 
 
 def test_full_sync_then_noop(project, fixtures: Path):
-    rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "funds", "derive", "export", "check"]
-    assert [s.status for s in rep.steps] == ["skipped", "ok", "ok", "skipped", "ok", "ok", "ok", "skipped", "ok"], rep.steps   # no connections, no FRED key; export disabled by default
+    fetch = _with_submissions(fixtures, {"filings": {"recent": {}}})      # SEC answers the earnings step: no 8-Ks
+    rep = sync.run_sync(project, fetch=fetch, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "funds", "earnings", "derive", "export", "check"]
+    assert [s.status for s in rep.steps] == ["skipped", "ok", "ok", "skipped", "ok", "ok", "ok", "ok", "skipped", "ok"], rep.steps   # no connections, no FRED key; export disabled by default
     assert rep.exit_code == 0
     c1 = _counts(project)
     assert c1["position_snapshots"] > 0 and c1["prices"] > 0 and c1["sec_facts"] == 35
-    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 9
+    assert c1["financial_line_items"] > 0 and c1["sync_runs"] == 10
     assert "without data" in rep.steps[2].message          # KO, VTI, BRK.B had no bars
-    rep2 = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    rep2 = sync.run_sync(project, fetch=fetch, now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert rep2.steps[1].rows == 0
     c2 = _counts(project)
     logs = ("sync_runs", "check_runs")                   # each run logs itself; the data rows must not change
@@ -69,12 +70,12 @@ def test_only_and_skip(project, fixtures: Path):
     rep = sync.run_sync(project, only=["prices"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
     assert [s.step for s in rep.steps] == ["prices"]
     rep = sync.run_sync(project, skip=["sec"], fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
-    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "funds", "derive", "export", "check"]
+    assert [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "funds", "earnings", "derive", "export", "check"]
 
 
 def test_dry_run_touches_nothing(project):
     rep = sync.run_sync(project, dry_run=True)
-    assert rep.dry_run and [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "funds", "derive", "export", "check"]
+    assert rep.dry_run and [s.step for s in rep.steps] == ["connections", "ingest", "prices", "macro", "sec", "funds", "earnings", "derive", "export", "check"]
     assert not project.db_path.exists()
 
 
@@ -99,6 +100,12 @@ class _YahooDown:
     def fund_info(self, symbol):
         raise OSError("network down")
 
+    def earnings_dates(self, symbol, limit):
+        raise OSError("network down")
+
+    def estimates(self, symbol):
+        raise OSError("network down")
+
 
 def test_network_down_exit_code(project):
     def down(url, headers):
@@ -107,6 +114,7 @@ def test_network_down_exit_code(project):
     by = {s.step: s for s in rep.steps}
     assert by["ingest"].status == "ok"
     assert by["prices"].status == "error" and by["sec"].status == "error" and by["funds"].status == "error"
+    assert by["earnings"].status == "skipped"         # no company is typed a stock without SEC: nothing to ask
     assert rep.exit_code == 1
 
 

@@ -148,3 +148,39 @@ class FundSnapshot:
     dividend_yield: float | None
     expense_ratio: float | None
     source: str
+
+
+@dataclass(frozen=True)
+class YahooEarning:
+    """One row of Yahoo's earnings dates: when (tz-aware; exactly midnight New York when Yahoo knows only the day),
+    EPS expected and reported, and the surprise in percent (6.74 = +6.74%)."""
+    when: datetime
+    eps_expected: float | None
+    eps_reported: float | None
+    surprise_pct: float | None
+
+
+@dataclass(frozen=True)
+class Estimate:
+    """Yahoo's EPS estimate for one period: `0q` this quarter, `+1q` next quarter, `0y` this year, `+1y` next year."""
+    period: str
+    eps_avg: float | None
+    eps_low: float | None
+    eps_high: float | None
+    analysts: int | None
+
+
+@dataclass(frozen=True)
+class EarningsEvent:
+    """One earnings report of a company. `date_source` is 'sec' when an 8-K with item 2.02 dates it (its accession
+    kept), else 'yahoo'; `time_source` and `eps_source` say who gave the time of day and the EPS figures."""
+    symbol: str
+    report_date: str
+    time_of_day: str | None             # before_open | during | after_close (New York), None when only the day is known
+    accession: str | None
+    eps_expected: float | None
+    eps_reported: float | None
+    surprise_pct: float | None          # percent, as Yahoo gives it
+    date_source: str
+    time_source: str | None
+    eps_source: str | None

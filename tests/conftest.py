@@ -50,6 +50,12 @@ class _NoYahoo:
     def fund_info(self, symbol):
         return None
 
+    def earnings_dates(self, symbol, limit):
+        return []
+
+    def estimates(self, symbol):
+        return []
+
 
 @pytest.fixture(autouse=True)
 def no_real_yahoo(monkeypatch):
