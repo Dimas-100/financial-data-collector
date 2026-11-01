@@ -611,8 +611,7 @@ def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: st
         # The entry's place in the file: the account it is filed under (a pct_of_brokerage entry filed under roth
         # sends money to the brokerage and is cited as roth/<symbol>).
         src = [sources.feed(targets.file_name, targets.last_revised, f"{entry_of[line.symbol].account}/{line.symbol}")]
-        src += [sources.derived(f"valuation_scores {r['metric']}", f"{line.symbol} {r['metric']}", r.get("date"))
-                for r in deciding.get(line.symbol, ())]
+        src += _score_sources(line.symbol, deciding.get(line.symbol, ()))
         src.append(sources.config(f"[allocation] tilt.{line.band}", line.tilt))
         line_sources.append(tuple(src))
     notes = (plan_notes + [{"symbol": None, "reason": f"targets: {p}"} for p in targets.problems]
