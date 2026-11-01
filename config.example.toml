@@ -64,6 +64,9 @@ min_new = 25                       # a proposal is made when an account's waitin
 min_line = 10                      # a line under this many dollars is folded into the largest line
 household_days = 7                 # caps count accounts whose newest snapshot is this close to the newest
 tilt = { cheap = 1.5, usual = 1.0, premium = 0.5 }    # a holding's share of the money, by its band
+go_from = 7                        # the week score (0-10) from which all the waiting cash is proposed
+half_from = 4                      # ... from which half is, the rest waits; under it, it all waits
+max_wait_weeks = 4                 # held-back money that has waited this many weeks goes in whatever the score
 
 [allocation.accounts]              # targets-file account name = fdc account label (fdc accounts lists them)
 # brokerage = "Sample Brokerage"

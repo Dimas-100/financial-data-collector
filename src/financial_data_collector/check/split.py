@@ -1,7 +1,8 @@
 """The check on the weekly split: `split`.
 
 It reads the open raw proposals (what the split wrote, not the views that apply holds) and holds back one that breaks
-a rule the split itself is meant to keep: lines that add up to more than the cash, a line that is not a whole number
+a rule the split itself is meant to keep: lines that add up to more than the cash (or than cash x the week's fraction,
+or a fraction that is not the one its verdict gives: go 1, half 0.5, hold 0), a line that is not a whole number
 of dollars (at least one), a line to a name the targets file marks `hold` in that account, a line to a name that
 account has no target for, a line with no sources, a cash that is not the account's own USD cash row on the
 proposal's cash_date (half a cent apart; the account named through config `[allocation.accounts]`, read by
@@ -26,6 +27,7 @@ _KINDS = ("pct_of_account", "pct_of_brokerage", "direct_passive_ratio")
 _RULES = ("trades", "contributions", "hold")      # a missing `rebalance` is `trades`; any other spelling gets no money
 _BROKERAGE = "brokerage"
 _HALF_CENT = 0.005
+_VERDICT_FRACTION = {"go": 1.0, "half": 0.5, "hold": 0.0}     # the owner's rule, written here again on purpose
 
 
 def _finite(x: object) -> bool:
@@ -126,6 +128,16 @@ def split(ctx: CheckContext) -> list[Finding]:
         elif total > cash + _HALF_CENT:
             holds.append(f"lines add up to {total:g}, more than the cash {cash:g}")
             evidence.update(cash=cash, lines_total=total)
+        verdict, fraction = p.get("verdict"), p.get("fraction")
+        if verdict is not None or fraction is not None:
+            # The week score: the lines place cash x fraction at most, and the fraction is the one its verdict gives.
+            if _VERDICT_FRACTION.get(verdict) != fraction:
+                holds.append(f"the week's fraction {fraction!r} is not the one its verdict {verdict!r} gives")
+                evidence.update(verdict=verdict, fraction=fraction)
+            elif _finite(cash) and total > cash * fraction + _HALF_CENT:
+                share = {1.0: "all", 0.5: "half", 0.0: "none"}[fraction]
+                holds.append(f"lines add up to {total:g}, more than {share} of the cash {cash:g} the week allows")
+                evidence.update(cash=cash, lines_total=total, fraction=fraction)
         if _finite(cash):
             # The cash the proposal was made from must be the account's own cash row of that day: the split's main
             # money rule, checked against the warehouse rather than the split's own reading of it.

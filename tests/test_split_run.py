@@ -314,7 +314,14 @@ def test_first_deposit_opens_a_proposal(setup):
     assert p["sources"] == [
         {"kind": "derived", "label": "cash_balances", "date": "2026-10-30", "ref": "brokerage"},
         {"kind": "feed", "label": "sizing-targets.json", "date": "2026-10-01", "ref": "brokerage"},
+        {"kind": "config", "label": "[allocation] go_from", "date": None, "ref": "7"},
+        {"kind": "config", "label": "[allocation] half_from", "date": None, "ref": "4"},
+        {"kind": "config", "label": "[allocation] max_wait_weeks", "date": None, "ref": "4"},
     ]
+    # The week: VOO 200 short (no scores: not known) and AAPL 100 short and cheap, a third of the gap: 7 + 1.
+    assert (p["account_type"], p["verdict"], p["fraction"], p["weeks_waited"], p["forced"], p["waiting_since"]) == \
+           ("brokerage", "go", 1.0, 0, None, None)
+    assert p["score"] == 7 + 1 and [x["code"] for x in p["parts"]] == ["base", "cheap", "not_known"]
     assert {"symbol": "KO", "reason": "hold"} in p["notes"]
     assert store.open_proposal("roth") is None                     # the roth account has no cash row
     assert "roth: no cash row" in rep.notes
@@ -874,3 +881,250 @@ def test_replacing_another_accounts_proposal_is_refused(store: Store):
         store.write_proposal(_proposal("roth"), created_at=NOW, checked_at=None, replaces=pid)
     assert store.open_proposal("brokerage")["id"] == pid and store.open_proposal("roth") is None
     assert store.query("SELECT COUNT(*) FROM allocation_proposals_raw")[0][0] == 1
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The week score in the lifecycle (spec addendum 2026-10-31): the fraction of the cash split, the wait, the guards
+# ---------------------------------------------------------------------------------------------------------------------
+
+def _premium(store: Store, symbol: str = "VOO") -> None:
+    for m in ("pe", "dividend_yield"):             # VOO is a fund: its primary metrics
+        _score(store, symbol, m, "premium")
+
+
+def _week(store: Store, key: str = "brokerage") -> tuple:
+    p = store.open_proposal(key)
+    return p["score"], p["verdict"], p["fraction"], p["weeks_waited"], p["forced"], p["waiting_since"]
+
+
+@pytest.fixture
+def held_back(store: Store, tmp_path: Path):
+    """VOO premium (200 of the 300 short), AAPL without scores: 7 - 4 = 3, hold on."""
+    _types(store)
+    _premium(store)
+    _day(store, "2026-10-30", 500.0)
+    return store, _cfg(tmp_path)
+
+
+def _half(store: Store, tmp_path: Path):
+    """VOO premium, AAPL cheap: 7 + 1 - 4 = 4, half."""
+    _types(store)
+    _premium(store)
+    for m in ("pe", "p_fcf"):
+        _score(store, "AAPL", m, "cheap")
+    _day(store, "2026-10-30", 500.0)
+    return _cfg(tmp_path)
+
+
+def test_a_premium_week_holds_on_and_everything_waits(held_back):
+    store, cfg = held_back
+    _run(store, cfg, 2)
+    p = store.open_proposal("brokerage")
+    assert _week(store) == (3, "hold", 0.0, 0, None, "2026-10-30")
+    assert (p["placed"], p["waits"], p["lines"]) == (0, 500.0, [])
+    assert {"symbol": "VOO", "reason": "waits_this_week"} in p["notes"]
+    assert {"symbol": "KO", "reason": "hold"} in p["notes"]
+    assert [x["code"] for x in p["parts"]] == ["base", "premium", "not_known"]
+    assert p["parts"][1]["text"] == "Premium to its own past: VOO (67% of what is short): -4."
+
+
+def test_a_half_week_splits_half_the_cash(store: Store, tmp_path: Path):
+    _run(store, _half(store, tmp_path), 2)
+    p = store.open_proposal("brokerage")
+    assert _week(store)[:3] == (4, "half", 0.5)
+    assert 0 < p["placed"] <= 250 and p["waits"] == pytest.approx(500.0 - p["placed"])
+
+
+def test_a_held_back_proposal_is_scored_again_each_week_and_goes_after_four(held_back):
+    store, cfg = held_back
+    _run(store, cfg, 2)
+    _day(store, "2026-11-03", 500.0)                                        # 4 days on: nothing
+    before = _all_rows(store)
+    _run(store, cfg, 3)
+    assert _all_rows(store) == before
+    for n, day in enumerate(("2026-11-06", "2026-11-13", "2026-11-20"), start=1):
+        _day(store, day, 500.0)
+        rep = _run(store, cfg, int(day[-2:]))
+        assert rep.replaced == 1 and _week(store) == (3, "hold", 0.0, n, None, "2026-10-30")
+    _day(store, "2026-11-27", 500.0)
+    _run(store, cfg, 27)
+    p = store.open_proposal("brokerage")
+    assert _week(store) == (3, "go", 1.0, 4, "waited", None)
+    assert p["placed"] > 0 and p["parts"][-1]["code"] == "forced_waited"
+    assert store.query("SELECT COUNT(*) FROM allocation_proposals_raw WHERE status = 'replaced'")[0][0] == 4
+
+
+def test_a_go_proposal_is_never_scored_again_for_the_same_cash(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    before = _all_rows(store)
+    _day(store, "2026-11-09", 500.0)
+    _run(store, cfg, 9)
+    assert _all_rows(store) == before
+
+
+def test_a_deposit_over_held_back_money_keeps_its_wait(held_back):
+    store, cfg = held_back
+    _run(store, cfg, 2)
+    _day(store, "2026-11-08", 600.0)
+    _run(store, cfg, 8)
+    assert _week(store) == (3, "hold", 0.0, 1, None, "2026-10-30")
+    store.conn.execute("UPDATE valuation_scores_raw SET band = 'usual' WHERE symbol = 'VOO'")   # VOO usual: it goes
+    store.conn.commit()
+    _day(store, "2026-11-10", 700.0)
+    _run(store, cfg, 10)
+    assert _week(store) == (7, "go", 1.0, 1, None, None)
+
+
+def test_a_spent_half_leaves_its_wait_to_the_next_deposit(store: Store, tmp_path: Path):
+    cfg = _half(store, tmp_path)
+    _run(store, cfg, 2)
+    _day(store, "2026-11-03", 260.0)                                        # he placed about half: spent, 260 waits
+    assert _run(store, cfg, 3).spent == 1
+    _day(store, "2026-11-10", 400.0)
+    _run(store, cfg, 10)
+    assert _week(store)[3:] == (1, None, "2026-10-30")
+
+
+def test_a_wait_that_left_under_min_new_starts_again(store: Store, tmp_path: Path):
+    cfg = _half(store, tmp_path)
+    _run(store, cfg, 2)
+    _day(store, "2026-11-03", 10.0)                                         # placed nearly all of it
+    _run(store, cfg, 3)
+    _day(store, "2026-11-10", 300.0)
+    _run(store, cfg, 10)
+    assert _week(store)[3:] == (0, None, "2026-11-10")
+
+
+def _move(store: Store, symbol: str, day: str, move: float, first: str) -> None:
+    causes = json.dumps([{"kind": first, "text": "no cause found" if first == "none" else "x", "sources": []}])
+    store.conn.execute("INSERT INTO price_moves (symbol, date, span, start_date, move, triggers, causes, sources) "
+                       "VALUES (?, ?, '1d', ?, ?, 'drop_day', ?, '[]')", (symbol, day, day, move, causes))
+    store.conn.commit()
+
+
+def test_an_unexplained_drop_lowers_the_score_and_is_cited(setup):
+    store, cfg = setup
+    _move(store, "VOO", "2026-10-28", -0.05, "none")
+    _move(store, "AAPL", "2026-10-29", -0.06, "earnings")                  # explained: not counted
+    _run(store, cfg, 2)
+    p = store.open_proposal("brokerage")
+    assert p["score"] == 7 + 1 - 1
+    [drop] = [x for x in p["parts"] if x["code"] == "drop_no_cause"]
+    assert drop == {"sign": "down", "code": "drop_no_cause", "symbol": "VOO",
+                    "text": "VOO fell 5.0% on Oct 28 with no cause found: -1."}
+    assert {"kind": "derived", "label": "price_moves", "date": "2026-10-28", "ref": "VOO"} in p["sources"]
+
+
+def test_proposals_made_before_the_score_read_as_none(store: Store):
+    store.write_proposal(_proposal(), created_at=NOW, checked_at=None, replaces=None)
+    r = store.query("SELECT score, verdict, fraction, parts, weeks_waited, forced, account_type "
+                    "FROM allocation_proposals")[0]
+    assert tuple(r) == (None, None, None, "[]", None, None, None)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# holding_bands and allocation_targets: rebuilt by every split run, read by the window's "This week" page
+# ---------------------------------------------------------------------------------------------------------------------
+
+def _bands(store: Store) -> dict[str, dict]:
+    return {r["symbol"]: dict(r) for r in store.query("SELECT * FROM holding_bands")}
+
+
+def _targets(store: Store) -> dict[tuple[str, str], dict]:
+    return {(r["account_key"], r["symbol"]): dict(r) for r in store.query("SELECT * FROM allocation_targets")}
+
+
+def test_holding_bands_cover_the_configured_accounts_holdings(setup):
+    store, cfg = setup
+    _day(store, "2026-10-30", 100.0, acct=ROTH, positions=R_POSITIONS + (("SPAXX", 50.0),))
+    other = AccountRef("Sample Other", "other", "fidelity", "brokerage")
+    _day(store, "2026-10-30", None, acct=other, positions=(("XOM", 10.0),))
+    _run(store, cfg, 2)
+    b = _bands(store)
+    assert set(b) == {"AAPL", "KO", "VOO", "VFIAX"}                          # no money market, no other account
+    assert (b["AAPL"]["band"], b["AAPL"]["date"], b["AAPL"]["checked_at"], b["AAPL"]["hold_ids"]) == \
+           ("cheap", "2026-10-29", "2026-11-01T11:00:00Z", None)
+    assert b["AAPL"]["reasons"] == "missing:ps,cheap_by:pe+p_fcf,quality_unknown"
+    assert json.loads(b["AAPL"]["sources"])[0] == \
+           {"kind": "derived", "label": "valuation_scores pe", "date": "2026-10-29", "ref": "AAPL pe"}
+    assert (b["VOO"]["band"], b["VOO"]["reasons"], b["VOO"]["date"]) == ("usual", "no_scores", None)
+
+
+def test_a_hold_on_a_deciding_score_blanks_the_band(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    store.check_record("scores", [Finding("scores", "AAPL", "score:pe", "2026-10-29", None, "hold", "bad")], NOW)
+    b = _bands(store)["AAPL"]
+    assert b["band"] is None and b["hold_ids"] is not None
+    assert store.query("SELECT band FROM holding_bands_raw WHERE symbol = 'AAPL'")[0][0] == "cheap"   # raw kept
+
+
+def test_a_hold_on_a_score_that_did_not_decide_leaves_the_band(setup):
+    store, cfg = setup
+    _score(store, "AAPL", "implied_growth", None)
+    _run(store, cfg, 2)
+    store.check_record("scores", [Finding("scores", "AAPL", "score:implied_growth", "2026-10-29", None, "hold",
+                                          "bad")], NOW)
+    assert _bands(store)["AAPL"]["band"] == "cheap"
+
+
+def test_bands_and_targets_are_rebuilt_without_churn(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+
+    def snap():
+        return ([tuple(r) for r in store.query("SELECT rowid, * FROM holding_bands_raw ORDER BY symbol")],
+                [tuple(r) for r in store.query("SELECT rowid, * FROM allocation_targets_raw ORDER BY symbol")])
+
+    before = snap()
+    _run(store, cfg, 3)
+    assert snap() == before
+    _day(store, "2026-10-31", 500.0, positions=(("VOO", 300.0), ("AAPL", 100.0)))     # KO sold
+    _run(store, cfg, 4)
+    assert "KO" not in _bands(store)
+
+
+def test_allocation_targets_give_plan_splits_gap_either_way(setup):
+    store, cfg = setup
+    _run(store, cfg, 2)
+    t = _targets(store)
+    assert set(t) == {("brokerage", "VOO"), ("brokerage", "AAPL"), ("brokerage", "KO")}   # roth: no positions, no cash
+    voo, aapl, ko = t[("brokerage", "VOO")], t[("brokerage", "AAPL")], t[("brokerage", "KO")]
+    # base 1000: VOO 50% = 500 vs 300 held, top 62.5% = 625; AAPL 20% = 200 vs 100; KO 30% = 300 vs 100.
+    assert (voo["account_type"], voo["rule"], voo["kind"], voo["target"], voo["held_value"]) == \
+           ("brokerage", "trades", "pct_of_account", 50.0, 300.0)
+    assert (voo["gap"], voo["side"], voo["top"], voo["date"], voo["note"]) == (200.0, "short", 325.0, "2026-10-30", None)
+    assert (aapl["rule"], aapl["gap"], aapl["side"]) == ("contributions", 100.0, "short")
+    assert (ko["rule"], ko["gap"], ko["side"]) == ("hold", 200.0, "short")
+    assert json.loads(voo["sources"]) == [
+        {"kind": "feed", "label": "sizing-targets.json", "date": "2026-10-01", "ref": "brokerage/VOO"},
+        {"kind": "derived", "label": "positions_latest", "date": "2026-10-30", "ref": "brokerage"},
+        {"kind": "derived", "label": "cash_balances", "date": "2026-10-30", "ref": "brokerage"},
+    ]
+    _day(store, "2026-10-31", 0.0, positions=(("VOO", 900.0), ("AAPL", 100.0)))        # VOO 90% of 1000: over
+    _run(store, cfg, 3)
+    voo = _targets(store)[("brokerage", "VOO")]
+    assert (voo["gap"], voo["side"], voo["top"]) == (400.0, "over", -275.0)
+
+
+def test_targets_and_bands_are_published_even_when_no_proposal_opens(store: Store, tmp_path: Path):
+    _types(store)
+    _day(store, "2026-10-30", 5.0)                                          # under min_new: no proposal
+    _run(store, _cfg(tmp_path), 2)
+    assert store.open_proposal("brokerage") is None
+    assert len(_targets(store)) == 3 and set(_bands(store)) == {"AAPL", "KO", "VOO"}
+    (tmp_path / "sizing-targets.json").unlink()
+    rep = _run(store, _cfg(tmp_path, doc=None), 3)                          # the targets file is gone
+    assert rep.skipped == "no targets file" and _targets(store) == {} and set(_bands(store)) == {"AAPL", "KO", "VOO"}
+
+
+def test_a_ratio_entry_without_look_through_has_no_gap(store: Store, tmp_path: Path):
+    _types(store)
+    _day(store, "2026-10-30", 500.0)
+    doc = dict(TARGETS_DOC, brokerage=TARGETS_DOC["brokerage"] + [
+        {"ticker": "AMZN", "type": "direct_passive_ratio", "target": 1.75}])
+    _run(store, _cfg(tmp_path, doc=doc), 2)
+    amzn = _targets(store)[("brokerage", "AMZN")]
+    assert (amzn["kind"], amzn["target"], amzn["gap"], amzn["side"], amzn["top"], amzn["note"]) == \
+           ("direct_passive_ratio", 1.75, None, None, None, "no_look_through")

@@ -337,7 +337,12 @@ class AllocationProposal:
     """One account's weekly split as it is stored: `account_key` is the targets file's name for the account (never
     its label), `cash_date` / `cash` the waiting cash it was made from, `placed` the whole dollars its lines place (the
     sum of the lines), `waits` the dollars left for next week (cash = placed + waits to the cent), `notes` the plan's
-    notes, `sources` the proposal's own sources (the cash row). `line_sources[i]` belongs to `lines[i]`."""
+    notes, `sources` the proposal's own sources (the cash row). `line_sources[i]` belongs to `lines[i]`.
+
+    The week score (spec addendum 2026-10-31; None on a proposal made without one): `account_type` (the warehouse's),
+    `score` 0-10, `verdict` go | half | hold, `fraction` of the cash the lines place (1, 0.5, 0), `parts` (each
+    {sign, code, symbol, text}), `weeks_waited`, `forced` (waited | under_and_cheap | None) and `waiting_since` (the
+    cash date held-back money has waited from; None when nothing is held back)."""
     account_key: str
     cash_date: str
     cash: float
@@ -347,3 +352,46 @@ class AllocationProposal:
     line_sources: tuple[tuple[dict, ...], ...]
     notes: tuple[dict, ...]
     sources: tuple[dict, ...]
+    account_type: str | None = None
+    score: int | None = None
+    verdict: str | None = None
+    fraction: float | None = None
+    parts: tuple[dict, ...] = ()
+    weeks_waited: int | None = None
+    forced: str | None = None
+    waiting_since: str | None = None
+
+
+VERDICT_FRACTION: dict[str, float] = {"go": 1.0, "half": 0.5, "hold": 0.0}
+
+
+@dataclass(frozen=True)
+class HoldingBandRow:
+    """One holding's band as `holding_bands_raw` keeps it: `split.holding_band`'s band and reason codes, the metrics
+    of the score rows that decided it and their sources, at the symbol's newest score date (None without scores)."""
+    symbol: str
+    date: str | None
+    band: str
+    reasons: tuple[str, ...]
+    deciding: tuple[str, ...]
+    sources: tuple[dict, ...]
+
+
+@dataclass(frozen=True)
+class TargetRow:
+    """One targets-file entry of one configured account as `allocation_targets_raw` keeps it: `gap` dollars to the
+    target either way (>= 0; `side` says which, short | over | on), `top` dollars to the band top (negative past it),
+    both None with a `note` when they cannot be known."""
+    account_key: str
+    account_type: str | None
+    symbol: str
+    rule: str
+    kind: str
+    target: float
+    held_value: float
+    gap: float | None
+    side: str | None
+    top: float | None
+    date: str | None
+    sources: tuple[dict, ...]
+    note: str | None = None

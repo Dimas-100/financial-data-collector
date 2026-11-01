@@ -323,3 +323,41 @@ def test_a_target_too_large_for_a_float_is_no_target_and_no_exception(store, cfg
     f = _one(store, _with_targets(cfg, big))
     assert f.severity == "hold" and f.evidence == {"no_target": ["VOO"]}           # the split's reader skips it too
     assert check_split._finite(10 ** 400) is False
+
+
+def _week(store, verdict, fraction, lines, cash=100.0) -> int:
+    _cash_row(store, "brokerage", cash)
+    built = tuple(SplitLine(s, d, 10.0, "usual", 1.0, ()) for s, d in lines)
+    p = AllocationProposal("brokerage", "2026-10-30", cash, sum(d for _, d in lines), cash - sum(d for _, d in lines),
+                           built, tuple(tuple(SRC) for _ in built), (), tuple(SRC), "brokerage", 5, verdict, fraction)
+    return store.write_proposal(p, created_at=STAMP, checked_at=None, replaces=None)
+
+
+def test_a_half_week_within_half_the_cash_is_clean(store, cfg):
+    _week(store, "half", 0.5, [("VOO", 30), ("JNJ", 20)])
+    assert check_split.split(_ctx(store, cfg)) == []
+
+
+def test_lines_over_the_weeks_fraction_of_the_cash_are_held(store, cfg):
+    pid = _week(store, "half", 0.5, [("VOO", 40), ("JNJ", 20)])
+    f = _one(store, cfg)
+    assert (f.field, f.severity) == (f"proposal:{pid}", "hold") and "half of the cash" in f.message
+    assert f.evidence["fraction"] == 0.5 and f.evidence["lines_total"] == 60
+
+
+def test_a_hold_week_with_a_line_is_held(store, cfg):
+    _week(store, "hold", 0.0, [("VOO", 10)])
+    assert _one(store, cfg).severity == "hold"
+
+
+@pytest.mark.parametrize("verdict,fraction", [("go", 0.5), ("half", 1.0), ("hold", 0.5), ("maybe", 1.0)])
+def test_a_fraction_that_is_not_its_verdicts_is_held(store, cfg, verdict, fraction):
+    if verdict == "maybe":                                   # the table refuses an unknown verdict; the raw row is bent
+        _week(store, "go", fraction, [("VOO", 10)])
+        store.conn.execute("PRAGMA ignore_check_constraints = 1")
+        store.conn.execute("UPDATE allocation_proposals_raw SET verdict = 'maybe'")
+        store.conn.commit()
+    else:
+        _week(store, verdict, fraction, [("VOO", 10)])
+    f = _one(store, cfg)
+    assert f.severity == "hold" and "fraction" in f.message

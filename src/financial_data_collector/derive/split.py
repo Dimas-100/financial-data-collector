@@ -17,8 +17,9 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Iterable
 
-from ..models import FUND_TYPES, AllocationProposal, SplitLine, TargetEntry, Targets
-from . import sources
+from ..models import FUND_TYPES, AllocationProposal, HoldingBandRow, SplitLine, TargetEntry, TargetRow, Targets
+from ..symbols import is_money_market
+from . import sources, week
 from .targets import read_look_through, read_targets
 
 if TYPE_CHECKING:
@@ -328,6 +329,90 @@ def _within_cash(dollars: dict[str, int], kept: list[str], cash: float, min_line
     return [s for s in kept if dollars[s] >= min_line]
 
 
+@dataclass(frozen=True)
+class EntryGap:
+    """Where one entry stands, in dollars: what is held (a ratio entry: held directly, household-wide), what the
+    target asks for, and the room to the band top (negative past it). `short` is the gap plan_split fills."""
+    held_value: float
+    target_value: float
+    top: float
+
+    @property
+    def short(self) -> float:
+        return max(0.0, self.target_value - self.held_value)
+
+
+def entry_gap(e: TargetEntry, base: float, held: dict[str, float], household: Household) -> EntryGap | None:
+    """plan_split's gap and top of one entry: a percent entry against `base` (the account's positions plus its cash)
+    and its own `held` value; a ratio entry against what the household holds of the name via funds, less what it
+    holds directly. None for a ratio entry with nothing via funds (`no_look_through`)."""
+    s = e.symbol
+    if e.kind == "direct_passive_ratio":
+        via_funds = household.indirect.get(s, 0.0)
+        if via_funds <= 0:
+            return None
+        own = household.direct.get(s, 0.0)
+        return EntryGap(own, e.target * via_funds, e.high * via_funds - own)
+    own = float(held.get(s, 0.0))
+    return EntryGap(own, e.target / 100 * base, e.high / 100 * base - own)
+
+
+def destinations(account: str, base: float, held: dict[str, float], household: Household, targets: Targets,
+                 bands: dict[str, tuple[str, tuple[str, ...]]]) -> list[tuple[str, float, str, tuple[str, ...]]]:
+    """The entries plan_split could give money to (symbol, gap, band, band reasons), in entry order: not `hold`, a
+    known rule, short of target. A symbol without a band is `usual` with no reasons."""
+    _, _, lines = _candidates(account, base, held, household, targets, bands, {"cheap": 1.0, "usual": 1.0,
+                                                                                "premium": 1.0})
+    return [(s, line.gap, line.band, bands.get(s, ("usual", ()))[1]) for s, line in lines.items()]
+
+
+def _candidates(account: str, base: float, held: dict[str, float], household: Household, targets: Targets,
+                bands: dict[str, tuple[str, tuple[str, ...]]], tilt: dict[str, float]
+                ) -> tuple[list[TargetEntry], dict[int, str], dict[str, _Line]]:
+    """The account's entries, why each that gets no line was left out (by entry index), and the lines that may get
+    money (by symbol, in entry order)."""
+    entries = _account_entries(account, targets)
+    on_hold = {e.symbol for e in entries if e.rule == "hold"}      # any hold entry of a name in this account wins
+    reason_of: dict[int, str] = {}
+    seen: set[str] = set()
+    lines: dict[str, _Line] = {}
+    for i, e in enumerate(entries):
+        s = e.symbol
+        if s in seen:
+            reason_of[i] = "duplicate"
+            continue
+        seen.add(s)
+        if s in on_hold:
+            reason_of[i] = "hold"
+            continue
+        if e.rule not in _FILL_RULES:
+            reason_of[i] = "unknown_rule"
+            continue
+        g = entry_gap(e, base, held, household)
+        if g is None:
+            reason_of[i] = "no_look_through"
+            continue
+        gap, top = g.short, g.top
+        if gap <= TOL:
+            reason_of[i] = "at_or_over_target"
+            continue
+        reasons: list[str] = []
+        if s in bands:
+            band, band_reasons = bands[s]
+            reasons.extend(band_reasons)
+        else:
+            band = "usual"
+        if e.rule == "trades":
+            reasons.append("trades_as_contributions")
+        if s not in bands:
+            reasons.append("no_scores")
+        if s in household.untyped:
+            reasons.append("type_unknown")
+        factor = float(tilt[band])
+        lines[s] = _Line(s, gap, top, band, factor, gap * factor, reasons)
+    return entries, reason_of, lines
+
+
 def plan_split(account: str, cash: float, base: float, held: dict[str, float], household: Household,
                targets: Targets, bands: dict[str, tuple[str, tuple[str, ...]]], tilt: dict[str, float],
                min_line: int) -> SplitPlan:
@@ -347,51 +432,7 @@ def plan_split(account: str, cash: float, base: float, held: dict[str, float], h
     have had money is noted `no_cash`.
     """
     cash_in = max(float(cash), 0.0)
-    entries = _account_entries(account, targets)
-    on_hold = {e.symbol for e in entries if e.rule == "hold"}      # any hold entry of a name in this account wins
-    reason_of: dict[int, str] = {}
-    seen: set[str] = set()
-    lines: dict[str, _Line] = {}
-    for i, e in enumerate(entries):
-        s = e.symbol
-        if s in seen:
-            reason_of[i] = "duplicate"
-            continue
-        seen.add(s)
-        if s in on_hold:
-            reason_of[i] = "hold"
-            continue
-        if e.rule not in _FILL_RULES:
-            reason_of[i] = "unknown_rule"
-            continue
-        if e.kind == "direct_passive_ratio":
-            via_funds = household.indirect.get(s, 0.0)
-            if via_funds <= 0:
-                reason_of[i] = "no_look_through"
-                continue
-            own = household.direct.get(s, 0.0)
-            gap, top = max(0.0, e.target * via_funds - own), e.high * via_funds - own
-        else:
-            own = float(held.get(s, 0.0))
-            gap, top = max(0.0, e.target / 100 * base - own), e.high / 100 * base - own
-        if gap <= TOL:
-            reason_of[i] = "at_or_over_target"
-            continue
-        reasons: list[str] = []
-        if s in bands:
-            band, band_reasons = bands[s]
-            reasons.extend(band_reasons)
-        else:
-            band = "usual"
-        if e.rule == "trades":
-            reasons.append("trades_as_contributions")
-        if s not in bands:
-            reasons.append("no_scores")
-        if s in household.untyped:
-            reasons.append("type_unknown")
-        factor = float(tilt[band])
-        lines[s] = _Line(s, gap, top, band, factor, gap * factor, reasons)
-
+    entries, reason_of, lines = _candidates(account, base, held, household, targets, bands, tilt)
     groups = _groups(account, base, held, household, targets, lines)
     x, stops = _fill(cash_in, lines, groups)
 
@@ -515,17 +556,28 @@ def _household_notes(left_out: int, stale_cash: int, days: int) -> list[str]:
     return notes
 
 
-def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: str, cash: float, targets: Targets,
-                  household: Household, positions: list[dict], fund_symbols: frozenset[str],
-                  extra_notes: list[dict]) -> AllocationProposal:
-    """One account's proposal for all of `cash`: plan_split over its own positions, the household and the bands
-    from its entries' scores, with every line's sources (its targets entry, the score rows that decided its band,
-    its tilt) and the proposal's (the cash row, the targets file)."""
-    alloc = cfg.allocation
+def _held_in(positions: list[dict], label: str) -> dict[str, float]:
     held: dict[str, float] = {}
     for r in positions:
         if r["account"] == label:
             held[r["symbol"]] = held.get(r["symbol"], 0.0) + float(r.get("market_value") or 0.0)
+    return held
+
+
+_NOT_KNOWN = ("one_metric", "no_metrics")
+
+
+def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: str, cash: float, targets: Targets,
+                  household: Household, positions: list[dict], fund_symbols: frozenset[str],
+                  extra_notes: list[dict], account_type: str | None = None,
+                  waiting_since: str | None = None) -> AllocationProposal:
+    """One account's proposal for `cash`: the week score of its destinations (`week.week_score`; `waiting_since` is
+    the cash date held-back money has waited from, None for none) decides the fraction of the cash that is split, then
+    plan_split over its own positions, the household and the bands from its entries' scores, with every line's sources
+    (its targets entry, the score rows that decided its band, its tilt) and the proposal's (the cash row, the targets
+    file, the score's settings and the drops it counted). What the fraction leaves waits."""
+    alloc = cfg.allocation
+    held = _held_in(positions, label)
     base = sum(held.values()) + cash
     entries = _account_entries(key, targets)
     entry_of: dict[str, TargetEntry] = {}
@@ -539,7 +591,20 @@ def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: st
         if rows_of.get(s):              # no score row at all: plan_split says `no_scores`
             band, reasons, rows = holding_band(rows_of[s], s in fund_symbols)
             bands[s], deciding[s] = (band, reasons), rows
-    plan = plan_split(key, cash, base, held, household, targets, bands, alloc.tilt, alloc.min_line)
+
+    dests = destinations(key, base, held, household, targets, bands)
+    drops = store.split_drops([d[0] for d in dests], cash_date, week.DROP_DAYS)
+    week_dests = [week.Destination(s, gap, band, s in bands and not any(r in _NOT_KNOWN for r in reasons),
+                                   week.unexplained_drop(drops.get(s, []), cash_date))
+                  for s, gap, band, reasons in dests]
+    since = waiting_since or cash_date
+    weeks = (date.fromisoformat(cash_date) - date.fromisoformat(since)).days // 7
+    ws = week.week_score(week_dests, weeks_waited=weeks, go_from=alloc.go_from, half_from=alloc.half_from,
+                         max_wait_weeks=alloc.max_wait_weeks)
+    plan = plan_split(key, cash * ws.fraction, base, held, household, targets, bands, alloc.tilt, alloc.min_line)
+    plan_notes = list(plan.notes)
+    if ws.fraction == 0:                # nothing is split this week: an entry's "no cash" is that the week holds on
+        plan_notes = [dict(n, reason="waits_this_week") if n["reason"] == "no_cash" else n for n in plan_notes]
 
     line_sources = []
     for line in plan.lines:
@@ -550,13 +615,20 @@ def _new_proposal(store: Store, cfg: Config, key: str, label: str, cash_date: st
                 for r in deciding.get(line.symbol, ())]
         src.append(sources.config(f"[allocation] tilt.{line.band}", line.tilt))
         line_sources.append(tuple(src))
-    notes = (list(plan.notes) + [{"symbol": None, "reason": f"targets: {p}"} for p in targets.problems]
+    notes = (plan_notes + [{"symbol": None, "reason": f"targets: {p}"} for p in targets.problems]
              + extra_notes)
-    proposal_sources = (sources.derived("cash_balances", key, cash_date),
-                        sources.feed(targets.file_name, targets.last_revised, key))
+    proposal_sources = [sources.derived("cash_balances", key, cash_date),
+                         sources.feed(targets.file_name, targets.last_revised, key)]
+    proposal_sources += [sources.config(f"[allocation] {name}", getattr(alloc, name))
+                         for name in ("go_from", "half_from", "max_wait_weeks")]
+    dropped = {d.symbol: d.drop for d in week_dests if d.drop is not None}
+    proposal_sources += [sources.derived("price_moves", p["symbol"], dropped[p["symbol"]]["date"])
+                         for p in ws.parts if p["code"] == "drop_no_cause" and p["sign"] == "down"]
     placed = sum(line.dollars for line in plan.lines)          # the dollars placed: cash = placed + waits
-    return AllocationProposal(key, cash_date, cash, placed, plan.waits, plan.lines, tuple(line_sources),
-                              tuple(notes), proposal_sources)
+    waits = round(cash - placed, 2)
+    return AllocationProposal(key, cash_date, cash, placed, waits, plan.lines, tuple(line_sources),
+                              tuple(notes), tuple(proposal_sources), account_type, ws.score, ws.verdict, ws.fraction,
+                              ws.parts, weeks, ws.forced, since if ws.fraction < 1 else None)
 
 
 _STAYS_OPEN = "; its open proposal stays open"
@@ -565,6 +637,147 @@ _STAYS_OPEN = "; its open proposal stays open"
 def _untyped(asset_type: str | None) -> bool:
     """An asset type the warehouse does not know: missing, empty or `unknown`."""
     return asset_type in (None, "", "unknown")
+
+
+RESCORE_DAYS = 7                  # a proposal that held money back is scored again once its cash date is this old
+
+
+def _held_back(p: dict | None) -> bool:
+    return p is not None and p.get("fraction") is not None and p["fraction"] < 1
+
+
+def _week_turned(current: dict, cash_date: str) -> bool:
+    """An open proposal that held money back, whose cash date is RESCORE_DAYS or more before `cash_date`."""
+    days = (date.fromisoformat(cash_date) - date.fromisoformat(current["cash_date"])).days
+    return _held_back(current) and days >= RESCORE_DAYS
+
+
+def _waiting_since(prev: dict | None, left: float | None, min_new: float) -> str | None:
+    """The cash date a new proposal's held-back money has waited from: `prev`'s (its `waiting_since`, else its cash
+    date) when `prev` held money back and left at least `min_new` waiting; else None (a new wait starts now)."""
+    if not _held_back(prev) or left is None or left < min_new - _CMP_EPS:
+        return None
+    return prev.get("waiting_since") or prev["cash_date"]
+
+
+@dataclass(frozen=True)
+class _State:
+    """The warehouse as the split reads it this run: positions, cash rows, the household and which symbols are funds."""
+    positions: list[dict]
+    cash_rows: dict[str, tuple[str, float]]
+    kept: list[dict]
+    kept_cash: dict[str, float]
+    n_left_out: int
+    n_stale_cash: int
+    types: dict[str, str]
+    funds: frozenset[str]
+    household: Household
+
+
+def _state(store: Store, cfg: Config, targets: Targets | None) -> _State:
+    alloc = cfg.allocation
+    positions = store.split_positions()
+    cash_rows = store.split_cash()
+    kept, kept_cash, n_left_out, n_stale_cash = household_rows(positions, cash_rows, alloc.household_days)
+    look_through = read_look_through(alloc.fund_holdings)
+    entries = targets.entries if targets is not None else ()
+    symbols = {r["symbol"] for r in positions} | {e.symbol for e in entries} | set(look_through)
+    types = store.split_asset_types(sorted(symbols))
+    # A fund: typed one, or a symbol with a look-through file whose type is unknown or missing (the file shows it holds
+    # other names). Any other symbol of unknown or missing type is, for caps, a fund without a file (`type_unknown`).
+    funds = frozenset(s for s in symbols
+                      if types.get(s) in FUND_TYPES or (s in look_through and _untyped(types.get(s))))
+    untyped = frozenset(s for s in symbols if _untyped(types.get(s)) and s not in look_through)
+    household = household_of(kept, kept_cash, look_through, funds | untyped, untyped)
+    return _State(positions, cash_rows, kept, kept_cash, n_left_out, n_stale_cash, types, funds, household)
+
+
+def _score_sources(symbol: str, rows: Iterable[dict]) -> tuple[dict, ...]:
+    return tuple(sources.derived(f"valuation_scores {r['metric']}", f"{symbol} {r['metric']}", r.get("date"))
+                 for r in rows)
+
+
+def band_rows(store: Store, symbols: list[str], funds: frozenset[str]) -> list[HoldingBandRow]:
+    """holding_band of each symbol from its valuation_scores rows (holds applied), at its newest score date; a symbol
+    with no score row is `usual` / `no_scores`."""
+    rows_of = store.split_scores(symbols)
+    out = []
+    for s in symbols:
+        rows = rows_of.get(s) or []
+        if not rows:
+            out.append(HoldingBandRow(s, None, "usual", ("no_scores",), (), ()))
+            continue
+        band, reasons, deciding = holding_band(rows, s in funds)
+        newest = max((r["date"] for r in rows if r.get("date")), default=None)
+        out.append(HoldingBandRow(s, newest, band, reasons, tuple(r["metric"] for r in deciding),
+                                  _score_sources(s, deciding)))
+    return out
+
+
+def target_rows(key: str, account_type: str | None, day: str | None, base: float, held: dict[str, float],
+                household: Household, targets: Targets, extra_sources: tuple[dict, ...] = ()) -> list[TargetRow]:
+    """One row per symbol of the account's entries (the first entry, as plan_split plans it; `rule` is `hold` when any
+    entry of the name in the account is), with entry_gap's numbers: gap = |target - held| (0 within TOL), side short
+    / over / on, top. A ratio entry with nothing via funds has no gap (`no_look_through`). Sources: the targets entry,
+    then `extra_sources` (the positions and cash rows), then a ratio entry's look-through files that hold the name."""
+    entries = _account_entries(key, targets)
+    on_hold = {e.symbol for e in entries if e.rule == "hold"}
+    out: list[TargetRow] = []
+    seen: set[str] = set()
+    for e in entries:
+        s = e.symbol
+        if s in seen:
+            continue
+        seen.add(s)
+        src = [sources.feed(targets.file_name, targets.last_revised, f"{e.account}/{s}"), *extra_sources]
+        rule = "hold" if s in on_hold else e.rule
+        if e.kind == "direct_passive_ratio":
+            src += [sources.feed(f"{fund}.csv", None, s) for fund in sorted(household.look_through)
+                    if household.look_through[fund].get(s)]
+        g = entry_gap(e, base, held, household)
+        if g is None:
+            out.append(TargetRow(key, account_type, s, rule, e.kind, e.target, round(household.direct.get(s, 0.0), 2),
+                                 None, None, None, day, tuple(src), "no_look_through"))
+            continue
+        diff = g.target_value - g.held_value
+        side = "short" if diff > TOL else "over" if diff < -TOL else "on"
+        out.append(TargetRow(key, account_type, s, rule, e.kind, e.target, round(g.held_value, 2),
+                             round(abs(diff), 2) if side != "on" else 0.0, side, round(g.top, 2), day, tuple(src)))
+    return out
+
+
+def publish(store: Store, cfg: Config, targets: Targets | None, state: _State, checked_at: str | None) -> None:
+    """Rebuild the two tables the window's "This week" page reads besides the proposals: holding_bands_raw (one band
+    per symbol held in a configured account, money market funds left out) and allocation_targets_raw (one row per
+    entry per configured account that has positions or a cash row; none without a targets file). Derived: rebuilt
+    from scratch, a row already right is not rewritten."""
+    alloc = cfg.allocation
+    labels = set(alloc.accounts.values())
+    held_symbols = sorted({r["symbol"] for r in state.positions
+                           if r["account"] in labels and r.get("asset_type") != "money_market"
+                           and state.types.get(r["symbol"]) != "money_market" and not is_money_market(r["symbol"])})
+    store.replace_holding_bands(band_rows(store, held_symbols, state.funds), checked_at)
+    rows: list[TargetRow] = []
+    if targets is not None:
+        account_types = store.split_account_types()
+        positions_date: dict[str, str] = {}
+        for r in state.positions:
+            positions_date[r["account"]] = max(r["as_of_date"], positions_date.get(r["account"], ""))
+        for key, label in sorted(alloc.accounts.items()):
+            cash_row = state.cash_rows.get(label)
+            if label not in positions_date and cash_row is None:
+                continue
+            held = _held_in(state.positions, label)
+            cash = float(cash_row[1] or 0.0) if cash_row is not None else 0.0
+            extra = []
+            if label in positions_date:
+                extra.append(sources.derived("positions_latest", key, positions_date[label]))
+            if cash_row is not None:
+                extra.append(sources.derived("cash_balances", key, cash_row[0]))
+            day = positions_date.get(label) or cash_row[0]
+            rows += target_rows(key, account_types.get(label), day, sum(held.values()) + cash, held,
+                                state.household, targets, tuple(extra))
+    store.replace_allocation_targets(rows)
 
 
 def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> SplitReport:
@@ -584,32 +797,35 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
     Caps are household-wide across accounts: a new proposal counts every other account's open lines (earlier runs and
     earlier in this one) as pending holdings (`with_pending`). A fund is a symbol typed as one, or one with a
     look-through file whose type is unknown or missing; any other symbol of unknown or missing type is, for caps, a fund
-    without a file (`type_unknown`). An open proposal's lines are never rewritten; the same cash writes nothing. `now`
-    stamps created_at / closed_at, `checked_at` is the covering check run's finish. Notes name targets-file account
-    names, never a label."""
+    without a file (`type_unknown`). An open proposal's lines are never rewritten; the same cash writes nothing, except
+    that a proposal that held money back (fraction under 1) is made again for the same cash once its cash date is
+    RESCORE_DAYS or more before the newest cash row (the week turned: a new score, and the wait guard can fire). The
+    week score (`_new_proposal`) decides how much of the cash is split; `weeks_waited` runs on while each proposal
+    replaces, or follows a spent one that left at least `min_new`, of one that held money back. `now` stamps
+    created_at / closed_at, `checked_at` is the covering check run's finish. Notes name targets-file account names,
+    never a label.
+
+    First, whatever is skipped below: `publish` rebuilds holding_bands_raw (with configured accounts) and
+    allocation_targets_raw (with a readable targets file too)."""
     alloc = cfg.allocation
     try:
         targets = read_targets(alloc.targets)
+        unreadable = None
     except ValueError as e:
-        return SplitReport(0, 0, 0, (), f"targets file unreadable: {e}")
+        targets, unreadable = None, f"targets file unreadable: {e}"
+    state = _state(store, cfg, targets)
+    publish(store, cfg, targets, state, checked_at)
+    if unreadable is not None:
+        return SplitReport(0, 0, 0, (), unreadable)
     if targets is None:
         return SplitReport(0, 0, 0, (), "no targets file")
     if not alloc.accounts:
         return SplitReport(0, 0, 0, (), "no accounts in [allocation.accounts]")
 
     stamp = _stamp(now)
-    positions = store.split_positions()
-    cash_rows = store.split_cash()
-    kept, kept_cash, n_left_out, n_stale_cash = household_rows(positions, cash_rows, alloc.household_days)
-    look_through = read_look_through(alloc.fund_holdings)
-    symbols = {r["symbol"] for r in positions} | {e.symbol for e in targets.entries} | set(look_through)
-    types = store.split_asset_types(sorted(symbols))
-    # A fund: typed one, or a symbol with a look-through file whose type is unknown or missing (the file shows it holds
-    # other names). Any other symbol of unknown or missing type is, for caps, a fund without a file (`type_unknown`).
-    funds = frozenset(s for s in symbols
-                      if types.get(s) in FUND_TYPES or (s in look_through and _untyped(types.get(s))))
-    untyped = frozenset(s for s in symbols if _untyped(types.get(s)) and s not in look_through)
-    household = household_of(kept, kept_cash, look_through, funds | untyped, untyped)
+    positions, cash_rows, household, funds = state.positions, state.cash_rows, state.household, state.funds
+    kept, kept_cash, n_left_out, n_stale_cash = state.kept, state.kept_cash, state.n_left_out, state.n_stale_cash
+    account_types = store.split_account_types()
     kept_labels = {r["account"] for r in kept}
     positions_labels = {r["account"] for r in positions}
     positions_date: dict[str, str] = {}
@@ -651,6 +867,7 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
             continue
         cash = float(amount or 0.0)
         current = store.open_proposal(key)
+        prev, prev_left = current, cash          # the proposal a new one follows, and the cash it left waiting
         if current is not None:
             if cash <= current["cash"] - 1.0 + _CMP_EPS:
                 store.close_proposal(current["id"], closed_at=stamp, closed_cash=cash)
@@ -666,9 +883,11 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
                 current = None
                 if cash < alloc.min_new - _CMP_EPS:
                     continue
-            elif cash < current["cash"] + alloc.min_new - _CMP_EPS:
+            elif cash < current["cash"] + alloc.min_new - _CMP_EPS and not _week_turned(current, cash_date):
                 continue                                        # under min_new more: the open one stands
         else:
+            prev = store.last_proposal(key)
+            prev_left = None if prev is None else prev["closed_cash"]
             baseline = 0.0
             last = store.last_spent_proposal(key)
             if last is not None:
@@ -689,7 +908,8 @@ def run(store: Store, cfg: Config, *, checked_at: str | None, now: datetime) -> 
             p = store.open_proposal(other)
             counted = alloc.accounts.get(other) in kept_cash
             pending = with_pending(pending, [(l["symbol"], l["dollars"]) for l in p["lines"]], add_to_total=not counted)
-        proposal = _new_proposal(store, cfg, key, label, cash_date, cash, targets, pending, positions, funds, extra)
+        proposal = _new_proposal(store, cfg, key, label, cash_date, cash, targets, pending, positions, funds, extra,
+                                 account_types.get(label), _waiting_since(prev, prev_left, alloc.min_new))
         store.write_proposal(proposal, created_at=stamp, checked_at=checked_at,
                              replaces=current["id"] if current is not None else None)
         if current is not None:

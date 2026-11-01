@@ -78,6 +78,9 @@ min_new = 25                       # a proposal is made when an account's waitin
 min_line = 10                      # a line under this many dollars is folded into the largest line
 household_days = 7                 # caps count accounts whose newest snapshot is this close to the newest
 tilt = { cheap = 1.5, usual = 1.0, premium = 0.5 }    # a holding's share of the money, by its band
+go_from = 7                        # the week score (0-10) from which all the waiting cash is proposed
+half_from = 4                      # ... from which half is, the rest waits; under it, it all waits
+max_wait_weeks = 4                 # held-back money that has waited this many weeks goes in whatever the score
 
 [allocation.accounts]              # targets-file account name = fdc account label (fdc accounts lists them)
 # brokerage = "Sample Brokerage"
@@ -167,6 +170,9 @@ class AllocationSettings:
     min_line: int = 10
     tilt: dict[str, float] = field(default_factory=_default_tilt)
     household_days: int = 7
+    go_from: int = 7                   # a week score this high or higher: put it all in
+    half_from: int = 4                 # ... this high: put in half, the rest waits; under it: hold on
+    max_wait_weeks: int = 4            # held-back money that has waited this many weeks goes in whatever the score
 
 
 @dataclass(frozen=True)
@@ -351,6 +357,15 @@ def _allocation_settings(raw: object, cfg_path: Path, root: Path) -> AllocationS
         if not isinstance(v, int) or isinstance(v, bool) or v < 1:
             raise ConfigError(f"{cfg_path}: [allocation] {name} must be a whole number, 1 or more")
         values[name] = v
+    for name, low, high, words in (("go_from", 0, 10, "0 to 10"), ("half_from", 0, 10, "0 to 10"),
+                                   ("max_wait_weeks", 1, 52, "1 to 52 weeks")):
+        v = raw.get(name, getattr(defaults, name))
+        if not isinstance(v, int) or isinstance(v, bool) or not low <= v <= high:
+            raise ConfigError(f"{cfg_path}: [allocation] {name} must be a whole number, {words}")
+        values[name] = v
+    if values["half_from"] > values["go_from"]:
+        raise ConfigError(f"{cfg_path}: [allocation] half_from ({values['half_from']}) must not be above go_from "
+                          f"({values['go_from']})")
     v = raw.get("min_new", defaults.min_new)
     if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or not v > 0:
         raise ConfigError(f"{cfg_path}: [allocation] min_new must be a finite number of dollars above 0")

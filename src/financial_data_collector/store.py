@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
@@ -14,7 +14,8 @@ from .connections.names import slug_for
 from .symbols import is_money_market
 from .models import (
     AccountRef, AllocationProposal, ConceptRule, CurrentReport, EarningsEvent, Estimate, Fact, FundSnapshot, Headline, LineItem,
-    ENGINE_CHECK_NAMES, MacroObservation, PriceBar, PriceMove, ScoreRow, Snapshot, TransactionRow, is_final,
+    ENGINE_CHECK_NAMES, HoldingBandRow, MacroObservation, PriceBar, PriceMove, ScoreRow, Snapshot, TargetRow, TransactionRow,
+    is_final,
 )
 
 if TYPE_CHECKING:
@@ -26,7 +27,7 @@ COUNT_TABLES = (
     "holdings_daily", "cash_daily", "lots", "realized_gains", "reconciliation", "valuation_daily", "connections",
     "unexplained_daily", "macro_observations", "check_runs", "check_findings", "fund_snapshots", "earnings_events",
     "estimate_snapshots", "current_reports", "news_headlines", "valuation_scores_raw", "price_moves",
-    "allocation_proposals_raw", "allocation_lines_raw",
+    "allocation_proposals_raw", "allocation_lines_raw", "holding_bands_raw", "allocation_targets_raw",
 )
 
 
@@ -993,10 +994,66 @@ class Store:
                 out[s].append(d)
         return out
 
+    def split_account_types(self) -> dict[str, str]:
+        """Each account label's `accounts.account_type`."""
+        return {r[0]: r[1] for r in self.query("SELECT label, account_type FROM accounts")}
+
+    def split_drops(self, symbols: list[str], through: str, days: int) -> dict[str, list[dict]]:
+        """Each symbol's price_moves dated in the `days` up to `through` (the first day left out, the last counted), as
+        {date, move, first} where `first` is the kind of its first cause; [] for a symbol with none."""
+        start = (date.fromisoformat(through) - timedelta(days=days)).isoformat()
+        out: dict[str, list[dict]] = {s: [] for s in symbols}
+        for s in out:
+            for r in self.query("SELECT date, move, causes FROM price_moves WHERE symbol = ? AND date > ? "
+                                "AND date <= ? ORDER BY date, span", (s, start, through)):
+                causes = _json_or_raw(r[2])
+                first = causes[0].get("kind") if isinstance(causes, list) and causes and isinstance(causes[0], dict) \
+                    else None
+                out[s].append({"date": r[0], "move": r[1], "first": first})
+        return out
+
+    def last_proposal(self, account_key: str) -> dict | None:
+        """The account's newest proposal of any status (by id), with its lines; None when none."""
+        rows = self.query("SELECT * FROM allocation_proposals_raw WHERE account_key = ? ORDER BY id DESC LIMIT 1",
+                          (account_key,))
+        return self._proposal_dict(rows[0]) if rows else None
+
+    def replace_holding_bands(self, rows: Iterable[HoldingBandRow], checked_at: str | None) -> int:
+        """Make holding_bands_raw exactly `rows` (each stamped `checked_at`), as replace_scores does. Returns how many
+        rows it holds."""
+        cols = ("symbol", "date", "band", "reasons", "deciding", "sources", "checked_at")
+        want = {r.symbol: (r.symbol, r.date, r.band, ",".join(r.reasons), ",".join(r.deciding),
+                           json.dumps(list(r.sources), sort_keys=True), checked_at) for r in rows}
+        return self._replace_exact("holding_bands_raw", cols, 1, want)
+
+    def replace_allocation_targets(self, rows: Iterable[TargetRow]) -> int:
+        """Make allocation_targets_raw exactly `rows`, as replace_scores does. Returns how many rows it holds."""
+        cols = ("account_key", "account_type", "symbol", "rule", "kind", "target", "held_value", "gap", "side", "top",
+                "date", "sources", "note")
+        want = {(r.account_key, r.symbol): (r.account_key, r.account_type, r.symbol, r.rule, r.kind, r.target,
+                                            r.held_value, r.gap, r.side, r.top, r.date,
+                                            json.dumps(list(r.sources), sort_keys=True), r.note) for r in rows}
+        return self._replace_exact("allocation_targets_raw", cols, 2, want)
+
+    def _replace_exact(self, table: str, cols: tuple[str, ...], n_key: int, want: dict) -> int:
+        """Make `table` exactly the rows of `want` (key -> full row, the key being the first `n_key` columns): a row
+        already as it should be is not written, a key no longer wanted is deleted. One transaction."""
+        key_of = (lambda r: r[0]) if n_key == 1 else (lambda r: tuple(r[:n_key]))
+        have = {key_of(tuple(r)): tuple(r) for r in self.query(f"SELECT {', '.join(cols)} FROM {table}")}
+        where = " AND ".join(f"{c} = ?" for c in cols[:n_key])
+        with self.conn:
+            self.conn.executemany(f"DELETE FROM {table} WHERE {where}",
+                                  [(k,) if n_key == 1 else k for k in have if k not in want])
+            self.conn.executemany(
+                f"INSERT OR REPLACE INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [v for k, v in want.items() if have.get(k) != v])
+        return len(want)
+
     def _proposal_dict(self, row: sqlite3.Row) -> dict:
         d = dict(row)
         d["notes"] = json.loads(d["notes"])
         d["sources"] = json.loads(d["sources"])
+        d["parts"] = json.loads(d["parts"]) if d.get("parts") else []
         d["lines"] = []
         for r in self.query("SELECT * FROM allocation_lines_raw WHERE proposal_id = ? ORDER BY rowid", (d["id"],)):
             line = dict(r)
@@ -1039,10 +1096,12 @@ class Store:
                     raise ValueError(f"proposal {replaces} is not an open proposal of {p.account_key}")
             pid = self.conn.execute(
                 "INSERT INTO allocation_proposals_raw (account_key, created_at, cash_date, cash, placed, waits, "
-                "status, notes, sources, checked_at) VALUES (?,?,?,?,?,?, 'open', ?,?,?)",
+                "status, notes, sources, checked_at, account_type, score, verdict, fraction, parts, weeks_waited, "
+                "forced, waiting_since) VALUES (?,?,?,?,?,?, 'open', ?,?,?, ?,?,?,?,?,?,?,?)",
                 (p.account_key, created_at, p.cash_date, p.cash, p.placed, p.waits,
                  json.dumps(list(p.notes), sort_keys=True), json.dumps(list(p.sources), sort_keys=True),
-                 checked_at)).lastrowid
+                 checked_at, p.account_type, p.score, p.verdict, p.fraction,
+                 json.dumps(list(p.parts), sort_keys=True), p.weeks_waited, p.forced, p.waiting_since)).lastrowid
             for line, src in zip(p.lines, p.line_sources, strict=True):
                 self.conn.execute(
                     "INSERT INTO allocation_lines_raw (proposal_id, symbol, dollars, target_gap, band, tilt, "
@@ -1068,10 +1127,10 @@ class Store:
         return r[0][0] if r else None
 
     def check_split_rows(self) -> list[dict]:
-        """For the checker: every open raw proposal (id, account_key, cash_date, cash) with its lines (symbol,
+        """For the checker: every open raw proposal (id, account_key, cash_date, cash, verdict, fraction) with its lines (symbol,
         dollars, sources parsed), whether or not a hold covers it."""
         out = []
-        for r in self.query("SELECT id, account_key, cash_date, cash FROM allocation_proposals_raw "
+        for r in self.query("SELECT id, account_key, cash_date, cash, verdict, fraction FROM allocation_proposals_raw "
                             "WHERE status = 'open' ORDER BY id"):
             d = dict(r)
             d["lines"] = [{"symbol": l[0], "dollars": l[1], "sources": _json_or_raw(l[2])}

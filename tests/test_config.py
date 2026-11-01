@@ -239,11 +239,13 @@ def test_allocation_defaults_are_the_spec_values(tmp_path: Path):
     assert a.accounts == {}
     assert (a.min_new, a.min_line, a.household_days) == (25.0, 10, 7)
     assert a.tilt == {"cheap": 1.5, "usual": 1.0, "premium": 0.5}
+    assert (a.go_from, a.half_from, a.max_wait_weeks) == (7, 4, 4)            # the owner's week-score rules
 
 
 def test_allocation_can_be_set_and_paths_resolve_against_the_config_folder(tmp_path: Path):
     cfg = _alloc_cfg(tmp_path, '[allocation]\ntargets = "t/x.json"\nfund_holdings = "f"\nmin_new = 50\nmin_line = 5\n'
                                'household_days = 3\ntilt = { cheap = 2, premium = 0.25 }\n'
+                               'go_from = 8\nhalf_from = 5\nmax_wait_weeks = 3\n'
                                '[allocation.accounts]\nbrokerage = "Sample Brokerage"\nroth = "Sample Roth"\n')
     a = cfg.allocation
     assert a.targets == (tmp_path / "t" / "x.json").resolve()
@@ -251,6 +253,7 @@ def test_allocation_can_be_set_and_paths_resolve_against_the_config_folder(tmp_p
     assert (a.min_new, a.min_line, a.household_days) == (50.0, 5, 3)
     assert a.tilt == {"cheap": 2.0, "usual": 1.0, "premium": 0.25}              # unnamed bands keep their default
     assert a.accounts == {"brokerage": "Sample Brokerage", "roth": "Sample Roth"}
+    assert (a.go_from, a.half_from, a.max_wait_weeks) == (8, 5, 3)
 
 
 def test_allocation_unknown_setting_is_named(tmp_path: Path):
@@ -266,6 +269,8 @@ def test_allocation_unknown_setting_is_named(tmp_path: Path):
     "tilt = 5", "tilt = { cheap = 0 }", "tilt = { cheap = -1 }", "tilt = { cheap = 'x' }", "tilt = { cheap = nan }",
     "tilt = { cheap = inf }", "tilt = { risky = 1 }",
     "accounts = 'x'",
+    "go_from = 11", "go_from = -1", "go_from = 6.5", "go_from = true", "half_from = 'x'", "half_from = 11",
+    "max_wait_weeks = 0", "max_wait_weeks = 53", "max_wait_weeks = 1.5", "go_from = 3",   # 3 is under half_from's 4
 ])
 def test_allocation_bad_values_are_refused(tmp_path: Path, line: str):
     with pytest.raises(C.ConfigError, match=r"\[allocation\]"):
