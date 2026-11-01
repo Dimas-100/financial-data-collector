@@ -324,6 +324,20 @@ def test_quarters_that_do_not_reach_our_period_end_are_not_compared(store, cfg):
     assert f.message == "not compared: Yahoo's newest quarter ends 2026-06-30, ours 2026-09-30"
 
 
+def test_fcf_not_compared_clears_an_old_warning_but_keeps_a_hold(store, cfg):
+    _held(store)
+    _valuation(store, fcf_ttm=80.0, p_fcf=20.0, ttm_period_end="2026-09-30")
+    old = [check.Finding("figures", "AAA", "fcf_ttm", DAY, None, "warn", "306% from Yahoo's levered figure", {})]
+    store.check_record("figures", old, "2026-10-28T20:00:00Z")
+    [f] = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, None, None, None, _quarters())}))
+    assert f.severity == "info"                          # the warning came from quarters that are not ours: it goes
+    held = [check.Finding("figures", "AAA", "fcf_ttm", DAY, None, "hold", "far apart", {}),
+            check.Finding("figures", "AAA", "p_fcf", DAY, None, "hold", "built on fcf_ttm", {})]
+    store.check_record("figures", held, "2026-10-28T21:00:00Z")
+    found = _figures(store, cfg, FakeOutside(figs={"AAA": F(None, None, None, None, _quarters())}))
+    assert {(f.field, f.severity) for f in found} == {("fcf_ttm", "hold"), ("p_fcf", "hold")}
+
+
 @pytest.mark.parametrize("q", [
     _quarters(ocf=(40.0, None, 20.0, 10.0)),                                    # a quarter Yahoo leaves blank
     _quarters(ends=("2026-06-30", "2026-03-31", "2025-12-31")[:3] + ("2025-03-31",)),   # a quarter missing between

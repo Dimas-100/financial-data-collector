@@ -276,11 +276,14 @@ def _yahoo_fcf(quarters: tuple[CashFlowQuarter, ...], period_end: str | None) ->
     return sum(q.operating for q in four) - sum(abs(x) for x in spent), line, ends
 
 
-def _not_compared(ctx: CheckContext, symbol: str, column: str, on: str, why: str) -> list[Finding]:
+def _not_compared(ctx: CheckContext, symbol: str, column: str, on: str, why: str,
+                  holds_only: bool = False) -> list[Finding]:
     """A figure that could not be compared (Yahoo's value is 0): an info saying so, and the open findings on that
-    figure and the ratios built on it, which this run could not re-examine."""
+    figure and the ratios built on it, which this run could not re-examine. With `holds_only` (Yahoo has no quarters
+    to set against ours: a warning made from other quarters says nothing now) only the holds are kept."""
     mine = {column, *DEPENDENTS.get(column, ())}
-    kept = [k for k in still_open(ctx.store, "figures", symbol) if k.field in mine]
+    kept = [k for k in still_open(ctx.store, "figures", symbol)
+            if k.field in mine and (k.severity == "hold" or not holds_only)]
     info = Finding("figures", symbol, column, on, None, "info", f"not compared: {why}", {})
     return kept if any((k.field, k.date_from) == (column, on) for k in kept) else kept + [info]
 
@@ -311,7 +314,7 @@ def outside_figures(ctx: CheckContext) -> list[Finding]:
         if figs.quarters:
             theirs, line, ends = _yahoo_fcf(figs.quarters, row["ttm_period_end"])
             if theirs is None:
-                out += _not_compared(ctx, symbol, "fcf_ttm", row["date"], line)
+                out += _not_compared(ctx, symbol, "fcf_ttm", row["date"], line, holds_only=True)
             else:
                 spend = "purchases of property and equipment" if line == PPE_LINE else "capital expenditure"
                 compared.append(("fcf_ttm", theirs, {"figure": "operating cash flow less " + spend,
