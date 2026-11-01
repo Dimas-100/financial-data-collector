@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- The week score (for the window's "This week" page; spec addendum 2026-10-31, the owner's picks). Each proposal now
+  says whether this is the week its cash goes in: `score` 0-10 (a usual week starts at 7; cheap destinations add up to
+  3 and premium ones take up to 6 by their share of the gap; an unexplained drop of a destination takes 1, at most 2),
+  `verdict` go / half / hold from `[allocation] go_from` (7) and `half_from` (4), `fraction` 1 / 0.5 / 0 of the cash the
+  split is made for (the rest waits), `parts` (what moved it, in plain words), `weeks_waited`, `forced` (`waited` after
+  `max_wait_weeks`, 4; `under_and_cheap` when the largest-gap destinations making up half the gap are all cheap),
+  `waiting_since` and `account_type`. A proposal that held money back is scored again once a week for the same cash.
+  The `split` check also holds lines over cash x fraction and a fraction its verdict does not give. Migration 0023:
+  the columns on `allocation_proposals_raw` and its view (the view only gains columns; older proposals read NULL).
+- New views `holding_bands` (one overall band per holding of a configured account, as the split reads it, with its
+  reasons and deciding score rows; a hold opened since on one of those blanks the band) and `allocation_targets` (each
+  targets-file entry's `gap` either way with `side`, and `top`, by the split's own `split.entry_gap`), rebuilt by every
+  split run, even when no proposal opens.
+- Checker `figures`: free cash flow is now compared with the four quarters of Yahoo's cash flow statement ending on our
+  TTM's period end, not with Yahoo's levered `freeCashflow` (that put every large company 70-1900% apart while the
+  statements agree to the dollar). Like for like ("Purchase Of PPE") it may hold, and `p_fcf` with it; on Yahoo's wider
+  "Capital Expenditure" line it only warns; quarters that do not reach our period end are not compared (info).
+- Looked into, no change: a drop on the day a company reports after the close is not put down to that report (the
+  8-K came after the close the drop ends on; the report is the next move's cause). Found on a live 4% drop the day of an
+  after-close report.
+
 - Opening the warehouse from two processes at once (a sync at logon and the 07:00 check it missed) no longer fails: each migration now takes the write lock first, runs only if it is still unapplied once the lock is held (waiting up to two minutes for the other opener), and commits its statements and its version row together, so a failure leaves nothing half applied. The sync also puts up its heartbeat before it opens the store, so `fdc check` waits for a sync that is still migrating. Found live: a check 8 s after the logon sync failed on 'duplicate column name'.
 - Fund typing: an ETF that is a series of a trust (most ETFs) is not on SEC's company ticker map, so the `sec` step found no CIK and left it `unknown`: the `funds` step took no snapshots of it and it got no fund scores, and the weekly split charged it to caps as `type_unknown`. The step now also reads SEC's fund ticker list (`company_tickers_mf.json`, cached a week, asked only when a symbol of unknown type has no CIK): a symbol on it is typed `etf` (`mutual_fund` when five letters ending in X), its message "no CIK in SEC ticker map; on SEC's fund list: etf". A `[classify]` symbol is never retyped; when the list cannot be had the step goes on and says so. Already-stored ETFs are typed at the next sync.
 - The weekly split: the `engine` step now also proposes how to share the cash waiting in each account across its holdings, from your own targets file. A proposal is written to the database, never an order: the split never sells, never moves money between accounts, never proposes more than the waiting cash, gives a `hold` name nothing, and works in whole dollars.

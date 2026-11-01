@@ -130,6 +130,18 @@ WHERE p.status IN ('open', 'held') AND l.symbol = 'VOO';
 SELECT p.account_key, json_extract(n.value, '$.symbol') AS symbol, json_extract(n.value, '$.reason') AS reason
 FROM allocation_proposals p, json_each(p.notes) n WHERE p.status IN ('open', 'held');
 
+-- the week: score, verdict, the share of the cash split, the guards, and what moved the score
+SELECT p.account_key, p.account_type, p.score, p.verdict, p.fraction, p.weeks_waited, p.forced,
+       json_extract(x.value, '$.sign') AS sign, json_extract(x.value, '$.text') AS part
+FROM allocation_proposals p, json_each(p.parts) x WHERE p.status IN ('open', 'held');
+
+-- every holding's overall band (blank while a hold covers a score that decided it)
+SELECT symbol, date, band, reasons, hold_ids FROM holding_bands ORDER BY symbol;
+
+-- the targets: furthest under first
+SELECT account_key, symbol, rule, target, ROUND(held_value) AS held, ROUND(gap) AS gap, side, ROUND(top) AS top
+FROM allocation_targets ORDER BY account_key, side = 'short' DESC, gap DESC;
+
 -- history: each account's proposals, newest first, and how each ended
 SELECT account_key, id, created_at, cash, placed, status, closed_at, closed_cash
 FROM allocation_proposals ORDER BY account_key, id DESC;

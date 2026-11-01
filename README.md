@@ -90,7 +90,8 @@ waits its turn too. Older history: `fdc query "select * from sync_runs order by 
 | `check_runs`, `check_findings` | the checker's runs and what it found; open `hold` findings blank the matching fields of `valuation_latest` (see "Checker") |
 | `valuation_scores`, `valuation_scores_raw` | the valuation engine's scores: one row per symbol and metric at the symbol's newest final close, with its status, what it was built from (`inputs`, `sources`) and when the checker covered the data (`checked_at`); read the view, which also applies holds opened since (see "Valuation engine") |
 | `price_moves` | drops of a final close in the last year (a day down 4%, a week down 8%, or a day 2.5 of its own standard deviations below the market) with their causes, each from a sourced fact (earnings, an 8-K, the market, the sector, headlines) or "no cause found" (see "Drops and their causes") |
-| `allocation_proposals`, `allocation_lines` (views over `allocation_proposals_raw`, `allocation_lines_raw`) | the weekly split's proposals, a record kept as written: how the cash waiting in one account was split across its holdings, in whole dollars, with each line's band, reasons and sources (see "The weekly split"); the views apply the checker's holds. Never an order |
+| `allocation_proposals`, `allocation_lines` (views over `allocation_proposals_raw`, `allocation_lines_raw`) | the weekly split's proposals, a record kept as written: how the cash waiting in one account was split across its holdings, in whole dollars, with each line's band, reasons and sources, and the week's score, verdict and the parts that moved it (see "The weekly split"); the views apply the checker's holds. Never an order |
+| `holding_bands`, `allocation_targets` (views over `holding_bands_raw`, `allocation_targets_raw`) | rebuilt by each split run: one overall band per holding of the configured accounts (its reasons and the score rows that decided it; blank while a hold covers one of those), and each targets-file entry's gap and band top in dollars, worked out as the split works them out |
 | `sync_runs`, `sync_status` | what ran, when, and whether it worked |
 
 Quarterly cash-flow items are computed from year-to-date filings where companies only report
@@ -152,7 +153,10 @@ thresholds are in `[check]` of `config.toml`. What it looks at:
   cannot give one (a P/E with no EPS);
 - **filings**: a filing SEC lists for a company that the warehouse does not have (without `SEC_USER_AGENT`, SEC is
   not asked: one note, and the open holds stay);
-- **prices2** and **figures**: a second price source and outside statement figures (Yahoo, Tiingo), compared with ours;
+- **prices2** and **figures**: a second price source and outside statement figures (Yahoo, Tiingo), compared with ours
+  (free cash flow against the four quarters of Yahoo's cash flow statement that end on our TTM's period end, operating
+  cash flow less purchases of property and equipment as ours is; on Yahoo's wider "Capital Expenditure" line only a
+  warning; Yahoo's own `freeCashflow` figure is levered and never compared);
 - **scores**: the valuation engine's scores (`valuation_scores_raw`). One hold per score that is `ok` with no `sources` (or
   unreadable ones), has a source link that was not built (every link `https://`; a filing's exactly
   `https://www.sec.gov/Archives/edgar/data/<CIK>/<accession without dashes>/<accession>-index.htm`), a `percentile_5y`
@@ -460,6 +464,29 @@ too old to count (counts, never a name). The proposals are a record, like the ch
 closes one, an open proposal's lines are never rewritten (new scores alone do not change it; only new cash makes a new
 one), and a re-run with the same cash writes nothing. Read them in `allocation_proposals` and `allocation_lines`
 (`docs/QUERIES.md` has the queries).
+
+**The week score.** Each proposal says whether this is the week the cash goes in: a `score` from 0 to 10 (never a
+probability), from where the money would go (the entries short of target the split could give money to, each weighted
+by its share of the gap). A usual week starts at 7; cheap destinations add up to 3 and premium ones take up to 6, by
+their share; a destination of 10% or more of the gap that dropped in the 14 days to the cash date with "no cause found"
+takes 1 (at most 2); "not known" counts as usual and is said. `verdict` is `go` from `go_from` (7), `half` from
+`half_from` (4), else `hold`, and the split is made for that `fraction` of the cash (1, 0.5, 0); the rest waits and
+joins the next proposal. Two guards make it `go` whatever the score (`forced`): money held back for `max_wait_weeks`
+(4) weeks (`waited`), and the largest-gap destinations that make up half the gap all cheap (`under_and_cheap`). `parts`
+lists what moved the score in plain words; `weeks_waited` counts whole weeks since the held-back money started
+waiting. A proposal that held money back is scored again once a week even when the cash has not changed. The `split`
+check also holds lines over cash x fraction, or a fraction its verdict does not give.
+
+```toml
+[allocation]
+go_from = 7                        # a week score this high or higher: all the waiting cash
+half_from = 4                      # ... this high: half, the rest waits; under it, it all waits
+max_wait_weeks = 4                 # held-back money that has waited this long goes in whatever the score
+```
+
+The same run rebuilds `holding_bands` (each held symbol's overall band, as the split reads it) and `allocation_targets`
+(each entry's `gap` in dollars either way with `side` `short` / `over` / `on`, and `top`, the dollars to its band top),
+even when no proposal opens; no targets file, no target rows.
 
 ## Claude Desktop
 
