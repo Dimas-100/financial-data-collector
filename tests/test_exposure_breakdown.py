@@ -58,3 +58,95 @@ def test_replace_is_exact(store: Store):
 def test_breakdown_counted(store: Store):
     store.replace_exposure_breakdown([_row()])
     assert store.counts()["exposure_breakdown_raw"] == 1
+
+
+# ---------------------------------------------------------------- the pure build
+
+from financial_data_collector.derive import breakdown as B
+from financial_data_collector.derive import exposure as E
+
+SECTORS = E.Sectors(company={"NVDA": "Technology", "LLY": "Health Care"},
+                    funds={"FXAIX": {"Technology": 40.0, "Health Care": 60.0},
+                           "SCHD": {"Technology": 50.0, "Consumer Staples": 50.0}})
+COUNTRIES = B.Countries(company={"NVDA": "United States"},
+                        funds={"FXAIX": {"United States": 100.0}, "VXUS": {"International (ex-US)": 100.0}})
+PLAN = {"NVDA": 50.0, "LLY": 50.0}
+
+
+def _rolled() -> E.Book:
+    return E.Book(held={"FXAIX": 6000.0, "VGIT": 600.0, "NVDA": 200.0}, cash=3.0,
+                  funds=frozenset({"FXAIX", "VGIT"}), look_through={"FXAIX": {"NVDA": 0.08, "AAPL": 0.07}},
+                  coverage={"FXAIX": 39.0})
+
+
+def _brokerage() -> E.Book:
+    return E.Book(held={"NVDA": 200.0, "SCHD": 700.0}, cash=0.0, funds=frozenset({"SCHD"}))
+
+
+def _build(**kw):
+    args = dict(brokerage=_brokerage(), rolled_up=_rolled(), plan=PLAN, sectors=SECTORS, countries=COUNTRIES,
+                fees={"FXAIX": 0.015}, day="2026-11-06")
+    args.update(kw)
+    return B.build_breakdown(**args)
+
+
+def _pick(rows, dimension, bucket, base="fidelity_rolled_up"):
+    got = [r for r in rows if (r.dimension, r.bucket, r.base) == (dimension, bucket, base)]
+    assert len(got) == 1, (dimension, bucket, base, rows)
+    return got[0]
+
+
+def test_asset_split():
+    rows = _build()
+    assert _pick(rows, "asset", "stocks").value == 6200.0
+    assert _pick(rows, "asset", "bonds").value == 600.0
+    assert _pick(rows, "asset", "cash").value == 3.0
+    assert round(_pick(rows, "asset", "bonds").pct, 2) == round(100 * 600 / 6803, 2)
+
+
+def test_company_rows_floor():
+    rows = _build()
+    nvda = _pick(rows, "company", "NVDA")
+    assert nvda.value == pytest.approx(680.0)
+    assert nvda.direct == 200.0
+    assert nvda.look_through_complete == 0
+    assert nvda.coverage_pct == _rolled().look_through_coverage()[0]
+    assert _pick(rows, "company", "AAPL").direct == 0.0
+    assert not [r for r in rows if r.dimension == "company" and r.bucket in ("FXAIX", "VGIT")]
+
+
+def test_crash_rows_four_scenarios():
+    rows = [r for r in _build() if r.dimension == "crash"]
+    assert [r.bucket for r in rows] == ["2007-09", "2000-02", "2020", "2022"]
+    assert rows[0].value == round(6200 * 0.5678, 2)
+    assert rows[3].pct == pytest.approx(25.43)
+
+
+def test_fee_names_left_out():
+    fee = _pick(_build(), "fee", "weighted")
+    assert fee.pct == pytest.approx(100 * 6000 * 0.015 / 100 / 6803, abs=1e-6)     # stored to 6 places
+    assert fee.value == pytest.approx(6803 * fee.pct / 100, abs=0.01)
+    assert "VGIT" in fee.note
+
+
+def test_brokerage_sector_has_plan_line():
+    tech = _pick(_build(), "sector", "Technology", base="brokerage")
+    assert tech.pct == pytest.approx(100 * (200 + 350) / 900, rel=1e-6)
+    assert tech.line_pct == pytest.approx(50.0)
+
+
+def test_rolled_up_sector_has_no_line():
+    tech = _pick(_build(), "sector", "Technology")
+    assert tech.line_pct is None
+    assert tech.value == pytest.approx(6000 * 0.4 + 200)
+
+
+def test_country_azn_international_when_unknown():
+    book = E.Book(held={"AZN": 100.0, "NVDA": 300.0}, cash=0.0)
+    rows = _build(rolled_up=book)
+    assert _pick(rows, "country", "International").value == 100.0
+    assert _pick(rows, "country", "United States").pct == pytest.approx(75.0)
+
+
+def test_no_book_gives_no_rows():
+    assert _build(rolled_up=None, brokerage=None) == []
