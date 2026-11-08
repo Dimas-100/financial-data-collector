@@ -5,8 +5,9 @@
 -- exposure_figures_raw is DERIVED (rebuilt from scratch by the derive step, a row already right not rewritten),
 -- one row per figure of the investing spec's section 5. Two things travel with every figure because a number
 -- without them is read against the wrong line:
---   base   - 'brokerage' or 'fidelity_rolled_up'. The same holdings read 58% of the brokerage and about 65%
---            rolled up across both Fidelity accounts. The Webull book is in NEITHER: the owner's standing rule
+--   base   - 'brokerage' or 'fidelity_rolled_up'. One set of holdings reads differently on each: a share of
+--            the brokerage alone is a smaller share of the two accounts rolled up, and the rolled-up book's own
+--            largest names can be different names. Read against the wrong base it is simply a wrong number. The Webull book is in NEITHER: the owner's standing rule
 --            (2026-08-26) lets the household TOTAL include it and keeps concentration math out of it.
 --   look_through_complete / coverage_pct - 0 with the measured coverage means the value is a FLOOR, because the
 --            fund holdings behind it account for only that share of the funds. Only a figure that actually reads
@@ -44,10 +45,16 @@ CREATE TABLE trading_days_raw (
   day TEXT PRIMARY KEY                   -- an NYSE trading day by rule, within the span of the prices on record
 );
 
--- prices is keyed (symbol, date), so a date-only lookup was a full scan; the view joins on exactly that.
+-- prices is keyed (symbol, date), so a date-only lookup was a full scan; this index is what the view seeks on.
 CREATE INDEX idx_prices_date_final ON prices (date, final);
 
+-- One row per rule trading day that has at least one bar already final, with how many it found. Written as a
+-- subquery per day, not a GROUP BY over the join: the consumer asks for `ORDER BY day DESC LIMIT 30` on every
+-- portfolio read, and an aggregate cannot use that limit - it would aggregate every price row and sort a
+-- temporary B-tree, growing with `prices`. This form seeks the index once per day and reads the newest days
+-- straight off trading_days_raw's own primary key.
 CREATE VIEW trading_days AS
-SELECT d.day AS day, COUNT(*) AS final_bars
-FROM trading_days_raw d JOIN prices p ON p.date = d.day AND p.final = 1
-GROUP BY d.day;
+SELECT d.day AS day,
+       (SELECT COUNT(*) FROM prices p WHERE p.date = d.day AND p.final = 1) AS final_bars
+FROM trading_days_raw d
+WHERE EXISTS (SELECT 1 FROM prices p WHERE p.date = d.day AND p.final = 1);

@@ -28,6 +28,7 @@ COUNT_TABLES = (
     "unexplained_daily", "macro_observations", "check_runs", "check_findings", "fund_snapshots", "earnings_events",
     "estimate_snapshots", "current_reports", "news_headlines", "valuation_scores_raw", "price_moves",
     "allocation_proposals_raw", "allocation_lines_raw", "holding_bands_raw", "allocation_targets_raw",
+    "exposure_figures_raw", "trading_days_raw",
 )
 
 
@@ -1044,6 +1045,21 @@ class Store:
                            r.coverage_pct, r.note, r.date, json.dumps(list(r.sources), sort_keys=True))
                 for r in rows}
         return self._replace_exact("exposure_figures_raw", cols, 1, want)
+
+    def exposure_notes(self) -> dict[str, str | None]:
+        """Each published figure's note, by figure: what a sync that cannot recompute one has to restate."""
+        return {r[0]: r[1] for r in self.query("SELECT figure, note FROM exposure_figures_raw")}
+
+    def restate_exposure_notes(self, notes: dict[str, str]) -> int:
+        """Replace the note of each named figure and nothing else, so a figure kept from an earlier day can say so
+        without being rebuilt. A note already as it should be is not rewritten. Returns how many rows changed."""
+        changed = 0
+        with self.conn:
+            for figure, note in sorted(notes.items()):
+                changed += self.conn.execute(
+                    "UPDATE exposure_figures_raw SET note = ? WHERE figure = ? AND note IS NOT ?",
+                    (note, figure, note)).rowcount
+        return changed
 
     def replace_trading_days(self, days: Iterable[str]) -> int:
         """Make trading_days_raw exactly `days` (ISO dates). Returns how many it holds."""

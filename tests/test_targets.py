@@ -249,3 +249,11 @@ def test_fund_sectors_are_read_in_this_repo_s_own_sector_names():
 def test_fund_sectors_without_a_file_or_a_usable_map():
     assert T.read_fund_sectors(None) == {}
     assert T.read_fund_sectors(FIX / "nope") == {}
+
+
+def test_a_planned_entry_that_cannot_be_read_is_reported_not_dropped_in_silence(tmp_path):
+    """A prose-only entry is skipped on purpose; one that carries a ticker AND a target and then fails to read is
+    a typo in the owner's own file, and the checker can only ever see it through `problems`."""
+    t = T.read_targets(_write(tmp_path, {"planned": [{"ticker": "CB", "type": "pct_of_nothing", "target": 5.0}]}))
+    assert t.planned == ()
+    assert any("pct_of_nothing" in p for p in t.problems)

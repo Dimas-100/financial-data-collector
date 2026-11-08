@@ -135,23 +135,26 @@ def read_targets(path: Path | None) -> Targets | None:
     sleeves = [s for s in (_sleeve(r, problems) for r in _list(doc, "sleeves")) if s is not None]
     caps = [c for c in (_cap(r, problems) for r in _list(doc, "caps")) if c is not None]
     revised = doc.get("last_revised")
+    planned = _planned(doc, problems)        # before `problems` is frozen below: it appends to it
     return Targets(tuple(entries), tuple(sleeves), tuple(caps), revised if isinstance(revised, str) else None,
-                   path.name, tuple(problems), tuple(_planned(doc)))
+                   path.name, tuple(problems), tuple(planned))
 
 
-def _planned(doc: dict) -> list[TargetEntry]:
+def _planned(doc: dict, problems: list[str]) -> list[TargetEntry]:
     """The `planned` entries that carry a structured percentage, as entries of the account `planned`.
 
     They are the names the owner intends to fund and has not: the plan's own lines need them (seven live brokerage
     rows sum to 59%, the thirteen names to 100%), while the weekly split must never see them - which is why they
     come back in their own list and `planned` stays in `_NOT_ACCOUNTS`. An entry that is only prose is skipped
-    without a problem: `planned` carried reader's notes long before it carried percentages."""
+    without a problem: `planned` carried reader's notes long before it carried percentages. But one that carries
+    a ticker AND a target and then fails to read is a typo in the owner's own file - a misspelled type, an
+    inverted band - and it is reported like any other, because a planned name silently dropped leaves the plan
+    short of 100% and every line built on it wrong."""
     out: list[TargetEntry] = []
-    ignored: list[str] = []
     for raw in _list(doc, PLANNED):
         if not isinstance(raw, dict) or not isinstance(raw.get("ticker"), str) or _num(raw.get("target")) is None:
             continue
-        entry = _entry(PLANNED, raw, ignored)
+        entry = _entry(PLANNED, raw, problems)
         if entry is not None:
             out.append(entry)
     return out

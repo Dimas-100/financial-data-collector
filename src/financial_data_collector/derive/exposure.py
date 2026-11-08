@@ -20,12 +20,20 @@ Four rules hold all five together:
   keeps concentration and percentage-holdings math out of it. Every figure here is built from the configured
   accounts that are AT FIDELITY, checked against the warehouse's own institution, so a Webull account that
   someone adds to [allocation.accounts] cannot leak into a figure.
-- **A base never mixes.** The same holdings read ~55% of the brokerage and ~17% rolled up. Each row says which
+- **A base never mixes.** One set of holdings answers three different questions. Say the brokerage's three
+  largest come to half of it: rolled up with a Roth several times its size, the same dollars are a small
+  fraction, and the rolled-up book's own three largest are different names again. Each row says which
   book it is, and the panel shows it against that base's line only.
 - **A floor says it is one.** Only the two figures that read fund constituent weights can be partial. Both always
   publish the coverage they measured, and set `look_through_complete = 0` while it is short of a whole fund, which
   is what tells a reader the value is a floor. The other three read no constituent weight at all, so they are
-  complete and carry no coverage figure: borrowing one they never used would be a number about nothing.
+  complete and carry no coverage figure: borrowing one they never used would be a number about nothing. A file
+  that sums OVER 100 is the opposite of a floor - it counts something twice, so the value it makes is too big -
+  and there the figure publishes no value at all, only the reason and the coverage that proves it.
+- **Every note carries its own provenance.** `positions_latest` is per-account newest, so one account's feed can
+  stop while another stays current, and a sync that cannot recompute leaves the last figure in place under a
+  primary key. The panel shows the note verbatim and puts no date on a measure, so the note is the only place
+  fdc can say which positions a figure rests on, and when it was last rebuilt.
 - **No invented line.** `line_pct` comes from the owner's targets file, so it moves as he revises the plan and no
   code edit follows. Where his rulebook draws no line - stacked exposure, the crash - the column is NULL and the
   note says so. Inventing one there would create philosophy, which the spec forbids.
@@ -34,7 +42,7 @@ Nothing here fetches, and nothing here is a recommendation.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -75,10 +83,9 @@ CRASHES: tuple[tuple[str, float], ...] = (("2007-09", 0.5678), ("2000-02", 0.491
 # named here counts as equity, which errs toward the larger loss rather than the comfortable one.
 TREASURY_FUNDS = frozenset({"VGIT"})
 # The sector of each name of the plan, from the spec's own section 5 table - used ONLY where the warehouse has no
-# sector for the name. It has none for a name it has never collected: TJX and CB have no securities row at all,
-# and dropping their 12% of the plan would shrink the plan's own denominator and understate a gap the owner really
-# has, since he holds neither. A sector the warehouse knows always wins, so an entry here falls out of use by
-# itself as the plan funds.
+# sector for the name - it has none for a name it has never collected, and two of these have no securities row at
+# all. Dropping them would shrink the plan's own denominator and understate the gap on both sides of measure 2.
+# A sector the warehouse knows always wins, so an entry here falls out of use by itself as the plan funds.
 PLAN_SECTORS: dict[str, str] = {
     "V": "Financials", "BRK.B": "Financials", "CME": "Financials", "CB": "Financials",
     "LLY": "Health Care", "AZN": "Health Care",
@@ -87,6 +94,9 @@ PLAN_SECTORS: dict[str, str] = {
     "GOOGL": "Communication Services", "WM": "Industrials",
 }
 _COMPLETE = 99.5                       # a complete holdings file sums to about 100, never exactly
+_OVER = 100.5                          # over this a file counts something twice, and reads high rather than low
+# One sentence, always the last one, when a sync could not rebuild a figure and left the one already published.
+NOT_RECOMPUTED = " This figure was not recomputed by the latest sync"
 
 
 def _pct(part: float, whole: float) -> float:
@@ -101,6 +111,38 @@ def _listed(names: list[str]) -> str:
     if len(names) <= 1:
         return names[0] if names else ""
     return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _coverage(coverage: float | None, no_file: list[str], funds_of: str) -> tuple[int, str, bool]:
+    """(the completeness flag, the sentence for the note, whether a value may be published at all).
+
+    Three states, not two. A SHORT file makes a floor, which the panel is built to show - it draws an incomplete
+    figure as "at least X". A file summing OVER 100 makes the opposite: a value inflated by whatever is counted
+    twice, where "at least" would assert exactly the wrong direction. There is no honest number to publish then,
+    only the reason and the coverage that proves it - and the flag stays 1, so the panel does not print "at least"
+    over a dash."""
+    if coverage is None:
+        return 1, "", True
+    if coverage > _OVER:
+        return 1, (f" Not measurable yet: the holdings on file add up to {coverage:.1f}% of {funds_of}, over 100%, "
+                   f"so something in them is counted twice and any figure built on them would read high."), False
+    if coverage < _COMPLETE:
+        return 0, (f" A floor: the holdings on file cover {coverage:.1f}% of {funds_of}"
+                   + (f", and {_listed(no_file)} none at all" if no_file else "") + "."), True
+    return 1, "", True
+
+
+def _provenance(day: str | None, behind: tuple[tuple[str, str], ...]) -> str:
+    """Which positions a figure rests on, as the note's last sentence.
+
+    `positions_latest` is per-account newest, so a feed that stops covering one account leaves it priced weeks ago
+    while the other stays current - and the row's own `date`, the newest of them, would still read as today."""
+    if day is None:
+        return ""
+    out = f" Measured from your Fidelity positions of {day}."
+    if behind:
+        out += " Behind it: " + _listed([f"the {key} account, last seen {seen}" for key, seen in behind]) + "."
+    return out
 
 
 @dataclass(frozen=True)
@@ -207,15 +249,16 @@ def _top_three(book: Book | None, plan: dict[str, float], day: str | None, src: 
 
     Position level, as the plan names them - SCHD is one name with one target, not a basket to look through."""
     base_line = _plan_top_three(plan)
-    if book is None or book.total <= 0:
+    if book is None or book.invested <= 0:      # cash alone is not diversification: it would publish a true 0.0
         return _row("top_three", BROKERAGE, "pct", None, base_line,
                     "no brokerage holdings to measure", day, src)
     top = sorted(book.held.items(), key=lambda kv: (-kv[1], kv[0]))[:TOP_N]
     note = (f"{_listed([s for s, _ in top])}: your {len(top)} largest holdings, as a share of the brokerage "
             f"including its cash.")
-    note += (" The line is the plan's own three largest targets." + _plan_note(plan)) if base_line is not None \
+    note += " The line is the plan's own three largest targets." if base_line is not None \
         else " No plan line: the targets file names fewer than three brokerage targets."
-    return _row("top_three", BROKERAGE, "pct", _pct(sum(v for _, v in top), book.total), base_line, note, day, src)
+    return _row("top_three", BROKERAGE, "pct", _pct(sum(v for _, v in top), book.total), base_line,
+                note + _plan_note(plan), day, src)
 
 
 def _by_sector(dollars: dict[str, float], funds: frozenset[str], sectors: Sectors
@@ -281,9 +324,13 @@ def _stacked(book: Book | None, day: str | None, src: tuple[dict, ...]) -> Expos
     Funds are ranked out: a fund is a wrapper, not a stacked name, and its own weight is measure 1's question.
     A floor - more look-through can only add exposure, never take it away."""
     coverage, no_file = book.look_through_coverage() if book is not None else (None, [])
-    complete = 1 if coverage is None or coverage >= _COMPLETE else 0
+    complete, said, usable = _coverage(coverage, no_file, "your funds")
     if book is None or book.total <= 0:
         return _row("stacked", ROLLED_UP, "pct", None, None, "no Fidelity holdings to measure", day, src,
+                    complete, coverage)
+    if not usable:
+        return _row("stacked", ROLLED_UP, "pct", None, None,
+                    "Your largest single company across both accounts." + said + " " + NO_LINE, day, src,
                     complete, coverage)
     direct, indirect = book.split()
     names = [(s, direct.get(s, 0.0) + indirect.get(s, 0.0)) for s in set(direct) | set(indirect)
@@ -298,10 +345,7 @@ def _stacked(book: Book | None, day: str | None, src: tuple[dict, ...]) -> Expos
             f"{_pct(indirect.get(top, 0.0), book.total):.1f}% through your funds.")
     if len(names) > 1:
         note += " Then " + _listed([f"{s} {_pct(v, book.total):.1f}%" for s, v in names[1:3]]) + "."
-    if complete == 0:
-        note += (f" A floor: the holdings on file cover {coverage:.1f}% of your funds"
-                 + (f", and {_listed(no_file)} none at all" if no_file else "") + ".")
-    note += " " + NO_LINE
+    note += said + " " + NO_LINE
     return _row("stacked", ROLLED_UP, "pct", _pct(value, book.total), None, note, day, src, complete,
                 coverage)
 
@@ -313,22 +357,21 @@ def _ai_capex(book: Book | None, plan: dict[str, float], day: str | None, src: t
     It reads high while the other nine names are unfunded, and falls on its own as they fund. Not a cap."""
     line = round(sum(plan.get(s, 0.0) for s in AI_CAPEX), 4) if any(s in plan for s in AI_CAPEX) else None
     coverage, no_file = book.look_through_coverage() if book is not None else (None, [])
-    complete = 1 if coverage is None or coverage >= _COMPLETE else 0
-    if book is None or book.total <= 0:
-        return _row("ai_capex", BROKERAGE, "pct", None, line, "no brokerage holdings to measure", day, src,
-                    complete, coverage)
-    direct, indirect = book.split()
-    value = sum(direct.get(s, 0.0) + indirect.get(s, 0.0) for s in AI_CAPEX)
+    complete, said, usable = _coverage(coverage, no_file, "the brokerage's funds")
     note = (f"{_listed(list(AI_CAPEX))}, held directly and through your funds, as a share of the brokerage. "
             f"It reads high because nine of the plan's names are still unfunded, and it falls on its own as they "
             f"fund: a reading, not a cap, and never a reason to hold money back.")
+    if book is None or book.invested <= 0:      # cash alone would publish a true 0.0 against a real line
+        return _row("ai_capex", BROKERAGE, "pct", None, line, "no brokerage holdings to measure", day, src,
+                    complete, coverage)
+    if not usable:
+        return _row("ai_capex", BROKERAGE, "pct", None, line, note + said, day, src, complete, coverage)
+    direct, indirect = book.split()
+    value = sum(direct.get(s, 0.0) + indirect.get(s, 0.0) for s in AI_CAPEX)
     if line is None:
         note += " No plan line: the targets file names none of these four."
-    if complete == 0:
-        note += (f" A floor: the holdings on file cover {coverage:.1f}% of the brokerage's funds"
-                 + (f", and {_listed(no_file)} none at all" if no_file else "") + ".")
-    return _row("ai_capex", BROKERAGE, "pct", _pct(value, book.total), line, note + _plan_note(plan), day, src,
-                complete, coverage)
+    return _row("ai_capex", BROKERAGE, "pct", _pct(value, book.total), line, note + said + _plan_note(plan), day,
+                src, complete, coverage)
 
 
 def _crash_cost(book: Book | None, day: str | None, src: tuple[dict, ...]) -> ExposureRow:
@@ -353,19 +396,23 @@ def _crash_cost(book: Book | None, day: str | None, src: tuple[dict, ...]) -> Ex
 
 
 def build_exposure(brokerage: Book | None, rolled_up: Book | None, plan: dict[str, float], sectors: Sectors,
-                   day: str | None, sources: tuple[dict, ...] = ()) -> list[ExposureRow]:
+                   day: str | None, sources: tuple[dict, ...] = (),
+                   behind: tuple[tuple[str, str], ...] = ()) -> list[ExposureRow]:
     """The five figures, in the spec's own order. Pure: no SQL, no store, no files.
 
     `brokerage` is None when no configured Fidelity account is a brokerage - then its three figures have no value
     and say so, rather than falling back to another account and answering a question about a book nobody asked
-    about. Every row gets `day` and `sources` as given."""
-    return [
+    about. Every row gets `day` and `sources` as given, and every note ends with where it came from: `behind` is
+    (account key, its own newest positions date) for each account whose snapshot is older than `day`."""
+    rows = [
         _top_three(brokerage, plan, day, sources),
         _sector_spread(brokerage, plan, sectors, day, sources),
         _stacked(rolled_up, day, sources),
         _ai_capex(brokerage, plan, day, sources),
         _crash_cost(rolled_up, day, sources),
     ]
+    tail = _provenance(day, behind)
+    return [replace(r, note=(r.note or "") + tail) for r in rows] if tail else rows
 
 
 # ---------------------------------------------------------------- the lifecycle
@@ -377,19 +424,27 @@ def plan_of(targets, account_key: str) -> dict[str, float]:
     `planned` names - the plan's lines need all thirteen, because the live rows alone sum to 59% and every line
     built on that denominator would be wrong. A ratio entry has no percentage and is left out. This is the ONLY
     place `planned` is read: it never reaches the weekly split, which would send real money to a name the owner
-    deliberately withheld it from."""
+    deliberately withheld it from.
+
+    A planned entry has no account of its own - `planned` is its own list, filed under a sentinel - so a share it
+    states as `pct_of_account` is a share of the brokerage it is planned for. Reading it as a share of some other
+    account and dropping it would leave the plan short and every line built on it wrong."""
     if targets is None:
         return {}
     out: dict[str, float] = {}
-    for entry in list(targets.entries) + list(targets.planned):
+    for entry in targets.entries:
         if entry.kind == "pct_of_brokerage" or (entry.kind == "pct_of_account" and entry.account == account_key):
+            out[entry.symbol] = out.get(entry.symbol, 0.0) + entry.target
+    for entry in targets.planned:
+        if entry.kind in ("pct_of_brokerage", "pct_of_account"):
             out[entry.symbol] = out.get(entry.symbol, 0.0) + entry.target
     return out
 
 
 def _books(store: Store, labels: dict[str, str], brokerage_key: str | None, look_through: dict[str, dict[str, float]],
-           coverage: dict[str, float]) -> tuple[Book | None, Book | None, str | None]:
-    """(the brokerage's book, the rolled-up Fidelity book, the newest positions date), from the warehouse.
+           coverage: dict[str, float]
+           ) -> tuple[Book | None, Book | None, str | None, tuple[tuple[str, str], ...]]:
+    """(the brokerage's book, the rolled-up Fidelity book, the newest positions date, the accounts behind it).
 
     Money market holdings are left out of the holdings and the cash row stands for them instead: SnapTrade reports
     the sweep twice, once as a position and once as cash, and counting both would inflate every base."""
@@ -397,9 +452,15 @@ def _books(store: Store, labels: dict[str, str], brokerage_key: str | None, look
     positions = [r for r in store.split_positions() if r["account"] in wanted]
     cash_rows = {k: v for k, v in store.split_cash().items() if k in wanted}
     if not positions:
-        return None, None, None
+        return None, None, None, ()
     types = store.split_asset_types(sorted({r["symbol"] for r in positions} | set(look_through)))
-    day = max(r["as_of_date"] for r in positions)
+    newest: dict[str, str] = {}
+    for row in positions:
+        if row["as_of_date"] > newest.get(row["account"], ""):
+            newest[row["account"]] = row["as_of_date"]
+    day = max(newest.values())
+    keys = {label: key for key, label in labels.items()}
+    behind = tuple(sorted((keys[label], seen) for label, seen in newest.items() if seen < day and label in keys))
 
     def book(for_labels: set[str]) -> Book:
         held: dict[str, float] = {}
@@ -417,7 +478,7 @@ def _books(store: Store, labels: dict[str, str], brokerage_key: str | None, look
                     {f: c for f, c in coverage.items() if f in funds})
 
     brokerage = book({labels[brokerage_key]}) if brokerage_key else None
-    return brokerage, book(wanted), day
+    return brokerage, book(wanted), day, behind
 
 
 def run(store: Store, cfg: Config) -> ExposureReport:
@@ -427,8 +488,9 @@ def run(store: Store, cfg: Config) -> ExposureReport:
     derive step rather than under the engine's gate because no figure here reads a valuation score - the panel
     must light up on a sync whose scores were held back, and the owner cannot tell a dark meter from a broken one.
 
-    Writes nothing, keeping whatever was published before, when no configured Fidelity account has positions: a
-    read that found nothing is not the same as a book that holds nothing."""
+    Keeps whatever was published before when no configured Fidelity account has positions - a read that found
+    nothing is not the same as a book that holds nothing - and writes the reason into each kept row's note, which
+    is the only way the panel can tell the owner he is looking at a figure from an earlier day."""
     alloc = cfg.allocation
     notes: list[str] = []
     institutions = store.account_institutions()
@@ -439,7 +501,7 @@ def run(store: Store, cfg: Config) -> ExposureReport:
         else:
             notes.append(f"{key}: not at fidelity, left out of every figure")
     if not labels:
-        return ExposureReport(0, tuple(notes), "no Fidelity account in [allocation.accounts]")
+        return _leave_published(store, notes, "no Fidelity account in [allocation.accounts]")
 
     types = store.split_account_types()
     brokerages = [k for k, label in labels.items() if types.get(label) == BROKERAGE_TYPE]
@@ -454,9 +516,9 @@ def run(store: Store, cfg: Config) -> ExposureReport:
         notes.append(f"targets file unreadable: {e}")
     look_through, coverage = read_look_through_with_coverage(alloc.fund_holdings)
     fund_sectors = read_fund_sectors(alloc.fund_holdings)
-    brokerage, rolled_up, day = _books(store, labels, brokerage_key, look_through, coverage)
+    brokerage, rolled_up, day, behind = _books(store, labels, brokerage_key, look_through, coverage)
     if rolled_up is None:
-        return ExposureReport(0, tuple(notes), "no positions in any configured Fidelity account")
+        return _leave_published(store, notes, "no positions in any configured Fidelity account")
 
     plan = plan_of(targets, brokerage_key) if brokerage_key else {}
     held = sorted(set(rolled_up.held) | set(plan))
@@ -467,8 +529,26 @@ def run(store: Store, cfg: Config) -> ExposureReport:
     for fund in sorted(rolled_up.fund_values):
         if fund in look_through:
             src.append(sources.feed(f"{fund}.csv", None, fund))
-    rows = build_exposure(brokerage, rolled_up, plan, sectors, day, tuple(src))
+    rows = build_exposure(brokerage, rolled_up, plan, sectors, day, tuple(src), behind)
     return ExposureReport(store.replace_exposure_figures(rows), tuple(notes))
+
+
+def _restated(note: str | None, why: str) -> str:
+    """The note with exactly one "not recomputed" sentence: appended when it has none, replaced when it has one,
+    so a week of syncs that cannot rebuild a figure does not write a week of sentences."""
+    return f"{(note or '').split(NOT_RECOMPUTED)[0].rstrip()}{NOT_RECOMPUTED} ({why})."
+
+
+def _leave_published(store: Store, notes: list[str], why: str) -> ExposureReport:
+    """Keep the figures already published, and say on each of them that this sync could not rebuild it.
+
+    Blanking the panel on a read that found nothing would be worse - the owner cannot tell a dark meter from a
+    broken one. But `figure` is the primary key, so a row survives a sync that cannot recompute it, and the panel
+    puts no date on a measure: without this sentence last month's figure reads as today's."""
+    kept = store.exposure_notes()
+    if kept:
+        store.restate_exposure_notes({f: _restated(note, why) for f, note in kept.items()})
+    return ExposureReport(0, tuple(notes), why)
 
 
 def publish_trading_days(store: Store) -> int:

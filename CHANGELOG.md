@@ -16,6 +16,18 @@
   repo already knew reachable from another repo over the read-only connection - the calendar, which was Python
   only, and the complete-close rule - so a consumer stops guessing a calendar from a price file and can never read
   a bar fetched before its close as a close. Also an index on `prices (date, final)`, which that join needs.
+- Review fixes to those figures, all three in the same place - a number on a money page that claims more than it
+  is. A fund holdings file that sums over 100% counts something twice, so `stacked` and `ai_capex` now publish no
+  value there (only the measured coverage and the reason): a consumer draws an incomplete figure as "at least x",
+  which would assert the opposite of what is wrong. A brokerage holding only cash published a true 0.0 against a
+  real line - perfect diversification, measured on nothing - and now publishes nothing. Every note ends with the
+  positions date its figure rests on, names any account whose snapshot is behind it, and says so when a run could
+  not rebuild it and left the figure already published. `read_targets` reports a `planned` entry that carries a
+  ticker and a target and then fails to read, instead of dropping it in silence, and a planned entry filed as
+  `pct_of_account` reaches the plan it is planned for. The `trading_days` view seeks per day instead of
+  aggregating the whole price table, which the consumer's own `ORDER BY day DESC LIMIT 30` could not use; both
+  new raw tables are counted like every other derived table. The plan for this work lives in the owner's own
+  investing repo, not here: it names holdings, and this repo is public.
 - Fund look-through now joins share classes and foreign listings: `symbols.exposure_alias` (Alphabet's two classes
   as one GOOGL, eight foreign listings as the US lines they stand for, ROP.SW to RHHBY and never to Roper),
   applied in `read_look_through`, which sums weights that collide. `canonical()` is unchanged on purpose - it

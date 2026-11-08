@@ -506,9 +506,11 @@ file and the funds' published weights:
 | `ai_capex` | `brokerage` | MSFT + NVDA + AMZN + GOOGL, direct and through funds, as a share of the brokerage | their combined plan target |
 | `crash_cost` | `fidelity_rolled_up` | dollars a published market fall would take off this allocation, in `usd` | none |
 
-Four things about them are deliberate:
+Five things about them are deliberate:
 
-- **One base, never mixed.** The same holdings read ~55% of the brokerage and ~7% rolled up across both accounts.
+- **One base, never mixed.** The same holdings answer differently on each: a name that is a large share of the
+  brokerage is a much smaller share of the two accounts rolled up, and the rolled-up book's own largest names
+  can be different names. A figure read against the wrong base is a wrong number, so each row carries its own.
   `base` says which book a figure is, and a consumer must compare it only against that base's line.
 - **Only the accounts at this institution.** Every figure is built from the configured accounts the warehouse
   records as Fidelity, so another broker's account added to `[allocation.accounts]` cannot reach a figure. The
@@ -516,6 +518,14 @@ Four things about them are deliberate:
 - **A floor says it is one.** `stacked` and `ai_capex` read fund constituent weights, so they publish the measured
   `coverage_pct` and set `look_through_complete = 0` while the holdings on file cover only part of the funds - the
   value is then a floor. The other three read no constituent weight, so they are complete and carry no coverage.
+  A holdings file that sums OVER 100% is the opposite case - it counts something twice, so the figure it makes is
+  too big, not too small - and those two then publish NO value, only the measured coverage and a `note` saying
+  why. A consumer that draws an incomplete figure as "at least x" would otherwise assert the wrong direction.
+- **Every note says where the figure came from.** `positions_latest` is per-account newest, so one account's feed
+  can stop while another stays current; the `note` ends with the positions date the figure rests on and names any
+  account behind it. A run that cannot rebuild a figure keeps the one already published - a read that found
+  nothing is not a book that holds nothing - and writes that into the note too, so a figure from an earlier day
+  is never read as today's.
 - **No invented line.** `line_pct` comes from the targets file, so it moves when the plan is revised. It is NULL
   where the plan draws no line, and a consumer should say so rather than show a threshold nobody set.
 

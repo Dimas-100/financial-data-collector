@@ -15,7 +15,7 @@ from financial_data_collector import config as C
 from financial_data_collector.check.calendar import is_trading_day
 from financial_data_collector.config import AllocationSettings
 from financial_data_collector.derive import exposure as E
-from financial_data_collector.models import AccountRef, CashRow, PositionRow, Snapshot
+from financial_data_collector.models import AccountRef, CashRow, PositionRow, Snapshot, TargetEntry, Targets
 from financial_data_collector.store import Store
 
 BROK = AccountRef("Sample Brokerage", "brokerage", "fidelity", "brokerage")
@@ -364,7 +364,11 @@ def test_no_fidelity_positions_leaves_the_previous_figures_alone(store: Store, t
     E.run(store, cfg)
     before = _published(store)
     rep = E.run(store, dataclasses.replace(cfg, allocation=dataclasses.replace(cfg.allocation, accounts={})))
-    assert rep.skipped is not None and _published(store) == before
+    after = _published(store)
+    assert rep.skipped is not None and set(after) == set(before)
+    for figure, row in after.items():                  # every column but the note is the one published before
+        assert {k: v for k, v in row.items() if k != "note"} ==                {k: v for k, v in before[figure].items() if k != "note"}
+        assert "not recomputed" in row["note"]         # and the note says the panel is showing an earlier day
 
 
 def test_the_base_of_a_figure_is_never_the_webull_book_even_with_no_brokerage_configured(store: Store,
@@ -452,3 +456,101 @@ def test_the_views_are_readable_through_a_read_only_connection(store: Store, tmp
         assert conn.execute("SELECT day FROM trading_days").fetchall() == [("2026-11-05",)]
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------- honesty at the figure layer (review fixes)
+
+def test_a_fund_file_that_double_counts_publishes_no_value_rather_than_an_inflated_one():
+    """A file whose weights sum over 100% counts something twice, so the look-through reads HIGH, not low. The
+    panel draws an incomplete figure as "at least X", which would assert the opposite of what is wrong, so the
+    only honest thing to publish is the reason - and the coverage that proves it."""
+    book = E.Book(held={"FXAIX": 1000.0}, cash=0.0, funds=frozenset({"FXAIX"}),
+                  look_through={"FXAIX": {"MSFT": 0.9, "GOOGL": 0.6}}, coverage={"FXAIX": 150.0})
+    rows = _rows(brokerage=book, rolled_up=book)
+    for key in ("stacked", "ai_capex"):
+        row = rows[key]
+        assert row.value is None, key
+        assert (row.coverage_pct, row.look_through_complete) == (150.0, 1), key
+        assert "over 100" in row.note and "twice" in row.note, key
+
+
+def test_a_cash_only_brokerage_publishes_no_figure_rather_than_a_perfect_zero():
+    """A just-funded account would otherwise read "your three largest holdings are 0% of the brokerage" against a
+    32% line - perfect diversification, measured on nothing."""
+    cash_only = E.Book(held={}, cash=500.0, funds=frozenset(), look_through={}, coverage={})
+    rows = _rows(brokerage=cash_only, rolled_up=cash_only)
+    assert all(r.value is None for r in rows.values())
+    assert "no brokerage holdings" in rows["top_three"].note
+    assert "no brokerage holdings" in rows["ai_capex"].note
+
+
+def test_every_note_says_which_positions_the_figure_rests_on():
+    """The note is the one channel the panel prints verbatim, and the consumer is fixed - so a figure's provenance
+    has to live in it. positions_latest is per-account newest, so "the newest date" alone is not the whole truth."""
+    for key, row in _rows(day="2026-11-06").items():
+        assert "positions of 2026-11-06" in row.note, key
+
+
+def test_an_account_whose_snapshot_is_behind_the_others_is_named_in_every_note():
+    """A feed that stops covering one account leaves it priced weeks ago while the other is current, and the row's
+    own `date` would still say today."""
+    for key, row in _rows(day="2026-11-06", behind=(("roth", "2026-09-30"),)).items():
+        assert "roth" in row.note and "2026-09-30" in row.note, key
+
+
+def test_a_plan_shorter_than_three_names_still_says_it_does_not_add_up():
+    """The short-plan branch is exactly where a line is missing, so it is the last place to drop the warning."""
+    row = _rows(plan={"MSFT": 8.0})["top_three"]
+    assert row.line_pct is None
+    assert "add up to 8%" in row.note
+
+
+def test_a_stale_account_is_named_from_the_warehouse_itself(store: Store, tmp_path: Path):
+    _book(store)                                        # both Fidelity accounts as of 2026-11-08
+    store.write_snapshot(Snapshot("2026-11-10", "fidelity_csv",
+                                  [PositionRow(BROK, "SCHD", None, 1.0, 500.0, 500.0)], [CashRow(BROK, 0.0)]))
+    E.run(store, _cfg(tmp_path))
+    note = _published(store)["crash_cost"]["note"]
+    assert "positions of 2026-11-10" in note
+    assert "roth" in note and "2026-11-08" in note
+
+
+def test_a_run_that_cannot_recompute_says_so_on_the_figures_it_leaves(store: Store, tmp_path: Path):
+    """Leaving the panel lit is right; leaving it undated is not. `figure` is the primary key, so last month's row
+    simply survives, and the panel puts no date on a measure."""
+    _book(store)
+    cfg = _cfg(tmp_path)
+    E.run(store, cfg)
+    blind = dataclasses.replace(cfg, allocation=dataclasses.replace(cfg.allocation, accounts={}))
+    rep = E.run(store, blind)
+    assert rep.skipped is not None
+    note = _published(store)["top_three"]["note"]
+    assert "not recomputed" in note and "2026-11-08" in note
+    E.run(store, blind)
+    assert _published(store)["top_three"]["note"] == note      # and saying it twice does not say it twice
+
+
+def test_the_newest_days_are_served_without_aggregating_every_price_row(store: Store):
+    """`bull_portfolio` asks for the newest 30 days on every portfolio read. A GROUP BY over the whole price table
+    cannot use that LIMIT: it aggregates every row and sorts a temporary B-tree, which grows with `prices`."""
+    _bars(store, [("SPY", "2026-11-05", 1), ("SPY", "2026-11-06", 1), ("MSFT", "2026-11-06", 1)])
+    E.publish_trading_days(store)
+    plan = " ".join(str(c) for r in store.query(
+        "EXPLAIN QUERY PLAN SELECT day FROM trading_days ORDER BY day DESC LIMIT 30") for c in r)
+    assert "TEMP B-TREE" not in plan
+    assert [tuple(r) for r in store.query("SELECT day, final_bars FROM trading_days ORDER BY day DESC")] == \
+           [("2026-11-06", 2), ("2026-11-05", 1)]
+
+
+def test_the_two_new_tables_are_counted_like_every_other_derived_table(store: Store):
+    """The console and the MCP server print `counts()`; a table missing from it is invisible there."""
+    counts = store.counts()
+    assert "exposure_figures_raw" in counts and "trading_days_raw" in counts
+
+
+def test_a_planned_name_filed_against_an_account_still_reaches_the_plan():
+    """`planned` is its own list, so a planned entry has no account of its own: it reads as `pct_of_account` and is
+    filed under the sentinel. Dropping it for not naming the brokerage leaves the plan short and every line wrong."""
+    planned = TargetEntry("planned", "CME", "pct_of_account", 6.0, 5.4, 6.6, "contributions", None)
+    targets = Targets((), (), (), None, "sizing-targets.json", (), (planned,))
+    assert E.plan_of(targets, "brokerage") == {"CME": 6.0}
