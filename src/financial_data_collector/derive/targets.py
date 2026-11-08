@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 
 from ..models import Cap, Sleeve, TargetEntry, Targets
-from ..symbols import canonical
+from ..symbols import canonical, exposure_alias
 
 TARGET_BAND = 0.25                          # the band when an entry gives none: target x (1 - 0.25) .. x (1 + 0.25)
 RULES = ("trades", "contributions", "hold")
@@ -140,26 +140,43 @@ def read_look_through(fund_dir: Path | None) -> dict[str, dict[str, float]]:
     """Fund symbol -> {held symbol: weight as a fraction}, from each `<FUND>.csv` (columns ticker, name, weight_pct).
 
     A row with a weight that is not a finite number is dropped; an empty file is left out; files starting with `_`
-    and files that are not CSV are ignored; a missing folder gives {}."""
+    and files that are not CSV are ignored; a missing folder gives {}. Constituents are joined by
+    `symbols.exposure_alias`, so a fund's two Alphabet rows are one GOOGL exposure and a foreign listing is the US
+    line it is exposure to; two rows that become one symbol ADD."""
+    return read_look_through_with_coverage(fund_dir)[0]
+
+
+def read_look_through_with_coverage(fund_dir: Path | None) -> tuple[dict[str, dict[str, float]], dict[str, float]]:
+    """read_look_through's weights, and each fund's measured coverage: the percent of the fund its file accounts for.
+
+    Coverage is the SUM OF THE WEIGHTS AS READ (before aliasing, which cannot change a sum), in percent - never an
+    assumption of 100. A top-ten cache measures around 8-47; a complete file around 100 but not exactly; a
+    double-counted file over 100, and that is reported as measured, not clamped, because a consumer comparing a
+    look-through figure against a plan line needs to know which of the three it has."""
     if fund_dir is None or not Path(fund_dir).is_dir():
-        return {}
+        return {}, {}
     out: dict[str, dict[str, float]] = {}
+    coverage: dict[str, float] = {}
     for p in sorted(Path(fund_dir).iterdir()):
         if not p.is_file() or p.suffix.lower() != ".csv" or p.name.startswith("_"):
             continue
         weights: dict[str, float] = {}
+        total = 0.0
         try:
             with p.open(encoding="utf-8-sig", newline="") as f:
                 for row in csv.DictReader(f):
-                    symbol = canonical(row.get("ticker") or "")
+                    symbol = exposure_alias(row.get("ticker") or "")
                     try:
                         pct = float(row.get("weight_pct") or "")
                     except ValueError:
                         continue
                     if symbol and math.isfinite(pct):
-                        weights[symbol] = pct / 100
+                        weights[symbol] = weights.get(symbol, 0.0) + pct / 100
+                        total += pct
         except (OSError, UnicodeDecodeError, csv.Error):
             continue
         if weights:
-            out[canonical(p.stem)] = weights
-    return out
+            fund = canonical(p.stem)
+            out[fund] = weights
+            coverage[fund] = total
+    return out, coverage

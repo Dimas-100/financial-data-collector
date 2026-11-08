@@ -7,6 +7,7 @@ import pytest
 
 from financial_data_collector.derive import targets as T
 from financial_data_collector.models import Cap, Sleeve, TargetEntry, Targets
+from financial_data_collector.symbols import canonical, exposure_alias
 
 FIX = Path(__file__).parent / "fixtures" / "investing"
 TARGETS = FIX / "config" / "sizing-targets.json"
@@ -142,3 +143,65 @@ def test_deeply_nested_json_is_unreadable(tmp_path):
     with pytest.raises(ValueError) as e:
         T.read_targets(p)
     assert str(tmp_path) not in str(e.value)
+
+
+# ---------------------------------------------------------------- exposure aliases (the look-through path only)
+
+def test_exposure_alias_joins_share_classes_and_foreign_listings():
+    assert exposure_alias("GOOG") == "GOOGL"
+    assert exposure_alias("2330.TW") == "TSM"
+    assert exposure_alias("AZN.L") == "AZN"
+
+
+def test_roche_maps_to_its_adr_not_to_roper():
+    """ROP.SW is Roche; ROP on the NYSE is Roper Technologies."""
+    assert exposure_alias("ROP.SW") == "RHHBY"
+    assert exposure_alias("ROP") == "ROP"
+
+
+def test_listings_without_a_us_line_stay_unmapped():
+    assert exposure_alias("005930.KQ") == "005930.KQ"
+    assert exposure_alias("000660.KQ") == "000660.KQ"
+
+
+def test_canonical_is_not_changed_by_the_exposure_map():
+    """Identity is not exposure: a real GOOG position must stay GOOG in the warehouse."""
+    assert canonical("GOOG") == "GOOG"
+    assert canonical("BRKB") == "BRK.B"
+    assert canonical("AZN.L") == "AZN.L"
+
+
+def _fxaix(folder: Path) -> Path:
+    """FXAIX as the fund publishes it: Alphabet in two share classes, one foreign listing, one unmapped one."""
+    (folder / "FXAIX.csv").write_text(
+        "ticker,name,weight_pct\n"
+        "GOOGL,Alphabet Inc Class A,3.06\n"
+        "GOOG,Alphabet Inc Class C,2.45\n", encoding="utf-8")
+    return folder
+
+
+def test_look_through_joins_alphabet_into_one_constituent(tmp_path):
+    """FXAIX carries GOOGL and GOOG as separate rows; exposure sums them."""
+    out = T.read_look_through(_fxaix(tmp_path))
+    assert out["FXAIX"]["GOOGL"] == pytest.approx(0.0551)
+    assert "GOOG" not in out["FXAIX"]
+
+
+def test_look_through_reports_coverage_per_fund(tmp_path):
+    """Review Focus 2 — the measured sum, not an assumption of 100."""
+    out, coverage = T.read_look_through_with_coverage(_fxaix(tmp_path))
+    assert out["FXAIX"]["GOOGL"] == pytest.approx(0.0551)
+    assert coverage["FXAIX"] == pytest.approx(5.51)
+
+
+def test_coverage_over_one_hundred_is_reported_not_clamped(tmp_path):
+    """Review Focus 2 — a double-counted file must be visible, not quietly made to fit."""
+    (tmp_path / "ODD.csv").write_text("ticker,name,weight_pct\nAAPL,Apple Inc,60\nMSFT,Microsoft Corp,55\n",
+                                      encoding="utf-8")
+    _out, coverage = T.read_look_through_with_coverage(tmp_path)
+    assert coverage["ODD"] == pytest.approx(115.0)
+
+
+def test_coverage_is_empty_for_a_folder_with_nothing_to_read(tmp_path):
+    assert T.read_look_through_with_coverage(None) == ({}, {})
+    assert T.read_look_through_with_coverage(tmp_path) == ({}, {})
