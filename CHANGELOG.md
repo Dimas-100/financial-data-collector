@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Exposure figures for a portfolio page (investing spec 2026-11-06, its section 5). New view `exposure_figures`,
+  rebuilt by every `derive`: `top_three` and `sector_spread` and `ai_capex` on the brokerage, `stacked` and
+  `crash_cost` on both Fidelity accounts rolled up, each with the `base` it is measured on, the plan's own
+  `line_pct` (computed from the targets file, so it moves when the plan is revised; NULL for the two the rulebook
+  draws no line for), `look_through_complete` with the measured `coverage_pct` for the two that read fund
+  constituent weights, and a `note` in words. Built only from the configured accounts the warehouse records as
+  Fidelity, so another broker's account in `[allocation.accounts]` cannot reach a figure. The plan's lines use all
+  thirteen of the owner's names: `read_targets` now also returns the `planned` entries that carry a structured
+  percentage, in their own `Targets.planned` - never in `entries`, which is what funds an account. Migration 0024.
+- New view `trading_days`: NYSE trading days by rule (`check/calendar.py` fills `trading_days_raw`, so no day the
+  calendar rejects can enter) that also have a `final = 1` price bar, with `final_bars`. It makes two things this
+  repo already knew reachable from another repo over the read-only connection - the calendar, which was Python
+  only, and the complete-close rule - so a consumer stops guessing a calendar from a price file and can never read
+  a bar fetched before its close as a close. Also an index on `prices (date, final)`, which that join needs.
+- Fund look-through now joins share classes and foreign listings: `symbols.exposure_alias` (Alphabet's two classes
+  as one GOOGL, eight foreign listings as the US lines they stand for, ROP.SW to RHHBY and never to Roper),
+  applied in `read_look_through`, which sums weights that collide. `canonical()` is unchanged on purpose - it
+  governs identity, and mapping GOOG onto GOOGL there would rewrite a real GOOG holding. A name's measured passive
+  exposure can therefore be larger than before, which can move the weekly split's recommendation.
+  `read_look_through_with_coverage` returns each fund's measured coverage (the sum of the weights as read, in
+  percent, over 100 reported as measured rather than clamped), and `read_fund_sectors` reads the funds' published
+  sector maps from the look-through folder's `fund_category_weights.json`.
+
 - The week score (for the window's "This week" page; spec addendum 2026-10-31, the owner's picks). Each proposal now
   says whether this is the week its cash goes in: `score` 0-10 (a usual week starts at 7; cheap destinations add up to
   3 and premium ones take up to 6 by their share of the gap; an unexplained drop of a destination takes 1, at most 2),

@@ -146,6 +146,20 @@ FROM allocation_targets ORDER BY account_key, side = 'short' DESC, gap DESC;
 SELECT account_key, id, created_at, cash, placed, status, closed_at, closed_cash
 FROM allocation_proposals ORDER BY account_key, id DESC;
 
+-- the exposure figures a portfolio page shows: value, the plan's line, the base, and whether it is a floor
+SELECT figure, base, ROUND(value, 2) AS value, unit, line_pct, look_through_complete AS complete,
+       ROUND(coverage_pct, 1) AS covers, date, note
+FROM exposure_figures
+ORDER BY CASE figure WHEN 'top_three' THEN 1 WHEN 'sector_spread' THEN 2 WHEN 'stacked' THEN 3
+                     WHEN 'ai_capex' THEN 4 ELSE 5 END;
+
+-- the newest trading days with a complete close, and how many bars each has
+SELECT day, final_bars FROM trading_days ORDER BY day DESC LIMIT 30;
+
+-- one symbol's closes on those days only (never a bar fetched before its close)
+SELECT d.day, p.close FROM trading_days d JOIN prices p ON p.date = d.day AND p.final = 1
+WHERE p.symbol = 'VOO' ORDER BY d.day DESC LIMIT 30;
+
 -- open split holds (a proposal the checker stopped; clears when the fault does)
 SELECT f.id, f.symbol AS account_key, f.field, f.date_from AS cash_date, f.message
 FROM check_findings f

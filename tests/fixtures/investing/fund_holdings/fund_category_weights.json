@@ -1,0 +1,9 @@
+{
+  "_comment": "Invented sample, in the shape investing/fund_holdings/fund_category_weights.json publishes: sector weights per fund in the Morningstar/yfinance taxonomy.",
+  "as_of_generated": "2026-01-15",
+  "funds": {
+    "VOO": {"sector": {"Technology": 60.0, "Consumer Defensive": 40.0, "Nonsense Sector": 5.0},
+            "sector_source": "yfinance funds_data sector_weightings (auto-refreshed)"},
+    "VFIAX": {"sector": {}, "sector_source": "none on record"}
+  }
+}

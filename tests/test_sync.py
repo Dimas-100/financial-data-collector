@@ -695,3 +695,20 @@ def test_engine_step_rechecks_even_when_the_split_raises(project, tmp_path: Path
         assert s.query("SELECT status FROM allocation_proposals")[0][0] == "held"      # what it wrote is held
     finally:
         s.close()
+
+
+def test_the_derive_step_publishes_the_exposure_figures_and_the_trading_days(project, fixtures: Path):
+    """Mr. Buffett's panel and the price contract claude-os reads are published by `derive`, not by the engine
+    step: no figure here reads a valuation score, and the panel must light up on a sync whose scores were held."""
+    rep = sync.run_sync(project, fetch=_fetch(fixtures), now=NOW, yf=lambda s, d: [], sleep=lambda s: None)
+    by = {s.step: s for s in rep.steps}
+    assert by["derive"].status == "ok" and "trading days" in by["derive"].message
+    s = Store.open(project.db_path, migrate=False)
+    try:
+        assert s.query("SELECT COUNT(*) FROM trading_days")[0][0] > 0
+        # No [allocation.accounts] in this project, so there is no Fidelity account to measure and no figure is
+        # written - said in the step's own message rather than as five empty meters.
+        assert s.query("SELECT COUNT(*) FROM exposure_figures")[0][0] == 0
+        assert "no Fidelity account" in by["derive"].message
+    finally:
+        s.close()

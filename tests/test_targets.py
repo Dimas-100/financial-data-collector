@@ -205,3 +205,47 @@ def test_coverage_over_one_hundred_is_reported_not_clamped(tmp_path):
 def test_coverage_is_empty_for_a_folder_with_nothing_to_read(tmp_path):
     assert T.read_look_through_with_coverage(None) == ({}, {})
     assert T.read_look_through_with_coverage(tmp_path) == ({}, {})
+
+
+# ---------------------------------------------------------------- the plan's own names, read but never funded
+
+def test_planned_entries_are_read_as_their_own_list(tmp_path):
+    """The owner's 13-name plan is seven live rows and six `planned` ones; the panel's lines need all thirteen."""
+    t = T.read_targets(_write(tmp_path, {
+        "brokerage": [{"ticker": "SCHD", "type": "pct_of_brokerage", "target": 14.0}],
+        "planned": [{"ticker": "V", "type": "pct_of_brokerage", "target": 9.0, "label": "V - 9%", "size": "9%"}]}))
+    assert [(e.account, e.symbol, e.target) for e in t.planned] == [("planned", "V", 9.0)]
+    assert t.problems == ()
+
+
+def test_a_planned_name_never_reaches_the_entries_the_split_funds():
+    """Global constraint: `planned` stays out of the weekly contribution split. An entry there would send real money
+    to a name the owner deliberately withheld it from."""
+    t = T.read_targets(TARGETS)
+    assert "planned" not in {e.account for e in t.entries}
+    assert all(e.account in ("brokerage", "roth") for e in t.entries)
+
+
+def test_a_planned_entry_that_is_only_prose_is_skipped_without_complaint(tmp_path):
+    """`planned` carried reader's notes long before it carried percentages, and one is not a defect."""
+    t = T.read_targets(_write(tmp_path, {"brokerage": [], "planned": [
+        {"label": "Sample later idea", "size": "~3%"},
+        {"ticker": "CB", "type": "pct_of_brokerage", "target": 5.0}]}))
+    assert [e.symbol for e in t.planned] == ["CB"] and t.problems == ()
+
+
+def test_the_fixture_file_keeps_its_prose_only_planned_entry_problem_free():
+    assert T.read_targets(TARGETS).problems == ()
+
+
+# ---------------------------------------------------------------- the funds' published sector maps
+
+def test_fund_sectors_are_read_in_this_repo_s_own_sector_names():
+    """fund_category_weights.json publishes Yahoo's names; everything else here speaks sectors.SECTORS."""
+    got = T.read_fund_sectors(FIX / "fund_holdings")
+    assert got["VOO"] == {"Technology": 60.0, "Consumer Staples": 40.0}
+
+
+def test_fund_sectors_without_a_file_or_a_usable_map():
+    assert T.read_fund_sectors(None) == {}
+    assert T.read_fund_sectors(FIX / "nope") == {}

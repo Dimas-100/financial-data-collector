@@ -306,13 +306,18 @@ class Cap:
 @dataclass(frozen=True)
 class Targets:
     """The targets file as read: its entries, sleeves and caps, when it was last revised, its file name (never its
-    path) and a line for everything in it that was skipped or not understood."""
+    path) and a line for everything in it that was skipped or not understood.
+
+    `planned` is the names the owner intends to fund and has not: entries of the account `planned`, kept APART from
+    `entries` so that nothing which funds an account can reach them, and read only by work that needs the whole
+    plan (the exposure figures' lines)."""
     entries: tuple[TargetEntry, ...]
     sleeves: tuple[Sleeve, ...]
     caps: tuple[Cap, ...]
     last_revised: str | None
     file_name: str
     problems: tuple[str, ...]
+    planned: tuple[TargetEntry, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -375,6 +380,27 @@ class HoldingBandRow:
     reasons: tuple[str, ...]
     deciding: tuple[str, ...]
     sources: tuple[dict, ...]
+
+
+@dataclass(frozen=True)
+class ExposureRow:
+    """One figure of Mr. Buffett's instrument panel as `exposure_figures_raw` keeps it.
+
+    `value` is a percent when `unit` is `pct` and dollars when it is `usd`, None when the figure could not be
+    computed. `base` is the book it is measured on - `brokerage` or `fidelity_rolled_up`, never a mixed one.
+    `line_pct` is the owner's own plan line, None where his rulebook draws none. `look_through_complete` is 0 only
+    when the figure really read fund constituent weights and they covered part of the funds, which makes `value` a
+    floor; `coverage_pct` is then the measured share."""
+    figure: str
+    base: str
+    value: float | None
+    line_pct: float | None
+    unit: str                      # pct | usd
+    look_through_complete: int     # 0 | 1
+    coverage_pct: float | None
+    note: str | None
+    date: str | None
+    sources: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
