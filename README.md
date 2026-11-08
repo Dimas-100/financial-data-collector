@@ -92,6 +92,8 @@ waits its turn too. Older history: `fdc query "select * from sync_runs order by 
 | `price_moves` | drops of a final close in the last year (a day down 4%, a week down 8%, or a day 2.5 of its own standard deviations below the market) with their causes, each from a sourced fact (earnings, an 8-K, the market, the sector, headlines) or "no cause found" (see "Drops and their causes") |
 | `allocation_proposals`, `allocation_lines` (views over `allocation_proposals_raw`, `allocation_lines_raw`) | the weekly split's proposals, a record kept as written: how the cash waiting in one account was split across its holdings, in whole dollars, with each line's band, reasons and sources, and the week's score, verdict and the parts that moved it (see "The weekly split"); the views apply the checker's holds. Never an order |
 | `holding_bands`, `allocation_targets` (views over `holding_bands_raw`, `allocation_targets_raw`) | rebuilt by each split run: one overall band per holding of the configured accounts (its reasons and the score rows that decided it; blank while a hold covers one of those), and each targets-file entry's gap and band top in dollars, worked out as the split works them out |
+| `exposure_figures` (view over `exposure_figures_raw`) | rebuilt by every `derive`: five exposure figures for the two Fidelity accounts - the three largest holdings, the sector gap to plan, the largest stacked company, the AI-capex share and what a published crash would cost - each with the `base` it is measured on (`brokerage` or `fidelity_rolled_up`), the plan's own `line_pct` (NULL where the rulebook draws none), whether its fund look-through was complete and a `note` in words (see "Exposure figures") |
+| `trading_days` (view over `trading_days_raw`) | NYSE trading days by rule that also have a final price bar, with how many: the day axis a consumer should read instead of guessing one from a price file, and the answer to "is this bar the day's close?" (see "Exposure figures") |
 | `sync_runs`, `sync_status` | what ran, when, and whether it worked |
 
 Quarterly cash-flow items are computed from year-to-date filings where companies only report
@@ -487,6 +489,51 @@ max_wait_weeks = 4                 # held-back money that has waited this long g
 The same run rebuilds `holding_bands` (each held symbol's overall band, as the split reads it) and `allocation_targets`
 (each entry's `gap` in dollars either way with `side` `short` / `over` / `on`, and `top`, the dollars to its band top),
 even when no proposal opens; no targets file, no target rows.
+
+## Exposure figures
+
+Every `derive` run also publishes what a portfolio page can show without doing its own arithmetic. Two views,
+both read-only to everyone else, both rebuilt from scratch each run:
+
+`exposure_figures` holds five figures for the two Fidelity accounts, from `[allocation.accounts]`, the targets
+file and the funds' published weights:
+
+| `figure` | `base` | what it is | `line_pct` |
+|---|---|---|---|
+| `top_three` | `brokerage` | percent of the brokerage in its three largest holdings | the plan's three largest targets |
+| `sector_spread` | `brokerage` | the share of the brokerage that would have to move to match the plan's sectors | 0: the gap is the line |
+| `stacked` | `fidelity_rolled_up` | the largest single company across both accounts, held directly and through the funds | none |
+| `ai_capex` | `brokerage` | MSFT + NVDA + AMZN + GOOGL, direct and through funds, as a share of the brokerage | their combined plan target |
+| `crash_cost` | `fidelity_rolled_up` | dollars a published market fall would take off this allocation, in `usd` | none |
+
+Five things about them are deliberate:
+
+- **One base, never mixed.** The same holdings answer differently on each: a name that is a large share of the
+  brokerage is a much smaller share of the two accounts rolled up, and the rolled-up book's own largest names
+  can be different names. A figure read against the wrong base is a wrong number, so each row carries its own.
+  `base` says which book a figure is, and a consumer must compare it only against that base's line.
+- **Only the accounts at this institution.** Every figure is built from the configured accounts the warehouse
+  records as Fidelity, so another broker's account added to `[allocation.accounts]` cannot reach a figure. The
+  owner's rule: a household total may include a trading account, concentration math may not.
+- **A floor says it is one.** `stacked` and `ai_capex` read fund constituent weights, so they publish the measured
+  `coverage_pct` and set `look_through_complete = 0` while the holdings on file cover only part of the funds - the
+  value is then a floor. The other three read no constituent weight, so they are complete and carry no coverage.
+  A holdings file that sums OVER 100% is the opposite case - it counts something twice, so the figure it makes is
+  too big, not too small - and those two then publish NO value, only the measured coverage and a `note` saying
+  why. A consumer that draws an incomplete figure as "at least x" would otherwise assert the wrong direction.
+- **Every note says where the figure came from.** `positions_latest` is per-account newest, so one account's feed
+  can stop while another stays current; the `note` ends with the positions date the figure rests on and names any
+  account behind it. A run that cannot rebuild a figure keeps the one already published - a read that found
+  nothing is not a book that holds nothing - and writes that into the note too, so a figure from an earlier day
+  is never read as today's.
+- **No invented line.** `line_pct` comes from the targets file, so it moves when the plan is revised. It is NULL
+  where the plan draws no line, and a consumer should say so rather than show a threshold nobody set.
+
+`trading_days` answers the price question a consumer in another repo cannot answer for itself: `day` is an NYSE
+trading day by rule (`check/calendar.py` writes the raw table, so no day the calendar rejects can get in) that
+also has at least one `final = 1` bar, with `final_bars` counting them. `prices.final = 0` marks a bar fetched
+before its close, and the newest date is exactly where one lives - so **read closes from `trading_days`, or filter
+`prices` on `final = 1`**, and a partial bar can never be read as a close.
 
 ## Claude Desktop
 

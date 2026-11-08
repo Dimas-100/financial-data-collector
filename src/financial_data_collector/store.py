@@ -13,7 +13,7 @@ from .adapters.base import dedupe_key
 from .connections.names import slug_for
 from .symbols import is_money_market
 from .models import (
-    AccountRef, AllocationProposal, ConceptRule, CurrentReport, EarningsEvent, Estimate, Fact, FundSnapshot, Headline, LineItem,
+    AccountRef, AllocationProposal, ConceptRule, CurrentReport, EarningsEvent, Estimate, ExposureRow, Fact, FundSnapshot, Headline, LineItem,
     ENGINE_CHECK_NAMES, HoldingBandRow, MacroObservation, PriceBar, PriceMove, ScoreRow, Snapshot, TargetRow, TransactionRow,
     is_final,
 )
@@ -28,6 +28,7 @@ COUNT_TABLES = (
     "unexplained_daily", "macro_observations", "check_runs", "check_findings", "fund_snapshots", "earnings_events",
     "estimate_snapshots", "current_reports", "news_headlines", "valuation_scores_raw", "price_moves",
     "allocation_proposals_raw", "allocation_lines_raw", "holding_bands_raw", "allocation_targets_raw",
+    "exposure_figures_raw", "trading_days_raw",
 )
 
 
@@ -1034,6 +1035,59 @@ class Store:
                                             r.held_value, r.gap, r.side, r.top, r.date,
                                             json.dumps(list(r.sources), sort_keys=True), r.note) for r in rows}
         return self._replace_exact("allocation_targets_raw", cols, 2, want)
+
+    def replace_exposure_figures(self, rows: Iterable[ExposureRow]) -> int:
+        """Make exposure_figures_raw exactly `rows`, as replace_allocation_targets does. Returns how many rows it
+        holds."""
+        cols = ("figure", "base", "value", "line_pct", "unit", "look_through_complete", "coverage_pct", "note",
+                "date", "sources")
+        want = {r.figure: (r.figure, r.base, r.value, r.line_pct, r.unit, int(r.look_through_complete),
+                           r.coverage_pct, r.note, r.date, json.dumps(list(r.sources), sort_keys=True))
+                for r in rows}
+        return self._replace_exact("exposure_figures_raw", cols, 1, want)
+
+    def exposure_notes(self) -> dict[str, str | None]:
+        """Each published figure's note, by figure: what a sync that cannot recompute one has to restate."""
+        return {r[0]: r[1] for r in self.query("SELECT figure, note FROM exposure_figures_raw")}
+
+    def restate_exposure_notes(self, notes: dict[str, str]) -> int:
+        """Replace the note of each named figure and nothing else, so a figure kept from an earlier day can say so
+        without being rebuilt. A note already as it should be is not rewritten. Returns how many rows changed."""
+        changed = 0
+        with self.conn:
+            for figure, note in sorted(notes.items()):
+                changed += self.conn.execute(
+                    "UPDATE exposure_figures_raw SET note = ? WHERE figure = ? AND note IS NOT ?",
+                    (note, figure, note)).rowcount
+        return changed
+
+    def replace_trading_days(self, days: Iterable[str]) -> int:
+        """Make trading_days_raw exactly `days` (ISO dates). Returns how many it holds."""
+        want = {d: (d,) for d in days}
+        return self._replace_exact("trading_days_raw", ("day",), 1, want)
+
+    def trading_day_count(self) -> int:
+        """How many days the `trading_days` view serves: rule trading days that also have a final bar."""
+        r = self.query("SELECT COUNT(*) FROM trading_days")
+        return int(r[0][0]) if r else 0
+
+    def account_institutions(self) -> dict[str, str]:
+        """Each account label's `accounts.institution`: which broker or bank the account is at."""
+        return {r[0]: r[1] for r in self.query("SELECT label, institution FROM accounts")}
+
+    def company_sectors(self, symbols: list[str]) -> dict[str, str]:
+        """Each of `symbols` that has a `securities.sector` on record, with it. Only companies have one."""
+        out: dict[str, str] = {}
+        for s in sorted(set(symbols)):
+            r = self.query("SELECT sector FROM securities WHERE symbol = ? AND sector IS NOT NULL", (s,))
+            if r:
+                out[s] = r[0][0]
+        return out
+
+    def price_date_span(self) -> tuple[str, str] | None:
+        """(first, last) date any price bar is on; None when there are no bars."""
+        r = self.query("SELECT MIN(date), MAX(date) FROM prices")
+        return (r[0][0], r[0][1]) if r and r[0][0] else None
 
     def _replace_exact(self, table: str, cols: tuple[str, ...], n_key: int, want: dict) -> int:
         """Make `table` exactly the rows of `want` (key -> full row, the key being the first `n_key` columns): a row

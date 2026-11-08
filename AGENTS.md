@@ -36,6 +36,18 @@ projects consume the database; this one owns collection and storage. Design spec
   places or sizes an order, proposes a sale, moves money between accounts, passes the account's cash, gives a `hold` name a line, or
   words a reason or note as a verdict on a name. It reads two optional owner files by configured path (the targets file, the
   fund look-through folder), each ignored when missing; their names, never paths, reach a source. Fixtures are invented.
+- **The exposure figures compute here and are read elsewhere.** `derive/exposure.py` publishes the five figures a
+  portfolio page shows (`exposure_figures`) plus the `trading_days` calendar, in the `derive` step, because none of
+  them reads a valuation score and the page must light up on a sync whose scores were held. Three rules hold:
+  every figure is built only from the configured accounts the warehouse records as being at **Fidelity** (a
+  household total may include a trading account, concentration math may not - the owner's rule); every figure
+  names its `base` and never mixes two; and `line_pct` comes from the owner's targets file and is NULL where his
+  rulebook draws none - inventing a threshold there would write philosophy into a meter.
+- **An exposure alias is not an identity.** `symbols.exposure_alias` joins a fund constituent to the US line it is
+  exposure to (Alphabet's two classes, eight foreign listings). It is for the look-through path only.
+  `canonical()` must never reach it: mapping `GOOG` onto `GOOGL` there would rewrite a real GOOG holding in the
+  warehouse. `planned` entries of the targets file are read the same way - only for the plan's lines, never into
+  `Targets.entries`, which is what funds an account.
 - **The console only reads.** `fdc console` opens the store once to apply pending migrations, as every command
   does; every refresh after that is a read. The only writer it causes is the `fdc sync` subprocess it starts.
   Strings from outside (a step's message, a path, a service's error) reach the screen as `Text`, never as bare

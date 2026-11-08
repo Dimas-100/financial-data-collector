@@ -15,7 +15,7 @@ from .collectors.sec_facts import FUND_TYPES, collect_sec
 from .config import Config, ConfigError
 from .connections.keys import KeyHome
 from .connections.service import run as run_connections
-from .derive import engine as engine_mod, history, split as split_mod, valuation
+from .derive import engine as engine_mod, exposure, history, split as split_mod, valuation
 from .export.cockpit import export_cockpit
 from .ingest import ingest_inbox, ingest_news, ingest_snaptrade, news_feed
 from .models import PriceBar
@@ -225,7 +225,17 @@ def _step_derive(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple
     counts.update(history.rebuild(store))
     progress("valuation")
     counts["valuation_daily symbols"] = valuation.rebuild(store, cfg)
-    return sum(counts.values()), ", ".join(f"{k} {v}" for k, v in counts.items()), "ok"
+    # The exposure figures and the trading-day calendar: what a consumer in another repo reads over the read-only
+    # connection. Here rather than in the engine step because no figure reads a valuation score, so neither needs
+    # the engine's gate - and the panel they feed must light up even on a sync whose scores were held back.
+    progress("exposure")
+    exp = exposure.run(store, cfg)
+    counts["exposure figures"] = exp.published
+    counts["trading days"] = exposure.publish_trading_days(store)
+    msg = ", ".join(f"{k} {v}" for k, v in counts.items())
+    for note in (*exp.notes, *((exp.skipped,) if exp.skipped else ())):
+        msg += f"; exposure: {note}"
+    return sum(counts.values()), msg, "ok"
 
 
 def _step_export(store: Store, cfg: Config, *, now, progress: Progress, **_) -> tuple[int, str, str]:
