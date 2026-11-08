@@ -231,6 +231,7 @@ def _step_derive(store: Store, cfg: Config, *, progress: Progress, **_) -> tuple
     progress("exposure")
     exp = exposure.run(store, cfg)
     counts["exposure figures"] = exp.published
+    counts["exposure breakdown"] = exp.breakdown
     counts["trading days"] = exposure.publish_trading_days(store)
     msg = ", ".join(f"{k} {v}" for k, v in counts.items())
     for note in (*exp.notes, *((exp.skipped,) if exp.skipped else ())):

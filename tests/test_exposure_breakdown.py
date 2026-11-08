@@ -150,3 +150,47 @@ def test_country_azn_international_when_unknown():
 
 def test_no_book_gives_no_rows():
     assert _build(rolled_up=None, brokerage=None) == []
+
+
+# ---------------------------------------------------------------- the readers and the lifecycle
+
+from financial_data_collector import sectors as S
+from financial_data_collector.derive import targets as T
+from test_exposure import _book, _cfg
+
+
+def test_read_fund_countries_maps_ex_us(tmp_path: Path):
+    (tmp_path / "fund_category_weights.json").write_text(json.dumps({"funds": {
+        "VXUS": {"country": {"International (ex-US)": 100.0}}, "FXAIX": {"country": {"United States": 100.0}},
+        "BAD": {"country": "nowhere"}}}), encoding="utf-8")
+    got = T.read_fund_countries(tmp_path)
+    assert got == {"VXUS": {"International (ex-US)": 100.0}, "FXAIX": {"United States": 100.0}}
+    assert T.read_fund_countries(tmp_path / "missing") == {}
+
+
+def test_read_fund_expense_ratios_reads_locked_values(tmp_path: Path):
+    (tmp_path / "fund_category_weights.json").write_text(json.dumps({"funds": {
+        "FXAIX": {"expense_ratio": 0.015, "expense_ratio_locked": True}, "VGIT": {"sector": {}},
+        "ODD": {"expense_ratio": "a lot"}}}), encoding="utf-8")
+    assert T.read_fund_expense_ratios(tmp_path) == {"FXAIX": 0.015}
+
+
+def test_read_feed_countries(tmp_path: Path):
+    feed = tmp_path / "classifications.json"
+    feed.write_text(json.dumps({"by_ticker": {"NVDA": {"country": "United States"}, "ASML.AS": {"country": "Netherlands"},
+                                              "X": {"country": None}}}), encoding="utf-8")
+    got = S.read_feed_countries(feed)
+    assert got["NVDA"] == "United States" and "X" not in got
+    assert S.read_feed_countries(tmp_path / "missing.json") == {}
+
+
+def test_run_writes_breakdown(store: Store, tmp_path: Path):
+    _book(store)
+    rep = E.run(store, _cfg(tmp_path))
+    assert rep.breakdown > 0
+    rows = {(r["dimension"], r["base"], r["bucket"]): dict(r) for r in store.query("SELECT * FROM exposure_breakdown")}
+    msft = rows[("company", "fidelity_rolled_up", "MSFT")]
+    assert msft["value"] == pytest.approx(340.0)            # 300 direct + 40 through SCHD; Webull's 9000 nowhere
+    assert msft["direct"] == pytest.approx(300.0)
+    assert rows[("asset", "fidelity_rolled_up", "stocks")]["value"] == pytest.approx(2000.0)
+    assert {k[0] for k in rows} == {"asset", "sector", "country", "company", "crash", "fee"}

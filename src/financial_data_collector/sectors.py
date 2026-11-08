@@ -84,6 +84,21 @@ def read_feed(path: Path) -> tuple[dict[str, str] | None, str | None]:
     return found, as_of if isinstance(as_of, str) else None
 
 
+def read_feed_countries(path: Path) -> dict[str, str]:
+    """The feed's country for each ticker, by canonical symbol; {} for a missing or unreadable file. Only the book
+    breakdown reads it (US or international), so a country is kept as written."""
+    try:
+        entries = list(json.loads(path.read_text(encoding="utf-8"))["by_ticker"].items())
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+    found: dict[str, str] = {}
+    for ticker, entry in entries:
+        country = entry.get("country") if isinstance(entry, dict) else None
+        if isinstance(ticker, str) and isinstance(country, str) and country.strip() and country != "Unknown":
+            found[canonical(ticker)] = country.strip()
+    return found
+
+
 def _feed_source(as_of: str | None) -> str:
     try:
         return f"feed: {FEED_FILE} as of {date.fromisoformat((as_of or '')[:10]).isoformat()}"
