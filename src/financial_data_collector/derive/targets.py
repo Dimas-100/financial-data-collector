@@ -242,3 +242,46 @@ def read_fund_sectors(fund_dir: Path | None) -> dict[str, dict[str, float]]:
         if got:
             out[canonical(raw_fund)] = got
     return out
+
+
+def _fund_entries(fund_dir: Path | None) -> dict[str, dict]:
+    """The `funds` table of the look-through folder's `fund_category_weights.json`, by canonical fund symbol; {} when
+    the folder or file is missing or can't be read."""
+    if fund_dir is None:
+        return {}
+    path = Path(fund_dir) / FUND_SECTORS_FILE
+    if not path.is_file():
+        return {}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        return {}
+    funds = doc.get("funds") if isinstance(doc, dict) else None
+    if not isinstance(funds, dict):
+        return {}
+    return {canonical(k): v for k, v in funds.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def read_fund_countries(fund_dir: Path | None) -> dict[str, dict[str, float]]:
+    """Fund symbol -> {country: percent} from the same file's hand-kept `country` maps (complete: they say where the
+    whole fund is). A map that isn't a table of positive numbers is left out."""
+    out: dict[str, dict[str, float]] = {}
+    for fund, entry in _fund_entries(fund_dir).items():
+        weights = entry.get("country")
+        if not isinstance(weights, dict):
+            continue
+        got = {str(k): v for k, raw in weights.items() if isinstance(k, str) and (v := _num(raw)) is not None and v > 0}
+        if got:
+            out[fund] = got
+    return out
+
+
+def read_fund_expense_ratios(fund_dir: Path | None) -> dict[str, float]:
+    """Fund symbol -> expense ratio in percent (0.015 = 0.015%), the issuer-checked values the investing repo locks.
+    A fund with no number is left out, so the breakdown can name it rather than count it as free."""
+    out: dict[str, float] = {}
+    for fund, entry in _fund_entries(fund_dir).items():
+        value = _num(entry.get("expense_ratio"))
+        if value is not None and value >= 0:
+            out[fund] = value
+    return out

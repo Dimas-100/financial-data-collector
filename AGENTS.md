@@ -37,7 +37,7 @@ projects consume the database; this one owns collection and storage. Design spec
   words a reason or note as a verdict on a name. It reads two optional owner files by configured path (the targets file, the
   fund look-through folder), each ignored when missing; their names, never paths, reach a source. Fixtures are invented.
 - **The exposure figures compute here and are read elsewhere.** `derive/exposure.py` publishes the five figures a
-  portfolio page shows (`exposure_figures`) plus the `trading_days` calendar, in the `derive` step, because none of
+  portfolio page shows (`exposure_figures`), the book page's six-way breakdown (`exposure_breakdown`, `derive/breakdown.py`, pure, from the same books) plus the `trading_days` calendar, in the `derive` step, because none of
   them reads a valuation score and the page must light up on a sync whose scores were held. Three rules hold:
   every figure is built only from the configured accounts the warehouse records as being at **Fidelity** (a
   household total may include a trading account, concentration math may not - the owner's rule); every figure

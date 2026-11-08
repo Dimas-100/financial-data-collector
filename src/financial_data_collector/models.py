@@ -404,6 +404,29 @@ class ExposureRow:
 
 
 @dataclass(frozen=True)
+class BreakdownRow:
+    """One row of Mr. Buffett's book breakdown as `exposure_breakdown_raw` keeps it (migration 0025).
+
+    `dimension` is asset | sector | country | company | crash | fee, `base` brokerage | fidelity_rolled_up (never a
+    mixed one), `bucket` the row's name inside its dimension. `value` is dollars, `pct` the share of the base in
+    percent (a crash row: the published fall; a fee row: the weighted expense ratio), `line_pct` the plan's sector
+    weight on the brokerage's sector rows only, `direct` the directly held dollars of a company row.
+    `look_through_complete` 0 makes `value` a floor, with `coverage_pct` the measured share of the funds."""
+    dimension: str
+    base: str
+    bucket: str
+    value: float | None
+    pct: float | None
+    line_pct: float | None
+    direct: float | None
+    look_through_complete: int     # 0 | 1
+    coverage_pct: float | None
+    note: str | None
+    date: str | None
+    sources: tuple[dict, ...] = ()
+
+
+@dataclass(frozen=True)
 class TargetRow:
     """One targets-file entry of one configured account as `allocation_targets_raw` keeps it: `gap` dollars to the
     target either way (>= 0; `side` says which, short | over | on), `top` dollars to the band top (negative past it),

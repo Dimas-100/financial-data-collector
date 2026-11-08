@@ -51,7 +51,8 @@ from ..check.calendar import trading_days
 from ..models import FUND_TYPES, ExposureRow
 from ..symbols import is_money_market
 from . import sources
-from .targets import read_fund_sectors, read_look_through_with_coverage, read_targets
+from .targets import (read_fund_countries, read_fund_expense_ratios, read_fund_sectors,
+                      read_look_through_with_coverage, read_targets)
 
 if TYPE_CHECKING:
     from ..config import Config
@@ -219,6 +220,7 @@ class ExposureReport:
     published: int
     notes: tuple[str, ...] = ()
     skipped: str | None = None
+    breakdown: int = 0             # rows of exposure_breakdown_raw (claude-os's book page)
 
 
 # ---------------------------------------------------------------- the measures
@@ -541,7 +543,16 @@ def run(store: Store, cfg: Config) -> ExposureReport:
         if fund in look_through:
             src.append(sources.feed(f"{fund}.csv", None, fund))
     rows = build_exposure(brokerage, rolled_up, plan, sectors, day, tuple(src), behind)
-    return ExposureReport(store.replace_exposure_figures(rows), tuple(notes))
+    published = store.replace_exposure_figures(rows)
+    # the book's breakdown, from the same books: a figure and its breakdown can never be read off two positions days
+    from . import breakdown as breakdown_mod
+    from ..sectors import FEED_FILE, read_feed_countries
+    feed = read_feed_countries(cfg.investing_dir / "data" / FEED_FILE) if cfg.investing_dir else {}
+    countries = breakdown_mod.Countries({s: feed[s] for s in rolled_up.held if s in feed},
+                                        read_fund_countries(alloc.fund_holdings))
+    parts = breakdown_mod.build_breakdown(brokerage, rolled_up, plan, sectors, countries,
+                                          read_fund_expense_ratios(alloc.fund_holdings), day, tuple(src))
+    return ExposureReport(published, tuple(notes), breakdown=store.replace_exposure_breakdown(parts))
 
 
 def _restated(note: str | None, why: str) -> str:

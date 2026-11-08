@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The book breakdown for Mr. Buffett's book page (claude-os spec 2026-11-08). New view `exposure_breakdown`
+  (migration 0025), rebuilt with `exposure_figures` from the same two Fidelity books: `asset`, `sector` (rolled up
+  and on the brokerage with the plan's weight), `country`, `company` (direct apart from through funds, a floor with
+  its coverage), `crash` (2007-09, 2000-02, 2020 and now 2022, -25.43%) and `fee`. New readers
+  `targets.read_fund_countries` and `read_fund_expense_ratios` (`fund_category_weights.json`) and
+  `sectors.read_feed_countries` (`classifications.json`); `sync` counts `exposure breakdown`.
 - Exposure figures for a portfolio page (investing spec 2026-11-06, its section 5). New view `exposure_figures`,
   rebuilt by every `derive`: `top_three` and `sector_spread` and `ai_capex` on the brokerage, `stacked` and
   `crash_cost` on both Fidelity accounts rolled up, each with the `base` it is measured on, the plan's own

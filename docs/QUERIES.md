@@ -153,6 +153,12 @@ FROM exposure_figures
 ORDER BY CASE figure WHEN 'top_three' THEN 1 WHEN 'sector_spread' THEN 2 WHEN 'stacked' THEN 3
                      WHEN 'ai_capex' THEN 4 ELSE 5 END;
 
+-- the book breakdown, one dimension at a time (asset, sector, country, company, crash, fee)
+SELECT dimension, base, bucket, ROUND(value, 2) AS value, ROUND(pct, 2) AS pct, line_pct, ROUND(direct, 2) AS direct,
+       look_through_complete AS complete, ROUND(coverage_pct, 1) AS covers
+FROM exposure_breakdown
+ORDER BY dimension, base, value DESC;
+
 -- the newest trading days with a complete close, and how many bars each has
 SELECT day, final_bars FROM trading_days ORDER BY day DESC LIMIT 30;
 
