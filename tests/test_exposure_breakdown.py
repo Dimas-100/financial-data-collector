@@ -123,10 +123,12 @@ def test_crash_rows_four_scenarios():
 
 
 def test_fee_names_left_out():
+    """A fund with no ratio on record (VGIT, 600) is left out of the average entirely, as the note says: not counted
+    at 0%, which would pull the ratio down by a fee nobody knows. The yearly dollars are the known funds' own."""
     fee = _pick(_build(), "fee", "weighted")
-    assert fee.pct == pytest.approx(100 * 6000 * 0.015 / 100 / 6803, abs=1e-6)     # stored to 6 places
-    assert fee.value == pytest.approx(6803 * fee.pct / 100, abs=0.01)
-    assert "VGIT" in fee.note
+    assert fee.pct == pytest.approx(100 * 6000 * 0.015 / 100 / (6803 - 600), abs=1e-6)     # stored to 6 places
+    assert fee.value == pytest.approx(6000 * 0.015 / 100, abs=0.01)
+    assert "VGIT" in fee.note and "left out" in fee.note.lower()
 
 
 def test_brokerage_sector_has_plan_line():
