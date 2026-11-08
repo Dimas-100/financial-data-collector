@@ -354,16 +354,27 @@ def _ai_capex(book: Book | None, plan: dict[str, float], day: str | None, src: t
     """Measure 4: the AI-capex names as a share of the brokerage, direct and through its funds, against the sum of
     their plan targets.
 
-    It reads high while the other nine names are unfunded, and falls on its own as they fund. Not a cap."""
+    It reads high while the rest of the plan's names are unfunded, and falls on its own as they fund. Not a
+    cap."""
     line = round(sum(plan.get(s, 0.0) for s in AI_CAPEX), 4) if any(s in plan for s in AI_CAPEX) else None
     coverage, no_file = book.look_through_coverage() if book is not None else (None, [])
     complete, said, usable = _coverage(coverage, no_file, "the brokerage's funds")
-    note = (f"{_listed(list(AI_CAPEX))}, held directly and through your funds, as a share of the brokerage. "
-            f"It reads high because nine of the plan's names are still unfunded, and it falls on its own as they "
-            f"fund: a reading, not a cap, and never a reason to hold money back.")
     if book is None or book.invested <= 0:      # cash alone would publish a true 0.0 against a real line
         return _row("ai_capex", BROKERAGE, "pct", None, line, "no brokerage holdings to measure", day, src,
                     complete, coverage)
+    # Counted, never written down. This said "nine" as a literal, which matched the test fixture and nothing
+    # else: on his own book that day nine were FUNDED and four were not, so the note said the opposite of the
+    # truth. He funds these one at a time, so any number here is wrong by the next buy unless it is counted.
+    # in the plan's own order, which is his build order -- not alphabetical, which would bury the next buy
+    unfunded = [s for s in plan if book.held.get(s, 0.0) <= 0]
+    if unfunded:
+        why = (f"It reads high because {len(unfunded)} of the plan's names are still unfunded"
+               + (f" ({_listed(unfunded)})" if len(unfunded) <= 4 else "")
+               + ", and it falls on its own as they fund")
+    else:
+        why = "Every name in your plan is funded, so this is what the plan itself weighs toward these four"
+    note = (f"{_listed(list(AI_CAPEX))}, held directly and through your funds, as a share of the brokerage. "
+            f"{why}: a reading, not a cap, and never a reason to hold money back.")
     if not usable:
         return _row("ai_capex", BROKERAGE, "pct", None, line, note + said, day, src, complete, coverage)
     direct, indirect = book.split()

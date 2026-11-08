@@ -201,6 +201,31 @@ def test_ai_capex_counts_the_weight_inside_a_fund_as_well_as_the_direct_dollars(
     assert row.look_through_complete == 0 and row.coverage_pct == pytest.approx(30.0)
 
 
+def test_the_ai_capex_note_counts_the_unfunded_names_instead_of_saying_nine():
+    """The note said "nine of the plan's names are still unfunded" as a literal. Nine is what THIS file's
+    fixture happens to leave unfunded (its brokerage holds four of the thirteen), so no test here could ever
+    disagree with it. On his own book on 2026-11-08 the truth was the other way round: nine funded, four not
+    (V, CME, TJX and CB), and the page said the opposite. A count that cannot follow the book is a claim
+    about his money that rots the first time he buys something.
+    """
+    nine_funded = {"SCHD": 400.0, "MSFT": 300.0, "GOOGL": 200.0, "LLY": 100.0, "NVDA": 50.0, "AMZN": 50.0,
+                   "BRK.B": 50.0, "WM": 50.0, "AZN": 50.0}      # his 2026-11-08 brokerage, in shape
+    book = E.Book(held=nine_funded, cash=0.0, funds=frozenset({"SCHD"}),
+                  look_through={"SCHD": SCHD_LOOK}, coverage={"SCHD": 30.0})
+    note = _rows(brokerage=book)["ai_capex"].note or ""
+    assert "nine of the plan's names" not in note
+    assert "4 of the plan's names are still unfunded" in note
+    assert "V, CME, TJX and CB" in note                          # few enough to name, so name them
+
+
+def test_the_ai_capex_note_names_the_unfunded_only_while_there_are_few():
+    """The same note on the fixture book, where nine of the thirteen are unfunded: a list of nine names in
+    one sentence is worse than the count alone."""
+    note = _rows()["ai_capex"].note or ""
+    assert "9 of the plan's names are still unfunded" in note
+    assert "CME" not in note
+
+
 def test_ai_capex_never_reads_as_a_cap():
     """Spec 5: its honest message is "you are early, not reckless" - it falls on its own as the other names fund."""
     note = _rows()["ai_capex"].note or ""
