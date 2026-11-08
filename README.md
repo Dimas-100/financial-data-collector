@@ -504,7 +504,7 @@ Claude Code needs no setup: the database is a file, and `fdc query` works from t
 ## Scheduling (Windows)
 
 ```powershell
-.\scripts\schedule_sync.ps1          # at logon (+20 min) and every 12 hours
+.\scripts\schedule_sync.ps1          # at logon (+20 min) and daily at 08:30, 17:00 and 20:30
 .\scripts\schedule_sync.ps1 -Remove
 ```
 
