@@ -13,7 +13,7 @@ from .adapters.base import dedupe_key
 from .connections.names import slug_for
 from .symbols import is_money_market
 from .models import (
-    AccountRef, AllocationProposal, ConceptRule, CurrentReport, EarningsEvent, Estimate, ExposureRow, Fact, FundSnapshot, Headline, LineItem,
+    AccountRef, AllocationProposal, BreakdownRow, ConceptRule, CurrentReport, EarningsEvent, Estimate, ExposureRow, Fact, FundSnapshot, Headline, LineItem,
     ENGINE_CHECK_NAMES, HoldingBandRow, MacroObservation, PriceBar, PriceMove, ScoreRow, Snapshot, TargetRow, TransactionRow,
     is_final,
 )
@@ -28,6 +28,7 @@ COUNT_TABLES = (
     "unexplained_daily", "macro_observations", "check_runs", "check_findings", "fund_snapshots", "earnings_events",
     "estimate_snapshots", "current_reports", "news_headlines", "valuation_scores_raw", "price_moves",
     "allocation_proposals_raw", "allocation_lines_raw", "holding_bands_raw", "allocation_targets_raw",
+    "exposure_breakdown_raw",
 )
 
 
@@ -1044,6 +1045,17 @@ class Store:
                            r.coverage_pct, r.note, r.date, json.dumps(list(r.sources), sort_keys=True))
                 for r in rows}
         return self._replace_exact("exposure_figures_raw", cols, 1, want)
+
+    def replace_exposure_breakdown(self, rows: Iterable[BreakdownRow]) -> int:
+        """Make exposure_breakdown_raw exactly `rows`, keyed (dimension, base, bucket). Returns how many rows it
+        holds."""
+        cols = ("dimension", "base", "bucket", "value", "pct", "line_pct", "direct", "look_through_complete",
+                "coverage_pct", "note", "date", "sources")
+        want = {(r.dimension, r.base, r.bucket): (r.dimension, r.base, r.bucket, r.value, r.pct, r.line_pct, r.direct,
+                                                   int(r.look_through_complete), r.coverage_pct, r.note, r.date,
+                                                   json.dumps(list(r.sources), sort_keys=True))
+                for r in rows}
+        return self._replace_exact("exposure_breakdown_raw", cols, 3, want)
 
     def replace_trading_days(self, days: Iterable[str]) -> int:
         """Make trading_days_raw exactly `days` (ISO dates). Returns how many it holds."""
