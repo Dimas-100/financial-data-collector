@@ -137,11 +137,15 @@ def _fee(book: Book, fees: dict[str, float], day, src) -> list[BreakdownRow]:
     funds = sorted(book.fund_values)
     known = [f for f in funds if f in fees]
     missing = [f for f in funds if f not in fees]
-    pct = sum(book.held[f] * fees[f] for f in known) / book.total if book.total > 0 else None
+    # a fund with no ratio on record is left out of the average entirely (its dollars too), never counted at 0%:
+    # that would pull the ratio down by a fee nobody knows. The yearly dollars are the known funds' own.
+    base = book.total - sum(book.held[f] for f in missing)
+    yearly = sum(book.held[f] * fees[f] for f in known) / 100
+    pct = 100 * yearly / base if base > 0 else None
     note = "Each fund's expense ratio weighted by its dollars, over both accounts; stocks cost nothing to hold."
     if missing:
-        note += f" Left out: {_listed(missing)} (no expense ratio on record)."
-    value = None if pct is None else book.total * pct / 100
+        note += f" Left out: {_listed(missing)} (no expense ratio on record), from the average and the dollars."
+    value = None if pct is None else yearly
     return [_row("fee", ROLLED_UP, "weighted", value, pct, day, src, note=note, digits=6)]   # a ratio near 0.04%
 
 
